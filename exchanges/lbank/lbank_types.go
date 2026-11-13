@@ -1,9 +1,12 @@
 package lbank
 
 import (
-	"encoding/json"
+	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
+	"github.com/thrasher-corp/gocryptotrader/types"
 )
 
 // Ticker stores the ticker price data for a currency pair
@@ -19,83 +22,80 @@ type Ticker struct {
 // TickerResponse stores the ticker price data and timestamp for a currency pair
 type TickerResponse struct {
 	Symbol    currency.Pair `json:"symbol"`
-	Timestamp int64         `json:"timestamp"`
+	Timestamp types.Time    `json:"timestamp"`
 	Ticker    Ticker        `json:"ticker"`
 }
 
-// MarketDepthResponse stores arrays for asks, bids and a timestamp for a currecy pair
+// MarketDepthResponse stores arrays for asks, bids and a timestamp for a currency pair
 type MarketDepthResponse struct {
-	ErrCapture `json:",omitempty"`
-	Data       struct {
-		Asks      [][2]string `json:"asks"`
-		Bids      [][2]string `json:"bids"`
-		Timestamp int64       `json:"timestamp"`
-	}
+	Asks      orderbook.LevelsArrayPriceAmount `json:"asks"`
+	Bids      orderbook.LevelsArrayPriceAmount `json:"bids"`
+	Timestamp types.Time                       `json:"timestamp"`
 }
 
 // TradeResponse stores date_ms, amount, price, type, tid for a currency pair
 type TradeResponse struct {
-	DateMS int64   `json:"date_ms"`
-	Amount float64 `json:"amount"`
-	Price  float64 `json:"price"`
-	Type   string  `json:"type"`
-	TID    string  `json:"tid"`
+	DateMS types.Time `json:"date_ms"`
+	Amount float64    `json:"amount"`
+	Price  float64    `json:"price"`
+	Type   string     `json:"type"`
+	TID    string     `json:"tid"`
 }
 
 // KlineResponse stores kline info for given currency exchange
 type KlineResponse struct {
-	TimeStamp     int64   `json:"timestamp"`
-	OpenPrice     float64 `json:"openprice"`
-	HigestPrice   float64 `json:"highestprice"`
-	LowestPrice   float64 `json:"lowestprice"`
-	ClosePrice    float64 `json:"closeprice"`
-	TradingVolume float64 `json:"tradingvolume"`
+	TimeStamp     time.Time `json:"timestamp"`
+	OpenPrice     float64   `json:"openprice"`
+	HighestPrice  float64   `json:"highestprice"`
+	LowestPrice   float64   `json:"lowestprice"`
+	ClosePrice    float64   `json:"closeprice"`
+	TradingVolume float64   `json:"tradingvolume"`
 }
 
 // InfoResponse stores info
 type InfoResponse struct {
-	Freeze map[string]string `json:"freeze"`
-	Asset  map[string]string `json:"asset"`
-	Free   map[string]string `json:"Free"`
+	Freeze map[string]types.Number `json:"freeze"`
+	Asset  map[string]types.Number `json:"asset"`
+	Free   map[string]types.Number `json:"Free"`
 }
 
 // InfoFinalResponse stores info
 type InfoFinalResponse struct {
-	ErrCapture `json:",omitempty"`
-	Info       InfoResponse `json:"info"`
+	ErrCapture
+	Info InfoResponse `json:"info"`
 }
 
 // CreateOrderResponse stores the result of the Order and
 type CreateOrderResponse struct {
-	ErrCapture `json:",omitempty"`
-	OrderID    string `json:"order_id"`
+	ErrCapture
+	OrderID string `json:"order_id"`
 }
 
 // RemoveOrderResponse stores the result when an order is cancelled
 type RemoveOrderResponse struct {
-	ErrCapture `json:",omitempty"`
-	Err        string `json:"error"`
-	OrderID    string `json:"order_id"`
-	Success    string `json:"success"`
+	ErrCapture
+	Err     string `json:"error"`
+	OrderID string `json:"order_id"`
+	Success string `json:"success"`
 }
 
 // OrderResponse stores the data related to the given OrderIDs
 type OrderResponse struct {
-	Symbol     string  `json:"symbol"`
-	Amount     float64 `json:"amount"`
-	CreateTime int64   `json:"created_time"`
-	Price      float64 `json:"price"`
-	AvgPrice   float64 `json:"avg_price"`
-	Type       string  `json:"type"`
-	OrderID    string  `json:"order_id"`
-	DealAmount float64 `json:"deal_amount"`
-	Status     int64   `json:"status"`
+	Symbol     string     `json:"symbol"`
+	Amount     float64    `json:"amount"`
+	CreateTime types.Time `json:"created_time"`
+	Price      float64    `json:"price"`
+	AvgPrice   float64    `json:"avg_price"`
+	Type       string     `json:"type"`
+	OrderID    string     `json:"order_id"`
+	DealAmount float64    `json:"deal_amount"`
+	Status     int64      `json:"status"`
 }
 
 // QueryOrderResponse stores the data from queries
 type QueryOrderResponse struct {
-	ErrCapture `json:",omitempty"`
-	Orders     json.RawMessage `json:"orders"`
+	ErrCapture
+	Orders json.RawMessage `json:"orders"`
 }
 
 // QueryOrderFinalResponse stores data from queries
@@ -104,19 +104,9 @@ type QueryOrderFinalResponse struct {
 	Orders []OrderResponse
 }
 
-// OrderHistory stores data for past orders
-type OrderHistory struct {
-	Result      bool            `json:"result,string"`
-	Total       string          `json:"total"`
-	PageLength  uint8           `json:"page_length"`
-	Orders      json.RawMessage `json:"orders"`
-	CurrentPage uint8           `json:"current_page"`
-	ErrorCode   int64           `json:"error_code"`
-}
-
 // OrderHistoryResponse stores past orders
 type OrderHistoryResponse struct {
-	ErrCapture  `json:",omitempty"`
+	ErrCapture
 	PageLength  uint8           `json:"page_length"`
 	Orders      json.RawMessage `json:"orders"`
 	CurrentPage uint8           `json:"current_page"`
@@ -140,26 +130,26 @@ type PairInfoResponse struct {
 
 // TransactionTemp stores details about transactions
 type TransactionTemp struct {
-	TxUUID       string  `json:"txUuid"`
-	OrderUUID    string  `json:"orderUuid"`
-	TradeType    string  `json:"tradeType"`
-	DealTime     int64   `json:"dealTime"`
-	DealPrice    float64 `json:"dealPrice"`
-	DealQuantity float64 `json:"dealQuantity"`
-	DealVolPrice float64 `json:"dealVolumePrice"`
-	TradeFee     float64 `json:"tradeFee"`
-	TradeFeeRate float64 `json:"tradeFeeRate"`
+	TxUUID       string     `json:"txUuid"`
+	OrderUUID    string     `json:"orderUuid"`
+	TradeType    string     `json:"tradeType"`
+	DealTime     types.Time `json:"dealTime"`
+	DealPrice    float64    `json:"dealPrice"`
+	DealQuantity float64    `json:"dealQuantity"`
+	DealVolPrice float64    `json:"dealVolumePrice"`
+	TradeFee     float64    `json:"tradeFee"`
+	TradeFeeRate float64    `json:"tradeFeeRate"`
 }
 
 // TransactionHistoryResp stores details about past transactions
 type TransactionHistoryResp struct {
-	ErrCapture  `json:",omitempty"`
+	ErrCapture
 	Transaction []TransactionTemp `json:"transaction"`
 }
 
 // OpenOrderResponse stores information about the opening orders
 type OpenOrderResponse struct {
-	ErrCapture `json:",omitempty"`
+	ErrCapture
 	PageLength uint8           `json:"page_length"`
 	PageNumber uint8           `json:"page_number"`
 	Total      string          `json:"total"`
@@ -175,48 +165,48 @@ type OpenOrderFinalResponse struct {
 	Orders     []OrderResponse
 }
 
-// ExchangeRateResponse stores information about USD-RMB rate
-type ExchangeRateResponse struct {
-	USD2CNY string `json:"USD2CNY"`
-}
-
 // WithdrawConfigResponse stores info about withdrawal configurations
 type WithdrawConfigResponse struct {
-	AssetCode   string `json:"assetCode"`
-	Minimum     string `json:"min"`
-	CanWithDraw bool   `json:"canWithDraw"`
-	Fee         string `json:"fee"`
+	AmountScale         int64         `json:"amountScale,string"`
+	Chain               string        `json:"chain"`
+	AssetCode           currency.Code `json:"assetCode"`
+	Minimum             float64       `json:"min,string"`
+	TransferAmountScale int64         `json:"transferAmtScale,string"`
+	CanWithdraw         bool          `json:"canWithDraw"`
+	Fee                 float64       `json:"fee"`
+	MinimumTransfer     float64       `json:"minTransfer,string"`
+	Type                int64         `json:"type,string"`
 }
 
 // WithdrawResponse stores info about the withdrawal
 type WithdrawResponse struct {
-	ErrCapture `json:",omitempty"`
+	ErrCapture
 	WithdrawID string  `json:"withdrawId"`
 	Fee        float64 `json:"fee"`
 }
 
 // RevokeWithdrawResponse stores info about the revoked withdrawal
 type RevokeWithdrawResponse struct {
-	ErrCapture `json:",omitempty"`
+	ErrCapture
 	WithdrawID string `json:"string"`
 }
 
 // ListDataResponse contains some of withdrawal data
 type ListDataResponse struct {
-	ErrCapture `json:",omitempty"`
-	Amount     float64 `json:"amount"`
-	AssetCode  string  `json:"assetCode"`
-	Address    string  `json:"address"`
-	Fee        float64 `json:"fee"`
-	ID         int64   `json:"id"`
-	Time       int64   `json:"time"`
-	TXHash     string  `json:"txhash"`
-	Status     string  `json:"status"`
+	ErrCapture
+	Amount    float64    `json:"amount"`
+	AssetCode string     `json:"assetCode"`
+	Address   string     `json:"address"`
+	Fee       float64    `json:"fee"`
+	ID        int64      `json:"id"`
+	Time      types.Time `json:"time"`
+	TXHash    string     `json:"txhash"`
+	Status    string     `json:"status"`
 }
 
 // WithdrawalResponse stores data for withdrawals
 type WithdrawalResponse struct {
-	ErrCapture `json:",omitempty"`
+	ErrCapture
 	TotalPages int64              `json:"totalPages"`
 	PageSize   int64              `json:"pageSize"`
 	PageNo     int64              `json:"pageNo"`
@@ -229,10 +219,19 @@ type ErrCapture struct {
 	Result bool  `json:"result,string"`
 }
 
-// GetAllOpenIDResp stores orderIds and currency pairs for open orders
-type GetAllOpenIDResp struct {
-	CurrencyPair string
-	OrderID      string
+// V2Response wraps all LBank v2 API responses
+//
+// result is reported as a JSON boolean by some endpoints and as a JSON string by
+// others, so it is decoded as a types.Boolean, which accepts both.
+type V2Response struct {
+	// Result is a pointer so that an absent or null result stays distinct from an
+	// explicit false: several successful endpoints omit result altogether and
+	// send only data, and a non-pointer types.Boolean would read those successes
+	// as failures.
+	Result    *types.Boolean  `json:"result"`
+	Msg       string          `json:"msg"`
+	Data      json.RawMessage `json:"data"`
+	ErrorCode int64           `json:"error_code"`
 }
 
 var errorCodes = map[int64]string{

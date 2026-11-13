@@ -1,8 +1,12 @@
+wrapperconfig.json
 config.json
 config.dat
-node_modules
 lib
+.DS_STORE
+
+# VS Code
 .vscode
+tmp/
 
 testdata/dump
 testdata/preengine_config.json
@@ -15,7 +19,12 @@ vendor/
 
 # Binaries for programs and plugins
 gocryptotrader
+/backtester/backtester
 cmd/gctcli/gctcli
+/benchcheck
+cmd/benchcheck/benchcheck
+backtester/backtester
+backtester/btcli/btcli
 *.exe
 *.exe~
 *.dll
@@ -30,9 +39,17 @@ cmd/gctcli/gctcli
 sqlboiler.toml
 sqlboiler.json
 
-# GCT API Check
-backup.json
-.DS_STORE
-
 # Designated generated files dir
 target/
+
+# Delve compiled executable
+__debug_bin
+
+# Coverage reports
+coverage.txt
+wrapperconfig.json
+.history/
+.codex
+.bench-output*.txt
+/bench-output.txt
+/.bench-compare/

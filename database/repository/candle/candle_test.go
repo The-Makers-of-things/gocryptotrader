@@ -1,17 +1,17 @@
 package candle
 
 import (
-	"errors"
+	"encoding/csv"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/database"
-	"github.com/thrasher-corp/gocryptotrader/database/drivers"
 	"github.com/thrasher-corp/gocryptotrader/database/repository/exchange"
 	"github.com/thrasher-corp/gocryptotrader/database/testhelpers"
 )
@@ -28,14 +28,19 @@ var (
 	}
 )
 
+//nolint:forbidigo // TestMain reports setup and teardown failures before or after a *testing.T exists
 func TestMain(m *testing.M) {
 	if verbose {
-		testhelpers.EnableVerboseTestOutput()
+		err := testhelpers.EnableVerboseTestOutput()
+		if err != nil {
+			fmt.Printf("failed to enable verbose test output: %v", err)
+			os.Exit(1)
+		}
 	}
 
 	var err error
 	testhelpers.PostgresTestDatabase = testhelpers.GetConnectionDetails()
-	testhelpers.TempDir, err = ioutil.TempDir("", "gct-temp")
+	testhelpers.TempDir, err = os.MkdirTemp("", "gct-temp")
 	if err != nil {
 		fmt.Printf("failed to create temp file: %v", err)
 		os.Exit(1)
@@ -52,7 +57,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestInsert(t *testing.T) {
-	testCases := []struct {
+	for _, tc := range []struct {
 		name   string
 		config *database.Config
 		seedDB func(includeOHLCVData bool) error
@@ -67,65 +72,41 @@ func TestInsert(t *testing.T) {
 		{
 			name: "SQLite",
 			config: &database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb",
 			},
 			seedDB: seedDB,
 		},
-	}
-
-	for x := range testCases {
-		test := testCases[x]
-
-		t.Run(test.name, func(t *testing.T) {
-			if !testhelpers.CheckValidConfig(&test.config.ConnectionDetails) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !testhelpers.CheckValidConfig(&tc.config.ConnectionDetails) {
 				t.Skip("database not configured skipping test")
 			}
 
-			dbConn, err := testhelpers.ConnectToDatabase(test.config)
-			if err != nil {
-				t.Fatal(err)
-			}
+			dbConn, err := testhelpers.ConnectToDatabase(tc.config)
+			require.NoError(t, err)
 
-			if test.seedDB != nil {
-				err = test.seedDB(false)
-				if err != nil {
-					t.Fatal(err)
-				}
+			if tc.seedDB != nil {
+				require.NoError(t, tc.seedDB(false))
 			}
 
 			data, err := genOHCLVData()
-			if err != nil {
-				t.Fatal(err)
-			}
-
+			require.NoError(t, err)
 			r, err := Insert(&data)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			if r != 365 {
-				t.Errorf("unexpected number inserted: %v", r)
-			}
+			assert.Equal(t, uint64(365), r)
 
 			d, err := DeleteCandles(&data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if d != 365 {
-				t.Errorf("unexpected number deleted: %v", d)
-			}
-
-			err = testhelpers.CloseDatabase(dbConn)
-			if err != nil {
-				t.Error(err)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, int64(365), d)
+			assert.NoError(t, testhelpers.CloseDatabase(dbConn))
 		})
 	}
 }
 
 func TestInsertFromCSV(t *testing.T) {
-	testCases := []struct {
+	for _, tc := range []struct {
 		name   string
 		config *database.Config
 		seedDB func(includeOHLCVData bool) error
@@ -140,53 +121,44 @@ func TestInsertFromCSV(t *testing.T) {
 		{
 			name: "SQLite",
 			config: &database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb",
 			},
 			seedDB: seedDB,
 		},
-	}
-
-	for x := range testCases {
-		test := testCases[x]
-
-		t.Run(test.name, func(t *testing.T) {
-			if !testhelpers.CheckValidConfig(&test.config.ConnectionDetails) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !testhelpers.CheckValidConfig(&tc.config.ConnectionDetails) {
 				t.Skip("database not configured skipping test")
 			}
 
-			dbConn, err := testhelpers.ConnectToDatabase(test.config)
-			if err != nil {
-				t.Fatal(err)
-			}
+			dbConn, err := testhelpers.ConnectToDatabase(tc.config)
+			require.NoError(t, err)
 
-			if test.seedDB != nil {
-				err = test.seedDB(false)
-				if err != nil {
-					t.Fatal(err)
-				}
+			if tc.seedDB != nil {
+				require.NoError(t, tc.seedDB(false))
 			}
 
 			exchange.ResetExchangeCache()
 			testFile := filepath.Join("..", "..", "..", "testdata", "binance_BTCUSDT_24h_2019_01_01_2020_01_01.csv")
 			count, err := InsertFromCSV(testExchanges[0].Name, "BTC", "USDT", 86400, "spot", testFile)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if count != 365 {
-				t.Fatalf("expected 365 results to be inserted received: %v", count)
+			require.NoError(t, err)
+			assert.Equal(t, uint64(365), count)
+
+			for _, contents := range []string{"1546300800,1,2,3,4\n", "1546300800,1,2,3,4,5,\n"} {
+				malformed := filepath.Join(t.TempDir(), "malformed.csv")
+				require.NoError(t, os.WriteFile(malformed, []byte(contents), 0o600), "writing test CSV must not error")
+				_, err = InsertFromCSV(testExchanges[0].Name, "BTC", "USDT", 86400, "spot", malformed)
+				assert.ErrorIsf(t, err, csv.ErrFieldCount, "InsertFromCSV should return a field count error for %q", contents)
 			}
 
-			err = testhelpers.CloseDatabase(dbConn)
-			if err != nil {
-				t.Error(err)
-			}
+			assert.NoError(t, testhelpers.CloseDatabase(dbConn))
 		})
 	}
 }
 
 func TestSeries(t *testing.T) {
-	testCases := []struct {
+	for _, tc := range []struct {
 		name   string
 		config *database.Config
 		seedDB func(includeOHLCVData bool) error
@@ -201,71 +173,36 @@ func TestSeries(t *testing.T) {
 		{
 			name: "SQLite",
 			config: &database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb",
 			},
 			seedDB: seedDB,
 		},
-	}
-
-	for x := range testCases {
-		test := testCases[x]
-
-		t.Run(test.name, func(t *testing.T) {
-			if !testhelpers.CheckValidConfig(&test.config.ConnectionDetails) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !testhelpers.CheckValidConfig(&tc.config.ConnectionDetails) {
 				t.Skip("database not configured skipping test")
 			}
 
-			dbConn, err := testhelpers.ConnectToDatabase(test.config)
-			if err != nil {
-				t.Fatal(err)
-			}
+			dbConn, err := testhelpers.ConnectToDatabase(tc.config)
+			require.NoError(t, err)
 
-			if test.seedDB != nil {
-				err = test.seedDB(true)
-				if err != nil {
-					t.Fatal(err)
-				}
+			if tc.seedDB != nil {
+				require.NoError(t, tc.seedDB(true))
 			}
 
 			start := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
 			end := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-			ret, err := Series(testExchanges[0].Name,
-				"BTC", "USDT",
-				86400, "spot",
-				start, end)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(ret.Candles) != 365 {
-				t.Errorf("unexpected number of results received:  %v", len(ret.Candles))
-			}
+			ret, err := Series(testExchanges[0].Name, "BTC", "USDT", 86400, "spot", start, end)
+			require.NoError(t, err)
+			assert.Equal(t, 365, len(ret.Candles))
 
-			ret, err = Series("", "", "", 0, "", start, end)
-			if err != nil {
-				if !errors.Is(err, errInvalidInput) {
-					t.Fatal(err)
-				}
-			}
+			_, err = Series("", "", "", 0, "", start, end)
+			require.ErrorIs(t, err, errInvalidInput)
 
-			ret, err = Series(testExchanges[0].Name,
-				"BTC", "MOON",
-				864000, "spot",
-				start, end)
-			if err != nil {
-				if !errors.Is(err, errInvalidInput) {
-					if err.Error() != fmt.Errorf(errNoCandleDataFound, testExchanges[0].Name,
-						"BTC", "MOON",
-						"864000", "spot").Error() {
-						t.Fatal(err)
-					}
-				}
-			}
-
-			err = testhelpers.CloseDatabase(dbConn)
-			if err != nil {
-				t.Error(err)
-			}
+			_, err = Series(testExchanges[0].Name, "BTC", "MOON", 864000, "spot", start, end)
+			assert.ErrorIs(t, err, ErrNoCandleDataFound)
+			assert.NoError(t, testhelpers.CloseDatabase(dbConn))
 		})
 	}
 }
@@ -291,7 +228,7 @@ func seedDB(includeOHLCVData bool) error {
 func genOHCLVData() (out Item, err error) {
 	exchangeUUID, err := exchange.UUIDByName(testExchanges[0].Name)
 	if err != nil {
-		return
+		return out, err
 	}
 	out.ExchangeID = exchangeUUID.String()
 	out.Base = currency.BTC.String()
@@ -300,14 +237,15 @@ func genOHCLVData() (out Item, err error) {
 	out.Asset = "spot"
 
 	start := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
-	for x := 0; x < 365; x++ {
+	for x := range 365 {
 		out.Candles = append(out.Candles, Candle{
-			Timestamp: start.Add(time.Hour * 24 * time.Duration(x)),
-			Open:      1000,
-			High:      1000,
-			Low:       1000,
-			Close:     1000,
-			Volume:    1000,
+			Timestamp:        start.Add(time.Hour * 24 * time.Duration(x)),
+			Open:             1000,
+			High:             1000,
+			Low:              1000,
+			Close:            1000,
+			Volume:           1000,
+			ValidationIssues: "hello world!",
 		})
 	}
 

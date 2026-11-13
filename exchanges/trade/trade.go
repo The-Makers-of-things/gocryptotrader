@@ -1,25 +1,29 @@
 package trade
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
+	"uuid"
 
-	"github.com/gofrs/uuid"
 	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/database"
 	tradesql "github.com/thrasher-corp/gocryptotrader/database/repository/trade"
+	"github.com/thrasher-corp/gocryptotrader/exchange/stream"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/kline"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
 	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
-// Setup creates the trade processor if trading is supported
+// errInvalidTradeID is returned when a stored trade ID cannot be parsed as a UUID
+var errInvalidTradeID = errors.New("invalid trade ID")
+
+// setup creates the trade processor if trading is supported
 func (p *Processor) setup(wg *sync.WaitGroup) {
 	p.mutex.Lock()
 	p.bufferProcessorInterval = BufferProcessorIntervalTime
@@ -27,29 +31,61 @@ func (p *Processor) setup(wg *sync.WaitGroup) {
 	go p.Run(wg)
 }
 
+// Setup configures necessary fields to the `Trade` structure that govern trade data
+// processing.
+func (t *Trade) Setup(tradeFeedEnabled bool, c *stream.Relay) {
+	t.dataHandler = c
+	t.tradeFeedEnabled = tradeFeedEnabled
+}
+
+// Update processes trade data, either by saving it or routing it through
+// the data channel.
+func (t *Trade) Update(save bool, data ...Data) error {
+	ctx := context.TODO()
+	if len(data) == 0 {
+		// nothing to do
+		return nil
+	}
+
+	if t.tradeFeedEnabled {
+		if err := t.dataHandler.Send(ctx, data); err != nil {
+			return err
+		}
+	}
+
+	if save {
+		if err := AddTradesToBuffer(data...); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // AddTradesToBuffer will push trade data onto the buffer
-func AddTradesToBuffer(exchangeName string, data ...Data) error {
-	if database.DB == nil || database.DB.Config == nil || !database.DB.Config.Enabled {
+func AddTradesToBuffer(data ...Data) error {
+	cfg := database.DB.GetConfig()
+	if database.DB == nil || cfg == nil || !cfg.Enabled {
 		return nil
 	}
 	if len(data) == 0 {
 		return nil
 	}
-	var errs common.Errors
-	if atomic.AddInt32(&processor.started, 0) == 0 {
+	if !processor.started.Load() {
 		var wg sync.WaitGroup
 		wg.Add(1)
 		processor.setup(&wg)
 		wg.Wait()
 	}
-	var validDatas []Data
+	validDatas := make([]Data, 0, len(data))
+	var errs error
 	for i := range data {
 		if data[i].Price == 0 ||
 			data[i].Amount == 0 ||
 			data[i].CurrencyPair.IsEmpty() ||
 			data[i].Exchange == "" ||
 			data[i].Timestamp.IsZero() {
-			errs = append(errs, fmt.Errorf("%v received invalid trade data: %+v", exchangeName, data[i]))
+			errs = common.AppendError(errs, fmt.Errorf("%v received invalid trade data: %+v", data[i].Exchange, data[i]))
 			continue
 		}
 
@@ -67,31 +103,25 @@ func AddTradesToBuffer(exchangeName string, data ...Data) error {
 		if data[i].Side == order.Ask {
 			data[i].Side = order.Sell
 		}
-		uu, err := uuid.NewV4()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s uuid failed to generate for trade: %+v", exchangeName, data[i]))
-		}
-		data[i].ID = uu
+		data[i].ID = uuid.NewV4()
 		validDatas = append(validDatas, data[i])
 	}
 	processor.mutex.Lock()
 	processor.buffer = append(processor.buffer, validDatas...)
 	processor.mutex.Unlock()
-	if len(errs) > 0 {
-		return errs
-	}
-	return nil
+	return errs
 }
 
 // Run will save trade data to the database in batches
 func (p *Processor) Run(wg *sync.WaitGroup) {
-	wg.Done()
-	if !atomic.CompareAndSwapInt32(&p.started, 0, 1) {
-		log.Error(log.Trade, "trade processor already started")
+	if !p.started.CompareAndSwap(false, true) {
+		wg.Done()
+		log.Errorln(log.Trade, "trade processor already started")
 		return
 	}
+	wg.Done()
 	defer func() {
-		atomic.CompareAndSwapInt32(&p.started, 1, 0)
+		p.started.CompareAndSwap(true, false)
 	}()
 	p.mutex.Lock()
 	ticker := time.NewTicker(p.bufferProcessorInterval)
@@ -99,7 +129,7 @@ func (p *Processor) Run(wg *sync.WaitGroup) {
 	for {
 		<-ticker.C
 		p.mutex.Lock()
-		bufferCopy := append(p.buffer[:0:0], p.buffer...)
+		bufferCopy := slices.Clone(p.buffer)
 		p.buffer = nil
 		p.mutex.Unlock()
 		if len(bufferCopy) == 0 {
@@ -108,18 +138,14 @@ func (p *Processor) Run(wg *sync.WaitGroup) {
 		}
 		err := SaveTradesToDatabase(bufferCopy...)
 		if err != nil {
-			log.Error(log.Trade, err)
+			log.Errorln(log.Trade, err)
 		}
 	}
 }
 
 // SaveTradesToDatabase converts trades and saves results to database
 func SaveTradesToDatabase(trades ...Data) error {
-	sqlTrades, err := tradeToSQLData(trades...)
-	if err != nil {
-		return err
-	}
-	return tradesql.Insert(sqlTrades...)
+	return tradesql.Insert(tradeToSQLData(trades...)...)
 }
 
 // GetTradesInRange calls db function to return trades in range
@@ -128,6 +154,9 @@ func GetTradesInRange(exchangeName, assetType, base, quote string, startDate, en
 	if exchangeName == "" || assetType == "" || base == "" || quote == "" || startDate.IsZero() || endDate.IsZero() {
 		return nil, errors.New("invalid arguments received")
 	}
+	if !database.DB.IsConnected() {
+		return nil, fmt.Errorf("cannot process trades in range %s-%s as %w", startDate, endDate, database.ErrDatabaseNotConnected)
+	}
 	results, err := tradesql.GetInRange(exchangeName, assetType, base, quote, startDate, endDate)
 	if err != nil {
 		return nil, err
@@ -135,16 +164,20 @@ func GetTradesInRange(exchangeName, assetType, base, quote string, startDate, en
 	return SQLDataToTrade(results...)
 }
 
-func tradeToSQLData(trades ...Data) ([]tradesql.Data, error) {
-	sort.Sort(ByDate(trades))
-	var results []tradesql.Data
+// HasTradesInRanges Creates an executes an SQL query to verify if a trade exists within a timeframe
+func HasTradesInRanges(exchangeName, assetType, base, quote string, rangeHolder *kline.IntervalRangeHolder) error {
+	if exchangeName == "" || assetType == "" || base == "" || quote == "" {
+		return errors.New("invalid arguments received")
+	}
+	return tradesql.VerifyTradeInIntervals(exchangeName, assetType, base, quote, rangeHolder)
+}
+
+func tradeToSQLData(trades ...Data) []tradesql.Data {
+	SortByDate(trades)
+	results := make([]tradesql.Data, len(trades))
 	for i := range trades {
-		tradeID, err := uuid.NewV4()
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, tradesql.Data{
-			ID:        tradeID.String(),
+		results[i] = tradesql.Data{
+			ID:        uuid.NewV4().String(),
 			Timestamp: trades[i].Timestamp,
 			Exchange:  trades[i].Exchange,
 			Base:      trades[i].CurrencyPair.Base.String(),
@@ -154,31 +187,33 @@ func tradeToSQLData(trades ...Data) ([]tradesql.Data, error) {
 			Amount:    trades[i].Amount,
 			Side:      trades[i].Side.String(),
 			TID:       trades[i].TID,
-		})
+		}
 	}
-	return results, nil
+	return results
 }
 
 // SQLDataToTrade converts sql data to glorious trade data
-func SQLDataToTrade(dbTrades ...tradesql.Data) (result []Data, err error) {
+func SQLDataToTrade(dbTrades ...tradesql.Data) ([]Data, error) {
+	result := make([]Data, len(dbTrades))
 	for i := range dbTrades {
-		var cp currency.Pair
-		cp, err = currency.NewPairFromStrings(dbTrades[i].Base, dbTrades[i].Quote)
+		cp, err := currency.NewPairFromStrings(dbTrades[i].Base, dbTrades[i].Quote)
 		if err != nil {
 			return nil, err
 		}
-		cp = cp.Upper()
-		var a = asset.Item(dbTrades[i].AssetType)
-		if !a.IsValid() {
-			return nil, fmt.Errorf("invalid asset type %v", a)
-		}
-		var s order.Side
-		s, err = order.StringToOrderSide(dbTrades[i].Side)
+		a, err := asset.New(dbTrades[i].AssetType)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, Data{
-			ID:           uuid.FromStringOrNil(dbTrades[i].ID),
+		s, err := order.StringToOrderSide(dbTrades[i].Side)
+		if err != nil {
+			return nil, err
+		}
+		id, err := uuid.Parse(dbTrades[i].ID)
+		if err != nil {
+			return nil, fmt.Errorf("%w %q: %w", errInvalidTradeID, dbTrades[i].ID, err)
+		}
+		result[i] = Data{
+			ID:           id,
 			Timestamp:    dbTrades[i].Timestamp.UTC(),
 			Exchange:     dbTrades[i].Exchange,
 			CurrencyPair: cp.Upper(),
@@ -186,15 +221,15 @@ func SQLDataToTrade(dbTrades ...tradesql.Data) (result []Data, err error) {
 			Price:        dbTrades[i].Price,
 			Amount:       dbTrades[i].Amount,
 			Side:         s,
-		})
+		}
 	}
 	return result, nil
 }
 
 // ConvertTradesToCandles turns trade data into kline.Items
-func ConvertTradesToCandles(interval kline.Interval, trades ...Data) (kline.Item, error) {
+func ConvertTradesToCandles(interval kline.Interval, trades ...Data) (*kline.Item, error) {
 	if len(trades) == 0 {
-		return kline.Item{}, errors.New("no trades supplied")
+		return nil, ErrNoTradesSupplied
 	}
 	groupedData := groupTradesToInterval(interval, trades...)
 	candles := kline.Item{
@@ -207,7 +242,7 @@ func ConvertTradesToCandles(interval kline.Interval, trades ...Data) (kline.Item
 		candles.Candles = append(candles.Candles, classifyOHLCV(time.Unix(k, 0), v...))
 	}
 
-	return candles, nil
+	return &candles, nil
 }
 
 func groupTradesToInterval(interval kline.Interval, times ...Data) map[int64][]Data {
@@ -223,11 +258,11 @@ func groupTradesToInterval(interval kline.Interval, times ...Data) map[int64][]D
 }
 
 func getNearestInterval(t time.Time, interval kline.Interval) int64 {
-	return t.Truncate(interval.Duration()).UTC().Unix()
+	return t.Truncate(interval.Duration()).Unix()
 }
 
 func classifyOHLCV(t time.Time, datas ...Data) (c kline.Candle) {
-	sort.Sort(ByDate(datas))
+	SortByDate(datas)
 	c.Open = datas[0].Price
 	c.Close = datas[len(datas)-1].Price
 	for i := range datas {
@@ -264,4 +299,9 @@ func FilterTradesByTime(trades []Data, startTime, endTime time.Time) []Data {
 	}
 
 	return filteredTrades
+}
+
+// SortByDate sorts trades by date ascending
+func SortByDate(t []Data) {
+	slices.SortFunc(t, func(a, b Data) int { return a.Timestamp.Compare(b.Timestamp) })
 }

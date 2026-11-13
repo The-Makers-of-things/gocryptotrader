@@ -1,260 +1,413 @@
 package exchange
 
 import (
+	"context"
 	"fmt"
+	"strings"
+	"time"
+	"uuid"
 
-	"github.com/gofrs/uuid"
 	"github.com/thrasher-corp/gocryptotrader/backtester/common"
 	"github.com/thrasher-corp/gocryptotrader/backtester/data"
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventhandlers/exchange/slippage"
-	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/event"
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/fill"
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/order"
+	"github.com/thrasher-corp/gocryptotrader/backtester/funding"
+	gctcommon "github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/engine"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	gctorder "github.com/thrasher-corp/gocryptotrader/exchanges/order"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
 // Reset returns the exchange to initial settings
-func (e *Exchange) Reset() {
-	*e = Exchange{}
+func (e *Exchange) Reset() error {
+	if e == nil {
+		return gctcommon.ErrNilPointer
+	}
+	e.CurrencySettings = nil
+	return nil
 }
 
 // ExecuteOrder assesses the portfolio manager's order event and if it passes validation
 // will send an order to the exchange/fake order manager to be stored and raise a fill event
-func (e *Exchange) ExecuteOrder(o order.Event, data data.Handler, bot *engine.Engine) (*fill.Fill, error) {
+func (e *Exchange) ExecuteOrder(o order.Event, dh data.Handler, om *engine.OrderManager, funds funding.IFundReleaser) (fill.Event, error) {
 	f := &fill.Fill{
-		Base: event.Base{
-			Offset:       o.GetOffset(),
-			Exchange:     o.GetExchange(),
-			Time:         o.GetTime(),
-			CurrencyPair: o.Pair(),
-			AssetType:    o.GetAssetType(),
-			Interval:     o.GetInterval(),
-			Reason:       o.GetReason(),
-		},
-		Direction: o.GetDirection(),
-		Amount:    o.GetAmount(),
-
-		ClosePrice: data.Latest().ClosePrice(),
+		Base:               o.GetBase(),
+		Direction:          o.GetDirection(),
+		Amount:             o.GetAmount(),
+		ClosePrice:         o.GetClosePrice(),
+		FillDependentEvent: o.GetFillDependentEvent(),
+		Liquidated:         o.IsLiquidating(),
+	}
+	if !common.CanTransact(o.GetDirection()) {
+		return f, fmt.Errorf("%w order direction %v", ErrCannotTransact, o.GetDirection())
 	}
 
+	allocatedFunds := o.GetAllocatedFunds()
 	cs, err := e.GetCurrencySettings(o.GetExchange(), o.GetAssetType(), o.Pair())
 	if err != nil {
 		return f, err
 	}
-	f.ExchangeFee = cs.ExchangeFee // defaulting to just using taker fee right now without orderbook
 	f.Direction = o.GetDirection()
-	if o.GetDirection() != gctorder.Buy && o.GetDirection() != gctorder.Sell {
-		return f, nil
-	}
-	highStr := data.StreamHigh()
-	high := highStr[len(highStr)-1]
 
-	lowStr := data.StreamLow()
-	low := lowStr[len(lowStr)-1]
-
-	volStr := data.StreamVol()
-	volume := volStr[len(volStr)-1]
-	var adjustedPrice, amount float64
-
+	var price, adjustedPrice,
+		amount, adjustedAmount,
+		fee decimal.Decimal
+	amount = o.GetAmount()
+	price = o.GetClosePrice()
 	if cs.UseRealOrders {
-		// get current orderbook
-		var ob *orderbook.Base
-		ob, err = orderbook.Get(f.Exchange, f.CurrencyPair, f.AssetType)
-		if err != nil {
-			return f, err
-		}
-		// calculate an estimated slippage rate
-		adjustedPrice, amount = slippage.CalculateSlippageByOrderbook(ob, o.GetDirection(), o.GetFunds(), f.ExchangeFee)
-		f.Slippage = ((adjustedPrice - f.ClosePrice) / f.ClosePrice) * 100
-	} else {
-		adjustedPrice, amount, err = e.sizeOfflineOrder(high, low, volume, &cs, f)
-		if err != nil {
-			switch f.GetDirection() {
-			case gctorder.Buy:
-				f.SetDirection(common.CouldNotBuy)
-			case gctorder.Sell:
-				f.SetDirection(common.CouldNotSell)
-			default:
-				f.SetDirection(common.DoNothing)
+		if o.IsLiquidating() {
+			// Liquidation occurs serverside
+			if o.GetAssetType().IsFutures() {
+				var cr funding.ICollateralReleaser
+				cr, err = funds.CollateralReleaser()
+				if err != nil {
+					return f, err
+				}
+				// update local records
+				cr.Liquidate()
+			} else {
+				var pr funding.IPairReleaser
+				pr, err = funds.PairReleaser()
+				if err != nil {
+					return f, err
+				}
+				// update local records
+				pr.Liquidate()
 			}
-			f.AppendReason(err.Error())
-			return f, err
-		}
-	}
-	reducedAmount := reduceAmountToFitPortfolioLimit(adjustedPrice, amount, o.GetFunds())
-	if reducedAmount != amount {
-		f.AppendReason(fmt.Sprintf("Order size shrunk from %v to %v to remain within portfolio limits", amount, reducedAmount))
-	}
-
-	var limitReducedAmount float64
-	if cs.CanUseExchangeLimits {
-		// Conforms the amount to the exchange order defined step amount
-		// reducing it when needed
-		limitReducedAmount = cs.Limits.ConformToAmount(reducedAmount)
-		if limitReducedAmount != reducedAmount {
-			f.AppendReason(fmt.Sprintf("Order size shrunk from %v to %v to remain within exchange step amount limits",
-				reducedAmount,
-				limitReducedAmount))
+			return f, nil
 		}
 	} else {
-		limitReducedAmount = reducedAmount
-	}
-	// Conforms the amount to fall into the minimum size and maximum size limit after reduced
-	switch f.GetDirection() {
-	case gctorder.Buy:
-		if ((limitReducedAmount < cs.BuySide.MinimumSize && cs.BuySide.MinimumSize > 0) || (limitReducedAmount > cs.BuySide.MaximumSize && cs.BuySide.MaximumSize > 0)) && (cs.BuySide.MaximumSize > 0 || cs.BuySide.MinimumSize > 0) {
-			f.SetDirection(common.CouldNotBuy)
-			e := fmt.Sprintf("Order size  %.8f exceed minimum size %.8f or maximum size %.8f ", limitReducedAmount, cs.BuySide.MinimumSize, cs.BuySide.MaximumSize)
-			f.AppendReason(e)
-			return f, fmt.Errorf(e)
+		slippageRate := slippage.EstimateSlippagePercentage(cs.MinimumSlippageRate, cs.MaximumSlippageRate)
+		if cs.SkipCandleVolumeFitting || o.GetAssetType().IsFutures() || o.GetDirection() == gctorder.ClosePosition {
+			f.VolumeAdjustedPrice = f.ClosePrice
+			amount = f.Amount
+		} else {
+			var latest data.Event
+			latest, err = dh.Latest()
+			if err != nil {
+				return nil, err
+			}
+			adjustedPrice, adjustedAmount = ensureOrderFitsWithinHLV(price, amount, latest.GetHighPrice(), latest.GetLowPrice(), latest.GetVolume())
+			if !amount.Equal(adjustedAmount) {
+				f.AppendReasonf("Order size shrunk from %v to %v to fit candle", amount, adjustedAmount)
+				amount = adjustedAmount
+			}
+			if !adjustedPrice.Equal(price) {
+				f.AppendReasonf("Price adjusted fitting to candle from %v to %v", price, adjustedPrice)
+				price = adjustedPrice
+				f.VolumeAdjustedPrice = price
+			}
 		}
-
-	case gctorder.Sell:
-		if ((limitReducedAmount < cs.SellSide.MinimumSize && cs.SellSide.MinimumSize > 0) || (limitReducedAmount > cs.SellSide.MaximumSize && cs.SellSide.MaximumSize > 0)) && (cs.SellSide.MaximumSize > 0 || cs.SellSide.MinimumSize > 0) {
-			f.SetDirection(common.CouldNotSell)
-			e := fmt.Sprintf("Order size  %.8f exceed minimum size %.8f or maximum size %.8f ", limitReducedAmount, cs.SellSide.MinimumSize, cs.SellSide.MaximumSize)
-			f.AppendReason(e)
-			return f, fmt.Errorf(e)
+		adjustedPrice, err = applySlippageToPrice(f.GetDirection(), price, slippageRate)
+		if err != nil {
+			return f, err
 		}
+		if !adjustedPrice.Equal(price) {
+			f.AppendReasonf("Price has slipped from %v to %v", price, adjustedPrice)
+			price = adjustedPrice
+		}
+		f.Slippage = slippageRate.Mul(decimal.NewFromInt(100)).Sub(decimal.NewFromInt(100))
 	}
 
-	orderID, err := e.placeOrder(adjustedPrice, limitReducedAmount, cs.UseRealOrders, cs.CanUseExchangeLimits, f, bot)
+	adjustedAmount = reduceAmountToFitPortfolioLimit(adjustedPrice, amount, allocatedFunds, f.GetDirection())
+	if !adjustedAmount.Equal(amount) {
+		f.AppendReasonf("Order size shrunk from %v to %v to remain within portfolio limits", amount, adjustedAmount)
+		amount = adjustedAmount
+	}
+
+	if cs.CanUseExchangeLimits || cs.UseRealOrders {
+		adjustedAmount = cs.Limits.FloorAmountToStepIncrementDecimal(amount)
+		if !adjustedAmount.Equal(amount) && !adjustedAmount.IsZero() {
+			f.AppendReasonf("Order size shrunk from %v to %v to remain within exchange step amount limits",
+				amount,
+				adjustedAmount)
+			amount = adjustedAmount
+		}
+	}
+	err = verifyOrderWithinLimits(f, amount, &cs)
 	if err != nil {
-		if f.GetDirection() == gctorder.Buy {
-			f.SetDirection(common.CouldNotBuy)
-		} else if f.GetDirection() == gctorder.Sell {
-			f.SetDirection(common.CouldNotSell)
-		}
 		return f, err
 	}
 
-	ords, _ := bot.OrderManager.GetOrdersSnapshot("")
+	fee = calculateExchangeFee(price, amount, cs.TakerFee)
+
+	orderID, err := e.placeOrder(context.TODO(), price, amount, fee, cs.UseRealOrders, cs.CanUseExchangeLimits, f, om)
+	if err != nil {
+		f.AppendReasonf("could not place order: %v", err)
+		setCannotPurchaseDirection(f)
+		return f, err
+	}
+	ords := om.GetOrdersSnapshot(gctorder.UnknownStatus)
 	for i := range ords {
-		if ords[i].ID != orderID {
+		if ords[i].OrderID != orderID {
 			continue
 		}
 		ords[i].Date = o.GetTime()
 		ords[i].LastUpdated = o.GetTime()
 		ords[i].CloseTime = o.GetTime()
 		f.Order = &ords[i]
-		f.PurchasePrice = ords[i].Price
-		f.Total = (f.PurchasePrice * limitReducedAmount) + f.ExchangeFee
+		f.PurchasePrice = decimal.MustFromFloat(ords[i].Price)
+		f.Amount = decimal.MustFromFloat(ords[i].Amount)
+		if ords[i].Fee > 0 {
+			f.ExchangeFee = decimal.MustFromFloat(ords[i].Fee)
+		}
+		f.Total = f.PurchasePrice.Mul(f.Amount).Add(f.ExchangeFee)
 	}
-
+	if !o.IsLiquidating() {
+		err = allocateFundsPostOrder(f, funds, err, o.GetAmount(), allocatedFunds, amount, price, fee)
+		if err != nil {
+			return f, err
+		}
+	}
 	if f.Order == nil {
 		return nil, fmt.Errorf("placed order %v not found in order manager", orderID)
 	}
-
+	f.AppendReason(summarisePosition(f.GetDirection(), f.Amount, f.Amount.Mul(f.PurchasePrice), f.ExchangeFee, f.Order.Pair, f.UnderlyingPair))
 	return f, nil
 }
 
-func reduceAmountToFitPortfolioLimit(adjustedPrice, amount, sizedPortfolioTotal float64) float64 {
-	if adjustedPrice*amount > sizedPortfolioTotal {
-		// adjusted amounts exceeds portfolio manager's allowed funds
-		// the amount has to be reduced to equal the sizedPortfolioTotal
-		amount = sizedPortfolioTotal / adjustedPrice
+func allocateFundsPostOrder(f *fill.Fill, funds funding.IFundReleaser, orderError error, orderAmount, allocatedFunds, limitReducedAmount, adjustedPrice, fee decimal.Decimal) error {
+	if f == nil {
+		return fmt.Errorf("%w: fill event", common.ErrNilEvent)
+	}
+	if funds == nil {
+		return fmt.Errorf("%w: funding", gctcommon.ErrNilPointer)
+	}
+
+	switch f.AssetType {
+	case asset.Spot:
+		pr, err := funds.PairReleaser()
+		if err != nil {
+			return err
+		}
+		if orderError != nil {
+			err = pr.Release(allocatedFunds, allocatedFunds, f.GetDirection())
+			if err != nil {
+				f.AppendReason(err.Error())
+			}
+			switch f.GetDirection() {
+			case gctorder.Buy, gctorder.Bid:
+				f.SetDirection(gctorder.CouldNotBuy)
+			case gctorder.Sell, gctorder.Ask, gctorder.ClosePosition:
+				f.SetDirection(gctorder.CouldNotSell)
+			}
+			return orderError
+		}
+
+		switch f.GetDirection() {
+		case gctorder.Buy, gctorder.Bid:
+			err = pr.Release(allocatedFunds, allocatedFunds.Sub(limitReducedAmount.Mul(adjustedPrice).Add(fee)), f.GetDirection())
+			if err != nil {
+				return err
+			}
+			err = pr.IncreaseAvailable(limitReducedAmount, f.GetDirection())
+			if err != nil {
+				return err
+			}
+		case gctorder.Sell, gctorder.Ask:
+			err = pr.Release(allocatedFunds, allocatedFunds.Sub(limitReducedAmount), f.GetDirection())
+			if err != nil {
+				return err
+			}
+			err = pr.IncreaseAvailable(limitReducedAmount.Mul(adjustedPrice).Sub(fee), f.GetDirection())
+			if err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%w asset type %v", common.ErrInvalidDataType, f.GetDirection())
+		}
+	case asset.Futures:
+		cr, err := funds.CollateralReleaser()
+		if err != nil {
+			return err
+		}
+		if orderError != nil {
+			err = cr.ReleaseContracts(orderAmount)
+			if err != nil {
+				return err
+			}
+			setCannotPurchaseDirection(f)
+			return orderError
+		}
+	default:
+		return fmt.Errorf("%w asset type %v", common.ErrInvalidDataType, f.AssetType)
+	}
+	return nil
+}
+
+func summarisePosition(direction gctorder.Side, orderAmount, orderTotal, orderFee decimal.Decimal, pair, underlying currency.Pair) string {
+	baseCurr := pair.Base.String()
+	quoteCurr := pair.Quote
+	if !underlying.IsEmpty() {
+		baseCurr = pair.String()
+		quoteCurr = underlying.Quote
+	}
+	return fmt.Sprintf("Placed %s order of %v %v for %v %v, with %v %v in fees, totalling %v %v",
+		direction,
+		orderAmount.Round(8),
+		baseCurr,
+		orderTotal.Round(8),
+		quoteCurr,
+		orderFee.Round(8),
+		quoteCurr,
+		orderTotal.Add(orderFee).Round(8),
+		quoteCurr,
+	)
+}
+
+func setCannotPurchaseDirection(f fill.Event) {
+	switch f.GetDirection() {
+	case gctorder.Buy, gctorder.Bid:
+		f.SetDirection(gctorder.CouldNotBuy)
+	case gctorder.Sell, gctorder.Ask:
+		f.SetDirection(gctorder.CouldNotSell)
+	case gctorder.Long:
+		f.SetDirection(gctorder.CouldNotLong)
+	case gctorder.Short:
+		f.SetDirection(gctorder.CouldNotShort)
+	}
+}
+
+// verifyOrderWithinLimits conforms the amount to fall into the minimum size and maximum size limit after reduced
+func verifyOrderWithinLimits(f fill.Event, amount decimal.Decimal, cs *Settings) error {
+	if f == nil {
+		return common.ErrNilEvent
+	}
+	if cs == nil {
+		return errNilCurrencySettings
+	}
+	isBeyondLimit := false
+	var minMax MinMax
+	var direction gctorder.Side
+	switch f.GetDirection() {
+	case gctorder.Buy, gctorder.Bid, gctorder.Long:
+		minMax = cs.BuySide
+		direction = gctorder.CouldNotBuy
+	case gctorder.Sell, gctorder.Ask, gctorder.Short:
+		direction = gctorder.CouldNotSell
+		minMax = cs.SellSide
+	case gctorder.ClosePosition:
+		return nil
+	default:
+		direction = f.GetDirection()
+		f.SetDirection(gctorder.DoNothing)
+		return fmt.Errorf("%w: %v", errInvalidDirection, direction)
+	}
+	var minOrMax, belowExceed string
+	var size decimal.Decimal
+	if amount.LessThan(minMax.MinimumSize) && minMax.MinimumSize.GreaterThan(decimal.Zero) {
+		isBeyondLimit = true
+		belowExceed = "below"
+		minOrMax = "minimum"
+		size = minMax.MinimumSize
+	}
+	if amount.GreaterThan(minMax.MaximumSize) && minMax.MaximumSize.GreaterThan(decimal.Zero) {
+		isBeyondLimit = true
+		belowExceed = "exceeded"
+		minOrMax = "maximum"
+		size = minMax.MaximumSize
+	}
+	if isBeyondLimit {
+		f.SetDirection(direction)
+		e := fmt.Sprintf("Order size %v %s %s size %v", amount, belowExceed, minOrMax, size)
+		f.AppendReason(e)
+		return errExceededPortfolioLimit
+	}
+	return nil
+}
+
+func reduceAmountToFitPortfolioLimit(adjustedPrice, amount, sizedPortfolioTotal decimal.Decimal, side gctorder.Side) decimal.Decimal {
+	switch side {
+	case gctorder.Buy, gctorder.Bid:
+		if adjustedPrice.Mul(amount).GreaterThan(sizedPortfolioTotal) {
+			// adjusted amounts exceeds portfolio manager's allowed funds
+			// the amount has to be reduced to equal the sizedPortfolioTotal
+			amount = sizedPortfolioTotal.Div(adjustedPrice)
+		}
+	case gctorder.Sell, gctorder.Ask:
+		if amount.GreaterThan(sizedPortfolioTotal) {
+			amount = sizedPortfolioTotal
+		}
 	}
 	return amount
 }
 
-func (e *Exchange) placeOrder(price, amount float64, useRealOrders, useExchangeLimits bool, f *fill.Fill, bot *engine.Engine) (string, error) {
+func (e *Exchange) placeOrder(ctx context.Context, price, amount, fee decimal.Decimal, useRealOrders, useExchangeLimits bool, f fill.Event, orderManager *engine.OrderManager) (string, error) {
 	if f == nil {
 		return "", common.ErrNilEvent
 	}
-	u, err := uuid.NewV4()
-	if err != nil {
-		return "", err
-	}
-	var orderID string
-	o := &gctorder.Submit{
-		Price:       price,
-		Amount:      amount,
-		Fee:         f.ExchangeFee,
-		Exchange:    f.Exchange,
-		ID:          u.String(),
-		Side:        f.Direction,
-		AssetType:   f.AssetType,
-		Date:        f.GetTime(),
-		LastUpdated: f.GetTime(),
-		Pair:        f.Pair(),
-		Type:        gctorder.Market,
+	orderID := uuid.NewV4()
+
+	submit := &gctorder.Submit{
+		Price:            price.InexactFloat64(),
+		Amount:           amount.InexactFloat64(),
+		Exchange:         f.GetExchange(),
+		Side:             f.GetDirection(),
+		AssetType:        f.GetAssetType(),
+		Pair:             f.Pair(),
+		Type:             gctorder.Market,
+		RetrieveFees:     true,
+		RetrieveFeeDelay: time.Millisecond * 500,
 	}
 
+	var (
+		resp *engine.OrderSubmitResponse
+		err  error
+	)
 	if useRealOrders {
-		resp, err := bot.OrderManager.Submit(o)
-		if resp != nil {
-			orderID = resp.OrderID
-		}
-		if err != nil {
-			return orderID, err
-		}
+		resp, err = orderManager.Submit(ctx, submit)
 	} else {
-		submitResponse := gctorder.SubmitResponse{
-			IsOrderPlaced: true,
-			OrderID:       u.String(),
-			Rate:          f.Amount,
-			Fee:           f.ExchangeFee,
-			Cost:          price,
-			FullyMatched:  true,
-		}
-		resp, err := bot.OrderManager.SubmitFakeOrder(o, submitResponse, useExchangeLimits)
-		if resp != nil {
-			orderID = resp.OrderID
-		}
+		var submitResponse *gctorder.SubmitResponse
+		submitResponse, err = submit.DeriveSubmitResponse(orderID.String())
 		if err != nil {
-			return orderID, err
+			return orderID.String(), err
 		}
+		submitResponse.Status = gctorder.Filled
+		submitResponse.OrderID = orderID.String()
+		submitResponse.Fee = fee.InexactFloat64()
+		submitResponse.Cost = submit.Price
+		submitResponse.LastUpdated = f.GetTime()
+		submitResponse.Date = f.GetTime()
+		resp, err = orderManager.SubmitFakeOrder(submit, submitResponse, useExchangeLimits)
 	}
-	return orderID, nil
+	if err != nil {
+		return orderID.String(), err
+	}
+	return resp.OrderID, nil
 }
 
-func (e *Exchange) sizeOfflineOrder(high, low, volume float64, cs *Settings, f *fill.Fill) (adjustedPrice, adjustedAmount float64, err error) {
-	if cs == nil || f == nil {
-		return 0, 0, common.ErrNilArguments
+func applySlippageToPrice(direction gctorder.Side, price, slippageRate decimal.Decimal) (decimal.Decimal, error) {
+	var adjustedPrice decimal.Decimal
+	switch direction {
+	case gctorder.Buy, gctorder.Bid, gctorder.Long:
+		adjustedPrice = price.Add(price.Mul(decimal.NewFromInt(1).Sub(slippageRate)))
+	case gctorder.Sell, gctorder.Ask, gctorder.Short:
+		adjustedPrice = price.Mul(slippageRate)
+	default:
+		return decimal.Zero, fmt.Errorf("%v %w", direction, gctorder.ErrSideIsInvalid)
 	}
-	// provide history and estimate volatility
-	slippageRate := slippage.EstimateSlippagePercentage(cs.MinimumSlippageRate, cs.MaximumSlippageRate)
-	f.VolumeAdjustedPrice, adjustedAmount = ensureOrderFitsWithinHLV(f.ClosePrice, f.Amount, high, low, volume)
-	if adjustedAmount != f.Amount {
-		f.AppendReason(fmt.Sprintf("Order size shrunk from %v to %v to fit candle", f.Amount, adjustedAmount))
+	if adjustedPrice.IsZero() {
+		adjustedPrice = price
 	}
 
-	if adjustedAmount <= 0 && f.Amount > 0 {
-		return 0, 0, fmt.Errorf("amount set to 0, %w", errDataMayBeIncorrect)
-	}
-	adjustedPrice = applySlippageToPrice(f.GetDirection(), f.GetVolumeAdjustedPrice(), slippageRate)
-
-	f.Slippage = (slippageRate * 100) - 100
-	f.ExchangeFee = calculateExchangeFee(adjustedPrice, adjustedAmount, cs.ExchangeFee)
-	return adjustedPrice, adjustedAmount, nil
-}
-
-func applySlippageToPrice(direction gctorder.Side, price, slippageRate float64) float64 {
-	adjustedPrice := price
-	if direction == gctorder.Buy {
-		adjustedPrice = price + (price * (1 - slippageRate))
-	} else if direction == gctorder.Sell {
-		adjustedPrice = price * slippageRate
-	}
-	return adjustedPrice
+	return adjustedPrice, nil
 }
 
 // SetExchangeAssetCurrencySettings sets the settings for an exchange, asset, currency
-func (e *Exchange) SetExchangeAssetCurrencySettings(exch string, a asset.Item, cp currency.Pair, c *Settings) {
-	if c.ExchangeName == "" ||
-		c.AssetType == "" ||
-		c.CurrencyPair.IsEmpty() {
+func (e *Exchange) SetExchangeAssetCurrencySettings(a asset.Item, cp currency.Pair, c *Settings) {
+	if c.Exchange == nil ||
+		c.Asset == asset.Empty ||
+		c.Pair.IsEmpty() {
 		return
 	}
 
 	for i := range e.CurrencySettings {
-		if e.CurrencySettings[i].CurrencyPair == cp &&
-			e.CurrencySettings[i].AssetType == a &&
-			exch == e.CurrencySettings[i].ExchangeName {
+		if e.CurrencySettings[i].Pair.Equal(cp) &&
+			e.CurrencySettings[i].Asset == a &&
+			strings.EqualFold(c.Exchange.GetName(), e.CurrencySettings[i].Exchange.GetName()) {
 			e.CurrencySettings[i] = *c
 			return
 		}
@@ -265,42 +418,38 @@ func (e *Exchange) SetExchangeAssetCurrencySettings(exch string, a asset.Item, c
 // GetCurrencySettings returns the settings for an exchange, asset currency
 func (e *Exchange) GetCurrencySettings(exch string, a asset.Item, cp currency.Pair) (Settings, error) {
 	for i := range e.CurrencySettings {
-		if e.CurrencySettings[i].CurrencyPair == cp {
-			if e.CurrencySettings[i].AssetType == a {
-				if exch == e.CurrencySettings[i].ExchangeName {
+		if e.CurrencySettings[i].Pair.Equal(cp) {
+			if e.CurrencySettings[i].Asset == a {
+				if strings.EqualFold(exch, e.CurrencySettings[i].Exchange.GetName()) {
 					return e.CurrencySettings[i], nil
 				}
 			}
 		}
 	}
-	return Settings{}, fmt.Errorf("no currency settings found for %v %v %v", exch, a, cp)
+	return Settings{}, fmt.Errorf("%w for %v %v %v", errNoCurrencySettingsFound, exch, a, cp)
 }
 
-func ensureOrderFitsWithinHLV(slippagePrice, amount, high, low, volume float64) (adjustedPrice, adjustedAmount float64) {
-	adjustedPrice = slippagePrice
-	if adjustedPrice < low {
+func ensureOrderFitsWithinHLV(price, amount, high, low, volume decimal.Decimal) (adjustedPrice, adjustedAmount decimal.Decimal) {
+	adjustedPrice = price
+	if adjustedPrice.LessThan(low) {
 		adjustedPrice = low
 	}
-	if adjustedPrice > high {
+	if adjustedPrice.GreaterThan(high) {
 		adjustedPrice = high
 	}
-	if volume <= 0 {
-		return adjustedPrice, adjustedAmount
+	if volume.LessThanOrEqual(decimal.Zero) || amount.LessThanOrEqual(volume) {
+		return adjustedPrice, amount
 	}
-	currentVolume := amount * adjustedPrice
-	if currentVolume > volume {
+	if amount.GreaterThan(volume) {
 		// reduce the volume to not exceed the total volume of the candle
 		// it is slightly less than the total to still allow for the illusion
 		// that open high low close values are valid with the remaining volume
 		// this is very opinionated
-		currentVolume = volume * 0.99999999
+		adjustedAmount = volume.Mul(decimal.MustFromFloat(0.99999999))
 	}
-	// extract the amount from the adjusted volume
-	adjustedAmount = currentVolume / adjustedPrice
-
 	return adjustedPrice, adjustedAmount
 }
 
-func calculateExchangeFee(price, amount, fee float64) float64 {
-	return fee * price * amount
+func calculateExchangeFee(price, amount, fee decimal.Decimal) decimal.Decimal {
+	return fee.Mul(price).Mul(amount)
 }

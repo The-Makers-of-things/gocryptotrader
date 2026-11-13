@@ -1,18 +1,14 @@
 package slack
 
 import (
-	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/communications/base"
 	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 )
-
-const (
-	verificationToken = ""
-)
-
-var s Slack
 
 type group struct {
 	ID      string   `json:"id"`
@@ -21,26 +17,24 @@ type group struct {
 }
 
 func TestSetup(t *testing.T) {
-	cfg := config.GetConfig()
-	err := cfg.LoadConfig("../../testdata/configtest.json", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	t.Parallel()
+	var s Slack
+	cfg := &config.Config{Communications: base.CommunicationsConfig{}}
 	commsCfg := cfg.GetCommunicationsConfig()
 	s.Setup(&commsCfg)
-	s.Verbose = true
 }
 
 func TestConnect(t *testing.T) {
-	err := s.Connect()
-	if err == nil {
+	t.Parallel()
+	var s Slack
+	if err := s.Connect(); err == nil {
 		t.Error("slack Connect() error cannot be nil")
 	}
 }
 
 func TestPushEvent(t *testing.T) {
 	t.Parallel()
+	var s Slack
 	err := s.PushEvent(base.Event{})
 	if err == nil {
 		t.Error("slack PushEvent() error cannot be nil")
@@ -49,13 +43,15 @@ func TestPushEvent(t *testing.T) {
 
 func TestBuildURL(t *testing.T) {
 	t.Parallel()
-	v := s.BuildURL("lol123")
-	if v != "https://slack.com/api/rtm.start?token=lol123" {
+	var s Slack
+	if v := s.BuildURL("lol123"); v != "https://slack.com/api/rtm.start?token=lol123" {
 		t.Error("slack BuildURL() error")
 	}
 }
 
 func TestGetChannelsString(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	s.Details.Channels = append(s.Details.Channels, struct {
 		ID             string   `json:"id"`
 		Name           string   `json:"name"`
@@ -78,6 +74,8 @@ func TestGetChannelsString(t *testing.T) {
 }
 
 func TestGetUsernameByID(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	username := s.GetUsernameByID("1337")
 	if username != "" {
 		t.Error("slack GetUsernameByID() error")
@@ -99,44 +97,43 @@ func TestGetUsernameByID(t *testing.T) {
 }
 
 func TestGetIDByName(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	id, err := s.GetIDByName("batman")
-	if err == nil || id != "" {
-		t.Error("slack GetIDByName() error")
-	}
-
+	require.Error(t, err, "GetIDByName must return an error for non-existent name")
+	assert.Empty(t, id, "GetIDByName should return an empty string for non-existent name")
 	s.Details.Groups = append(s.Details.Groups, group{
 		Name: "this is a group",
 		ID:   "210314",
 	})
 	id, err = s.GetIDByName("this is a group")
-	if err != nil || id != "210314" {
-		t.Errorf("slack GetIDByName() Expected '210314' Actual '%s' Error: %s",
-			id, err)
-	}
+
+	require.NoError(t, err, "GetIDByName must not return an error for existing name")
+	assert.Equal(t, "210314", id, "GetIDByName should return the correct ID for existing name")
 }
 
 func TestGetGroupIDByName(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	id, err := s.GetGroupIDByName("batman")
-	if err == nil || id != "" {
-		t.Error("slack GetGroupIDByName() error")
-	}
+	require.Error(t, err, "GetGroupIDByName must return an error for non-existent group name")
+	assert.Empty(t, id, "GetGroupIDByName should return an empty string for non-existent group name")
 
 	s.Details.Groups = append(s.Details.Groups, group{
 		Name: "another group",
 		ID:   "11223344",
 	})
 	id, err = s.GetGroupIDByName("another group")
-	if err != nil || id != "11223344" {
-		t.Errorf("slack GetGroupIDByName() Expected '11223344' Actual '%s' Error: %s",
-			id, err)
-	}
+	require.NoError(t, err, "GetGroupIDByName must not return an error for existing group name")
+	assert.Equal(t, "11223344", id, "GetGroupIDByName should return the correct ID for existing group name")
 }
 
 func TestGetChannelIDByName(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	id, err := s.GetChannelIDByName("1337")
-	if err == nil || id != "" {
-		t.Error("slack GetChannelIDByName() error")
-	}
+	require.Error(t, err, "GetChannelIDByName must return an error for non-existent channel name")
+	assert.Empty(t, id, "GetChannelIDByName should return an empty string for non-existent channel name")
 
 	s.Details.Channels = append(s.Details.Channels, struct {
 		ID             string   `json:"id"`
@@ -149,17 +146,14 @@ func TestGetChannelIDByName(t *testing.T) {
 	})
 
 	id, err = s.GetChannelIDByName("Slack Test")
-	if err != nil || id != "2048" {
-		t.Errorf("slack GetChannelIDByName() Expected '2048' Actual '%s' Error: %s",
-			id, err)
-	}
+	require.NoError(t, err, "GetChannelIDByName must not return an error for existing channel name")
+	assert.Equal(t, "2048", id, "GetChannelIDByName should return the correct ID for existing channel name")
 }
 
 func TestGetUsersInGroup(t *testing.T) {
-	username := s.GetUsersInGroup("supergroup")
-	if len(username) != 0 {
-		t.Error("slack GetUsersInGroup() error")
-	}
+	t.Parallel()
+	var s Slack
+	assert.Empty(t, s.GetUsersInGroup("supergroup"), "GetUsersInGroup should return an empty slice")
 
 	s.Details.Groups = append(s.Details.Groups, group{
 		Name:    "three guys",
@@ -167,38 +161,41 @@ func TestGetUsersInGroup(t *testing.T) {
 		Members: []string{"Guy one", "Guy two", "Guy three"},
 	})
 
-	username = s.GetUsersInGroup("three guys")
-	if len(username) != 3 {
-		t.Errorf("slack GetUsersInGroup() Expected '3' Actual '%s'",
-			username)
-	}
+	assert.Len(t, s.GetUsersInGroup("three guys"), 3)
 }
 
 func TestNewConnection(t *testing.T) {
-	err := s.NewConnection()
-	if err == nil {
+	t.Parallel()
+	var s Slack
+	if err := s.NewConnection(); err == nil {
 		t.Error("slack NewConnection() error")
 	}
 }
 
 func TestWebsocketConnect(t *testing.T) {
-	err := s.WebsocketConnect()
-	if err == nil {
+	t.Parallel()
+	var s Slack
+	if err := s.WebsocketConnect(); err == nil {
 		t.Error("slack WebsocketConnect() error")
 	}
 }
 
 func TestHandlePresenceChange(t *testing.T) {
-	var pres PresenceChange
-	pres.User = "1337"
-	pres.Presence = "Present"
+	t.Parallel()
+	var s Slack
+	var presChange PresenceChange
+	presChange.User = "1337"
+	presChange.Presence = "Present"
 
 	err := s.handlePresenceChange([]byte(`{"malformedjson}`))
 	if err == nil {
 		t.Error("slack handlePresenceChange(), unmarshalled malformed json")
 	}
 
-	data, _ := json.Marshal(pres)
+	data, err := json.Marshal(presChange)
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = s.handlePresenceChange(data)
 	if err != nil {
 		t.Errorf("slack handlePresenceChange() Error: %s", err)
@@ -206,6 +203,8 @@ func TestHandlePresenceChange(t *testing.T) {
 }
 
 func TestHandleMessageResponse(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	var data WebsocketResponse
 	data.ReplyTo = 1
 
@@ -225,7 +224,10 @@ func TestHandleMessageResponse(t *testing.T) {
 	var msg Message
 	msg.User = "1337"
 	msg.Text = "Hello World!"
-	resp, _ := json.Marshal(msg)
+	resp, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	err = s.handleMessageResponse(resp, data)
 	if err != nil {
@@ -233,7 +235,10 @@ func TestHandleMessageResponse(t *testing.T) {
 	}
 
 	msg.Text = "!notacommand"
-	resp, _ = json.Marshal(msg)
+	resp, err = json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	err = s.handleMessageResponse(resp, data)
 	if err == nil {
@@ -242,6 +247,8 @@ func TestHandleMessageResponse(t *testing.T) {
 }
 
 func TestHandleErrorResponse(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	var data WebsocketResponse
 	err := s.handleErrorResponse(data)
 	if err == nil {
@@ -256,30 +263,34 @@ func TestHandleErrorResponse(t *testing.T) {
 }
 
 func TestHandleHelloResponse(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	s.handleHelloResponse()
 }
 
 func TestHandleReconnectResponse(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	err := s.handleReconnectResponse([]byte(`{"malformedjson}`))
-	if err == nil {
-		t.Error("slack handleReconnectResponse(), unmarshalled malformed json")
-	}
+	assert.Error(t, err, "handleReconnectResponse should error on malformed JSON")
 
-	var testURL struct {
+	testURL := struct {
 		URL string `json:"url"`
+	}{
+		URL: "https://www.thrasher.io",
 	}
-	testURL.URL = "https://www.thrasher.io"
 
-	data, _ := json.Marshal(testURL)
+	data, err := json.Marshal(testURL)
+	require.NoError(t, err, "Marshal must not error")
 
 	err = s.handleReconnectResponse(data)
-	if err != nil || s.ReconnectURL != "https://www.thrasher.io" {
-		t.Errorf("slack handleReconnectResponse() Expected 'https://www.thrasher.io' Actual '%s' Error: %s",
-			s.ReconnectURL, err)
-	}
+	require.NoError(t, err, "handleReconnectResponse must not error")
+	assert.Equal(t, "https://www.thrasher.io", s.ReconnectURL)
 }
 
 func TestWebsocketSend(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	err := s.WebsocketSend("test", "Hello World!")
 	if err == nil {
 		t.Error("slack WebsocketSend(), Sent message through nil websocket")
@@ -287,6 +298,8 @@ func TestWebsocketSend(t *testing.T) {
 }
 
 func TestHandleMessage(t *testing.T) {
+	t.Parallel()
+	var s Slack
 	msg := &Message{}
 	err := s.HandleMessage(msg)
 	if err == nil {

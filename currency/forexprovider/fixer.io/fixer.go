@@ -11,8 +11,10 @@ package fixer
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -34,12 +36,12 @@ func (f *Fixer) Setup(config base.Settings) error {
 	f.APIKeyLvl = config.APIKeyLvl
 	f.Enabled = config.Enabled
 	f.Name = config.Name
-	f.RESTPollingDelay = config.RESTPollingDelay
 	f.Verbose = config.Verbose
 	f.PrimaryProvider = config.PrimaryProvider
-	f.Requester = request.New(f.Name,
+	var err error
+	f.Requester, err = request.New(f.Name,
 		common.NewHTTPClientWithTimeout(base.DefaultTimeOut))
-	return nil
+	return err
 }
 
 // GetSupportedCurrencies returns supported currencies
@@ -55,12 +57,7 @@ func (f *Fixer) GetSupportedCurrencies() ([]string, error) {
 		return nil, errors.New(resp.Error.Type + resp.Error.Info)
 	}
 
-	var currencies []string
-	for key := range resp.Map {
-		currencies = append(currencies, key)
-	}
-
-	return currencies, nil
+	return slices.AppendSeq(make([]string, 0, len(resp.Map)), maps.Keys(resp.Map)), nil
 }
 
 // GetRates is a wrapper function to return rates
@@ -168,7 +165,7 @@ func (f *Fixer) ConvertCurrency(from, to, date string, amount float64) (float64,
 
 // GetTimeSeriesData returns daily historical exchange rate data between two
 // specified dates for all available or a specific set of currencies.
-func (f *Fixer) GetTimeSeriesData(startDate, endDate, baseCurrency string, symbols []string) (map[string]interface{}, error) {
+func (f *Fixer) GetTimeSeriesData(startDate, endDate, baseCurrency string, symbols []string) (map[string]any, error) {
 	if f.APIKeyLvl < fixerAPIProfessional {
 		return nil, errors.New("insufficient API privileges, upgrade to professional to use this function")
 	}
@@ -219,22 +216,28 @@ func (f *Fixer) GetFluctuationData(startDate, endDate, baseCurrency string, symb
 }
 
 // SendOpenHTTPRequest sends a typical get request
-func (f *Fixer) SendOpenHTTPRequest(endpoint string, v url.Values, result interface{}) error {
-	var path string
+func (f *Fixer) SendOpenHTTPRequest(endpoint string, v url.Values, result any) error {
+	if v == nil {
+		v = url.Values{}
+	}
 	v.Set("access_key", f.APIKey)
 
-	var auth bool
+	var auth request.AuthType
+	var path string
 	if f.APIKeyLvl == fixerAPIFree {
 		path = fixerAPI + endpoint + "?" + v.Encode()
+		auth = request.UnauthenticatedRequest
 	} else {
 		path = fixerAPISSL + endpoint + "?" + v.Encode()
-		auth = true
+		auth = request.AuthenticatedRequest
 	}
-
-	return f.Requester.SendPayload(context.Background(), &request.Item{
-		Method:      http.MethodGet,
-		Path:        path,
-		Result:      &result,
-		AuthRequest: auth,
-		Verbose:     f.Verbose})
+	item := &request.Item{
+		Method:  http.MethodGet,
+		Path:    path,
+		Result:  &result,
+		Verbose: f.Verbose,
+	}
+	return f.Requester.SendPayload(context.Background(), request.Unset, func() (*request.Item, error) {
+		return item, nil
+	}, auth)
 }

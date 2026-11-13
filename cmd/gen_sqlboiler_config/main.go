@@ -1,17 +1,17 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
+	"github.com/thrasher-corp/gocryptotrader/common/file"
 	"github.com/thrasher-corp/gocryptotrader/config"
 	"github.com/thrasher-corp/gocryptotrader/core"
 	"github.com/thrasher-corp/gocryptotrader/database"
 	"github.com/thrasher-corp/gocryptotrader/database/repository"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 )
 
 var (
@@ -24,7 +24,7 @@ var sqlboilerConfig map[string]driverConfig
 type driverConfig struct {
 	DBName    string   `json:"dbname,omitempty"`
 	Host      string   `json:"host,omitempty"`
-	Port      uint16   `json:"port,omitempty"`
+	Port      uint32   `json:"port,omitempty"`
 	User      string   `json:"user,omitempty"`
 	Pass      string   `json:"pass,omitempty"`
 	Schema    string   `json:"schema,omitempty"`
@@ -57,7 +57,7 @@ func main() {
 	}
 
 	path := filepath.Join(outputFolder, "sqlboiler.json")
-	err = ioutil.WriteFile(path, jsonOutput, 0770)
+	err = os.WriteFile(path, jsonOutput, file.DefaultPermissionOctal)
 	if err != nil {
 		fmt.Printf("Write failed: %v", err)
 		os.Exit(1)
@@ -93,5 +93,6 @@ func convertGCTtoSQLBoilerConfig(c *database.Config) {
 
 // getLoadedDBPath gets the path loaded by 'database/drivers/sqlite3'
 func getLoadedDBPath() string {
-	return filepath.Join(database.DB.DataPath, database.DB.Config.Database)
+	cfg := database.DB.GetConfig()
+	return filepath.Join(database.DB.DataPath, cfg.Database)
 }

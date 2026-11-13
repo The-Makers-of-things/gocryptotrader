@@ -16,8 +16,10 @@ package currencylayer
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -40,14 +42,13 @@ func (c *CurrencyLayer) Setup(config base.Settings) error {
 	c.APIKey = config.APIKey
 	c.APIKeyLvl = config.APIKeyLvl
 	c.Enabled = config.Enabled
-	c.RESTPollingDelay = config.RESTPollingDelay
 	c.Verbose = config.Verbose
 	c.PrimaryProvider = config.PrimaryProvider
 	// Rate limit is based off a monthly counter - Open limit used.
-	c.Requester = request.New(c.Name,
+	var err error
+	c.Requester, err = request.New(c.Name,
 		common.NewHTTPClientWithTimeout(base.DefaultTimeOut))
-
-	return nil
+	return err
 }
 
 // GetRates is a wrapper function to return rates for GoCryptoTrader
@@ -67,12 +68,7 @@ func (c *CurrencyLayer) GetSupportedCurrencies() ([]string, error) {
 		return nil, errors.New(resp.Error.Info)
 	}
 
-	var currencies []string
-	for key := range resp.Currencies {
-		currencies = append(currencies, key)
-	}
-
-	return currencies, nil
+	return slices.AppendSeq(make([]string, 0, len(resp.Currencies)), maps.Keys(resp.Currencies)), nil
 }
 
 // GetliveData returns live quotes for foreign exchange currencies
@@ -142,7 +138,7 @@ func (c *CurrencyLayer) Convert(from, to, date string, amount float64) (float64,
 
 // QueryTimeFrame returns historical exchange rates for a time-period.
 // (maximum range: 365 days)
-func (c *CurrencyLayer) QueryTimeFrame(startDate, endDate, baseCurrency string, currencies []string) (map[string]interface{}, error) {
+func (c *CurrencyLayer) QueryTimeFrame(startDate, endDate, baseCurrency string, currencies []string) (map[string]any, error) {
 	if c.APIKeyLvl >= AccountPro {
 		return nil, errors.New("insufficient API privileges, upgrade to basic to use this function")
 	}
@@ -194,23 +190,26 @@ func (c *CurrencyLayer) QueryCurrencyChange(startDate, endDate, baseCurrency str
 
 // SendHTTPRequest sends a HTTP request, if account is not free it automatically
 // upgrades request to SSL.
-func (c *CurrencyLayer) SendHTTPRequest(endPoint string, values url.Values, result interface{}) error {
+func (c *CurrencyLayer) SendHTTPRequest(endPoint string, values url.Values, result any) error {
 	var path string
 	values.Set("access_key", c.APIKey)
 
-	var auth bool
+	var auth request.AuthType
 	if c.APIKeyLvl == AccountFree {
 		path = APIEndpointURL + endPoint + "?"
+		auth = request.UnauthenticatedRequest
 	} else {
-		auth = true
+		auth = request.AuthenticatedRequest
 		path = APIEndpointURLSSL + endPoint + "?"
 	}
 	path += values.Encode()
-
-	return c.Requester.SendPayload(context.Background(), &request.Item{
-		Method:      http.MethodGet,
-		Path:        path,
-		Result:      &result,
-		AuthRequest: auth,
-		Verbose:     c.Verbose})
+	item := &request.Item{
+		Method:  http.MethodGet,
+		Path:    path,
+		Result:  &result,
+		Verbose: c.Verbose,
+	}
+	return c.Requester.SendPayload(context.TODO(), request.Unset, func() (*request.Item, error) {
+		return item, nil
+	}, auth)
 }

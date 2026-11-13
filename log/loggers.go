@@ -5,128 +5,213 @@ import (
 	"log"
 )
 
-// Info takes a pointer subLogger struct and string sends to newLogEvent
-func Info(sl *subLogger, data string) {
-	fields := getFields(sl)
-	if fields == nil {
-		return
+// Infoln is a logging function that takes a sublogger and an arbitrary number
+// of any arguments. This writes to configured io.Writer(s) as an
+// information message using default formats for its operands. A new line is
+// automatically added to the output.
+func Infoln(sl *SubLogger, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.stageln(f.logger.InfoHeader, a...)
 	}
-	if !fields.info {
-		return
-	}
-
-	displayError(fields.logger.newLogEvent(data, fields.logger.InfoHeader, fields.name, fields.output))
 }
 
-// Infoln takes a pointer subLogger struct and interface sends to newLogEvent
-func Infoln(sl *subLogger, v ...interface{}) {
-	fields := getFields(sl)
-	if fields == nil {
-		return
+// InfolnWithFields is a logging function that takes a sublogger, additional
+// structured logging fields and an arbitrary number of any arguments.
+// This writes to configured io.Writer(s) as an information message using
+// default formats for its operands. A new line is automatically added to the
+// output. If structured logging is not enabled, the fields will be ignored.
+func InfolnWithFields(sl *SubLogger, extra ExtraFields, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.structuredFields = extra
+		f.stageln(f.logger.InfoHeader, a...)
 	}
-	if !fields.info {
-		return
-	}
-
-	displayError(fields.logger.newLogEvent(fmt.Sprintln(v...), fields.logger.InfoHeader, fields.name, fields.output))
 }
 
-// Infof takes a pointer subLogger struct, string & interface formats and sends to Info()
-func Infof(sl *subLogger, data string, v ...interface{}) {
-	Info(sl, fmt.Sprintf(data, v...))
+// Infof is a logging function that takes a sublogger, a format string along
+// with optional arguments. This writes to configured io.Writer(s) as an
+// information message which formats according to the format specifier.
+// A new line is automatically added to the output.
+func Infof(sl *SubLogger, format string, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.stagef(f.logger.InfoHeader, format, a...)
+	}
 }
 
-// Debug takes a pointer subLogger struct and string sends to multiwriter
-func Debug(sl *subLogger, data string) {
-	fields := getFields(sl)
-	if fields == nil {
-		return
+// InfoWithFieldsf is a logging function that takes a sublogger, additional
+// structured logging fields, a format string along with optional arguments.
+// This writes to configured io.Writer(s) as an information message which
+// formats according to the format specifier. A new line is automatically added
+// to the output. If structured logging is not enabled, the fields will be
+// ignored.
+func InfoWithFieldsf(sl *SubLogger, extra ExtraFields, format string, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.structuredFields = extra
+		f.stagef(f.logger.InfoHeader, format, a...)
 	}
-	if !fields.debug {
-		return
-	}
-
-	displayError(fields.logger.newLogEvent(data, fields.logger.DebugHeader, fields.name, fields.output))
 }
 
-// Debugln  takes a pointer subLogger struct, string and interface sends to newLogEvent
-func Debugln(sl *subLogger, v ...interface{}) {
-	fields := getFields(sl)
-	if fields == nil {
-		return
+// Debugln is a logging function that takes a sublogger and an arbitrary number
+// of any arguments. This writes to configured io.Writer(s) as an
+// debug message using default formats for its operands. A new line is
+// automatically added to the output.
+func Debugln(sl *SubLogger, v ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.stageln(f.logger.DebugHeader, v...)
 	}
-	if !fields.debug {
-		return
-	}
-
-	displayError(fields.logger.newLogEvent(fmt.Sprintln(v...), fields.logger.DebugHeader, fields.name, fields.output))
 }
 
-// Debugf takes a pointer subLogger struct, string & interface formats and sends to Info()
-func Debugf(sl *subLogger, data string, v ...interface{}) {
-	Debug(sl, fmt.Sprintf(data, v...))
+// DebuglnWithFields is a logging function that takes a sublogger, additional
+// structured logging fields and an arbitrary number of any arguments.
+// This writes to configured io.Writer(s) as an debug message using default
+// formats for its operands. A new line is automatically added to the
+// output. If structured logging is not enabled, the fields will be ignored.
+func DebuglnWithFields(sl *SubLogger, extra ExtraFields, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.structuredFields = extra
+		f.stageln(f.logger.DebugHeader, a...)
+	}
 }
 
-// Warn takes a pointer subLogger struct & string  and sends to newLogEvent()
-func Warn(sl *subLogger, data string) {
-	fields := getFields(sl)
-	if fields == nil {
-		return
+// Debugf is a logging function that takes a sublogger, a format string along
+// with optional arguments. This writes to configured io.Writer(s) as an
+// debug message which formats according to the format specifier. A new line is
+// automatically added to the output.
+func Debugf(sl *SubLogger, data string, v ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.stagef(f.logger.DebugHeader, data, v...)
 	}
-	if !fields.warn {
-		return
-	}
-
-	displayError(fields.logger.newLogEvent(data, fields.logger.WarnHeader, fields.name, fields.output))
 }
 
-// Warnln takes a pointer subLogger struct & interface formats and sends to newLogEvent()
-func Warnln(sl *subLogger, v ...interface{}) {
-	fields := getFields(sl)
-	if fields == nil {
-		return
+// DebugWithFieldsf is a logging function that takes a sublogger, additional
+// structured logging fields, a format string along with optional arguments.
+// This writes to configured io.Writer(s) as an debug message which formats
+// according to the format specifier. A new line is automatically added to the
+// output. If structured logging is not enabled, the fields will be ignored.
+func DebugWithFieldsf(sl *SubLogger, extra ExtraFields, format string, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.structuredFields = extra
+		f.stagef(f.logger.DebugHeader, format, a...)
 	}
-	if !fields.warn {
-		return
-	}
-
-	displayError(fields.logger.newLogEvent(fmt.Sprintln(v...), fields.logger.WarnHeader, fields.name, fields.output))
 }
 
-// Warnf takes a pointer subLogger struct, string & interface formats and sends to Warn()
-func Warnf(sl *subLogger, data string, v ...interface{}) {
-	Warn(sl, fmt.Sprintf(data, v...))
+// Warnln is a logging function that takes a sublogger and an arbitrary number
+// of any arguments. This writes to configured io.Writer(s) as an
+// warning message using default formats for its operands. A new line is
+// automatically added to the output.
+func Warnln(sl *SubLogger, v ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.stageln(f.logger.WarnHeader, v...)
+	}
 }
 
-// Error takes a pointer subLogger struct & interface formats and sends to newLogEvent()
-func Error(sl *subLogger, data ...interface{}) {
-	fields := getFields(sl)
-	if fields == nil {
-		return
+// WarnlnWithFields is a logging function that takes a sublogger, additional
+// structured logging fields and an arbitrary number of any arguments.
+// This writes to configured io.Writer(s) as an warning message using default
+// formats for its operands. A new line is automatically added to the
+// output. If structured logging is not enabled, the fields will be ignored.
+func WarnlnWithFields(sl *SubLogger, extra ExtraFields, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.structuredFields = extra
+		f.stageln(f.logger.WarnHeader, a...)
 	}
-	if !fields.error {
-		return
-	}
-
-	displayError(fields.logger.newLogEvent(fmt.Sprint(data...), fields.logger.ErrorHeader, fields.name, fields.output))
 }
 
-// Errorln takes a pointer subLogger struct, string & interface formats and sends to newLogEvent()
-func Errorln(sl *subLogger, v ...interface{}) {
-	fields := getFields(sl)
-	if fields == nil {
-		return
+// Warnf is a logging function that takes a sublogger, a format string along
+// with optional arguments. This writes to configured io.Writer(s) as an
+// warning message which formats according to the format specifier. A new line
+// is automatically added to the output.
+func Warnf(sl *SubLogger, data string, v ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.stagef(f.logger.WarnHeader, data, v...)
 	}
-	if !fields.error {
-		return
-	}
-
-	displayError(fields.logger.newLogEvent(fmt.Sprintln(v...), fields.logger.ErrorHeader, fields.name, fields.output))
 }
 
-// Errorf takes a pointer subLogger struct, string & interface formats and sends to Debug()
-func Errorf(sl *subLogger, data string, v ...interface{}) {
-	Error(sl, fmt.Sprintf(data, v...))
+// WarnWithFieldsf is a logging function that takes a sublogger, additional
+// structured logging fields, a format string along with optional arguments.
+// This writes to configured io.Writer(s) as an warning message which formats
+// according to the format specifier. A new line is automatically added to the
+// output. If structured logging is not enabled, the fields will be ignored.
+func WarnWithFieldsf(sl *SubLogger, extra ExtraFields, format string, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.structuredFields = extra
+		f.stagef(f.logger.WarnHeader, format, a...)
+	}
+}
+
+// Errorln is a logging function that takes a sublogger and an arbitrary number
+// of any arguments. This writes to configured io.Writer(s) as an
+// error message using default formats for its operands. A new line is
+// automatically added to the output.
+func Errorln(sl *SubLogger, v ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.stageln(f.logger.ErrorHeader, v...)
+	}
+}
+
+// ErrorlnWithFields is a logging function that takes a sublogger, additional
+// structured logging fields and an arbitrary number of any arguments.
+// This writes to configured io.Writer(s) as an error message using default
+// formats for its operands. A new line is automatically added to the
+// output. If structured logging is not enabled, the fields will be ignored.
+func ErrorlnWithFields(sl *SubLogger, extra ExtraFields, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.structuredFields = extra
+		f.stageln(f.logger.ErrorHeader, a...)
+	}
+}
+
+// Errorf is a logging function that takes a sublogger, a format string along
+// with optional arguments. This writes to configured io.Writer(s) as an
+// error message which formats according to the format specifier. A new line
+// is automatically added to the output.
+func Errorf(sl *SubLogger, data string, v ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.stagef(f.logger.ErrorHeader, data, v...)
+	}
+}
+
+// ErrorWithFieldsf is a logging function that takes a sublogger, additional
+// structured logging fields, a format string along with optional arguments.
+// This writes to configured io.Writer(s) as an error message which formats
+// according to the format specifier. A new line is automatically added to the
+// output. If structured logging is not enabled, the fields will be ignored.
+func ErrorWithFieldsf(sl *SubLogger, extra ExtraFields, format string, a ...any) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if f := sl.getFields(); f != nil {
+		f.structuredFields = extra
+		f.stagef(f.logger.ErrorHeader, format, a...)
+	}
 }
 
 func displayError(err error) {
@@ -135,34 +220,73 @@ func displayError(err error) {
 	}
 }
 
-func enabled() bool {
-	RWM.Lock()
-	defer RWM.Unlock()
-	if GlobalLogConfig == nil || GlobalLogConfig.Enabled == nil {
-		return false
+// enabled checks if the log level is enabled
+func (l *fields) enabled(header string) string {
+	switch header {
+	case l.logger.InfoHeader:
+		if l.info {
+			return "info"
+		}
+	case l.logger.WarnHeader:
+		if l.warn {
+			return "warn"
+		}
+	case l.logger.ErrorHeader:
+		if l.error {
+			return "error"
+		}
+	case l.logger.DebugHeader:
+		if l.debug {
+			return "debug"
+		}
 	}
-	if *GlobalLogConfig.Enabled {
-		return true
-	}
-	return false
+	return ""
 }
 
-func getFields(sl *subLogger) *logFields {
-	if !enabled() {
-		return nil
+// stage stages a log event
+func (l *fields) stage(header string, deferFunc deferral) {
+	if l == nil {
+		return
 	}
-	if sl == nil {
-		return nil
+	if level := l.enabled(header); level != "" {
+		l.output.StageLogEvent(deferFunc,
+			header,
+			l.name,
+			l.logger.Spacer,
+			l.logger.TimestampFormat,
+			l.botName,
+			level,
+			l.logger.ShowLogSystemName,
+			l.logger.BypassJobChannelFilledWarning,
+			l.structuredLogging,
+			l.structuredFields)
 	}
-	RWM.RLock()
-	defer RWM.RUnlock()
-	return &logFields{
-		info:   sl.Info,
-		warn:   sl.Warn,
-		debug:  sl.Debug,
-		error:  sl.Error,
-		name:   sl.name,
-		output: sl.output,
-		logger: *logger,
+	logFieldsPool.Put(l)
+}
+
+// stageln logs a message with the given header and arguments. It uses the
+// custom log hook if set, otherwise falls back to the library's internal log
+// system.
+func (l *fields) stageln(header string, a ...any) {
+	if customLogHook != nil && customLogHook(header, l.name, a...) {
+		logFieldsPool.Put(l)
+		return
 	}
+	l.stage(header, func() string { return fmt.Sprint(a...) })
+}
+
+// stagef logs a formatted message with the given header and arguments. It uses
+// the custom log hook if set, otherwise falls back to the library's internal
+// log system.
+func (l *fields) stagef(header, format string, a ...any) {
+	if customLogHook == nil {
+		l.stage(header, func() string { return fmt.Sprintf(format, a...) })
+		return
+	}
+	formatted := fmt.Sprintf(format, a...)
+	if customLogHook(header, l.name, formatted) {
+		logFieldsPool.Put(l)
+		return
+	}
+	l.stage(header, func() string { return formatted })
 }

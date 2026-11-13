@@ -1,0 +1,243 @@
+package engine
+
+import (
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/thrasher-corp/gocryptotrader/common"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/log"
+)
+
+// vars related to exchange functions
+var (
+	ErrNoExchangesLoaded     = errors.New("no exchanges have been loaded")
+	ErrExchangeNotFound      = errors.New("exchange not found")
+	ErrExchangeAlreadyLoaded = errors.New("exchange already loaded")
+	ErrExchangeFailedToLoad  = errors.New("exchange failed to load")
+
+	errExchangeIsNil = errors.New("exchange is nil")
+)
+
+// CustomExchangeBuilder interface allows external applications to create
+// custom/unsupported exchanges that satisfy the IBotExchange interface.
+type CustomExchangeBuilder interface {
+	NewExchangeByName(name string) (exchange.IBotExchange, error)
+}
+
+// ExchangeManager manages what exchanges are loaded
+type ExchangeManager struct {
+	mtx       sync.Mutex
+	exchanges map[string]exchange.IBotExchange
+	Builder   CustomExchangeBuilder
+}
+
+// NewExchangeManager creates a new exchange manager
+func NewExchangeManager() *ExchangeManager {
+	return &ExchangeManager{
+		exchanges: make(map[string]exchange.IBotExchange),
+	}
+}
+
+// Add adds an exchange
+func (m *ExchangeManager) Add(exch exchange.IBotExchange) error {
+	if m == nil {
+		return fmt.Errorf("exchange manager: %w", ErrNilSubsystem)
+	}
+	if exch == nil {
+		return fmt.Errorf("exchange manager: %w", errExchangeIsNil)
+	}
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	_, ok := m.exchanges[strings.ToLower(exch.GetName())]
+	if ok {
+		return fmt.Errorf("exchange manager: %s %w", exch.GetName(), ErrExchangeAlreadyLoaded)
+	}
+	m.exchanges[strings.ToLower(exch.GetName())] = exch
+	return nil
+}
+
+// GetExchanges returns all stored exchanges
+func (m *ExchangeManager) GetExchanges() ([]exchange.IBotExchange, error) {
+	if m == nil {
+		return nil, fmt.Errorf("exchange manager: %w", ErrNilSubsystem)
+	}
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	return slices.AppendSeq(make([]exchange.IBotExchange, 0, len(m.exchanges)), maps.Values(m.exchanges)), nil
+}
+
+// RemoveExchange removes an exchange from the manager
+func (m *ExchangeManager) RemoveExchange(exchangeName string) error {
+	if m == nil {
+		return fmt.Errorf("exchange manager: %w", ErrNilSubsystem)
+	}
+
+	if exchangeName == "" {
+		return fmt.Errorf("exchange manager: %w", common.ErrExchangeNameNotSet)
+	}
+
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	exch, ok := m.exchanges[strings.ToLower(exchangeName)]
+	if !ok {
+		return fmt.Errorf("exchange manager: %s %w", exchangeName, ErrExchangeNotFound)
+	}
+	err := exch.Shutdown()
+	if err != nil {
+		return fmt.Errorf("exchange manager: %w", err)
+	}
+	delete(m.exchanges, strings.ToLower(exchangeName))
+	log.Infof(log.ExchangeSys, "%s exchange unloaded successfully.\n", exchangeName)
+	return nil
+}
+
+// GetExchangeByName returns an exchange by its name if it exists
+func (m *ExchangeManager) GetExchangeByName(exchangeName string) (exchange.IBotExchange, error) {
+	if m == nil {
+		return nil, fmt.Errorf("exchange manager: %w", ErrNilSubsystem)
+	}
+	if exchangeName == "" {
+		return nil, fmt.Errorf("exchange manager: %w", common.ErrExchangeNameNotSet)
+	}
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	exch, ok := m.exchanges[strings.ToLower(exchangeName)]
+	if !ok {
+		return nil, fmt.Errorf("exchange manager: %s %w", exchangeName, ErrExchangeNotFound)
+	}
+	return exch, nil
+}
+
+// NewExchangeByName helps create a new exchange to be loaded
+func (m *ExchangeManager) NewExchangeByName(name string) (exchange.IBotExchange, error) {
+	nameLower := strings.ToLower(name)
+	_, err := m.GetExchangeByName(nameLower)
+	if err != nil {
+		if !errors.Is(err, ErrExchangeNotFound) {
+			return nil, fmt.Errorf("exchange manager: %s %w", name, err)
+		}
+	} else {
+		return nil, fmt.Errorf("exchange manager: %s %w", name, ErrExchangeAlreadyLoaded)
+	}
+
+	if m.Builder != nil {
+		return m.Builder.NewExchangeByName(nameLower)
+	}
+
+	return NewSupportedExchangeByName(nameLower)
+}
+
+// Shutdown shuts down all exchanges and unloads them
+func (m *ExchangeManager) Shutdown(shutdownTimeout time.Duration) error {
+	if m == nil {
+		return fmt.Errorf("exchange manager: %w", ErrNilSubsystem)
+	}
+
+	if shutdownTimeout < 0 {
+		shutdownTimeout = 0
+	}
+
+	type shutdownResult struct {
+		name     string
+		key      string
+		err      error
+		duration time.Duration
+	}
+
+	type pendingShutdown struct {
+		name      string
+		key       string
+		startedAt time.Time
+	}
+
+	m.mtx.Lock()
+	exchanges := slices.AppendSeq(make([]exchange.IBotExchange, 0, len(m.exchanges)), maps.Values(m.exchanges))
+	m.mtx.Unlock()
+
+	results := make(chan shutdownResult, len(exchanges))
+	abort := make(chan struct{})
+
+	pending := make(map[string]pendingShutdown, len(exchanges))
+	for _, exch := range exchanges {
+		name := exch.GetName()
+		key := strings.ToLower(name)
+		pending[key] = pendingShutdown{name: name, key: key, startedAt: time.Now()}
+	}
+
+	var wg sync.WaitGroup
+	for _, exch := range exchanges {
+		name := exch.GetName()
+		key := strings.ToLower(name)
+		wg.Go(func() {
+			startedAt := time.Now()
+			result := shutdownResult{
+				name:     name,
+				key:      key,
+				err:      exch.Shutdown(),
+				duration: time.Since(startedAt),
+			}
+			select {
+			case results <- result:
+			case <-abort:
+			}
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	applyResult := func(res shutdownResult) {
+		delete(pending, res.key)
+
+		if res.err != nil {
+			log.Errorf(log.ExchangeSys, "%s failed to shutdown after %s: %v", res.name, res.duration, res.err)
+			return
+		}
+
+		log.Debugf(log.ExchangeSys, "%s shutdown completed in %s", res.name, res.duration)
+		m.mtx.Lock()
+		delete(m.exchanges, res.key)
+		m.mtx.Unlock()
+	}
+
+	timer := time.NewTimer(shutdownTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		close(abort)
+
+	drainCompleted:
+		for {
+			select {
+			case res := <-results:
+				applyResult(res)
+			default:
+				break drainCompleted
+			}
+		}
+
+		// Longest running shutdowns first
+		stillShuttingDown := slices.SortedFunc(maps.Values(pending), func(a, b pendingShutdown) int { return a.startedAt.Compare(b.startedAt) })
+
+		for _, p := range stillShuttingDown {
+			elapsed := time.Since(p.startedAt)
+			log.Warnf(log.ExchangeSys, "%s has failed to shutdown within %s (elapsed: %s), please review.", p.name, shutdownTimeout, elapsed)
+		}
+	case <-done:
+		close(results)
+		for res := range results {
+			applyResult(res)
+		}
+	}
+	return nil
+}

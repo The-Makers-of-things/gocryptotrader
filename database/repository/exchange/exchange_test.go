@@ -2,13 +2,13 @@ package exchange
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/database"
-	"github.com/thrasher-corp/gocryptotrader/database/drivers"
 	"github.com/thrasher-corp/gocryptotrader/database/testhelpers"
 )
 
@@ -28,14 +28,19 @@ var (
 	}
 )
 
+//nolint:forbidigo // TestMain reports setup and teardown failures before or after a *testing.T exists
 func TestMain(m *testing.M) {
 	if verbose {
-		testhelpers.EnableVerboseTestOutput()
+		err := testhelpers.EnableVerboseTestOutput()
+		if err != nil {
+			fmt.Printf("failed to enable verbose test output: %v", err)
+			os.Exit(1)
+		}
 	}
 
 	var err error
 	testhelpers.PostgresTestDatabase = testhelpers.GetConnectionDetails()
-	testhelpers.TempDir, err = ioutil.TempDir("", "gct-temp")
+	testhelpers.TempDir, err = os.MkdirTemp("", "gct-temp")
 	if err != nil {
 		fmt.Printf("failed to create temp file: %v", err)
 		os.Exit(1)
@@ -52,7 +57,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestInsertMany(t *testing.T) {
-	testCases := []struct {
+	t.Parallel()
+	for _, tc := range []struct {
 		name   string
 		config *database.Config
 		seedDB func() error
@@ -67,48 +73,35 @@ func TestInsertMany(t *testing.T) {
 		{
 			name: "SQLite",
 			config: &database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb",
 			},
 			seedDB: seed,
 		},
-	}
-
-	for x := range testCases {
-		test := testCases[x]
-
-		t.Run(test.name, func(t *testing.T) {
-			if !testhelpers.CheckValidConfig(&test.config.ConnectionDetails) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if !testhelpers.CheckValidConfig(&tc.config.ConnectionDetails) {
 				t.Skip("database not configured skipping test")
 			}
 
-			dbConn, err := testhelpers.ConnectToDatabase(test.config)
-			if err != nil {
-				t.Fatal(err)
+			dbConn, err := testhelpers.ConnectToDatabase(tc.config)
+			require.NoError(t, err)
+
+			if tc.seedDB != nil {
+				require.NoError(t, tc.seedDB())
 			}
 
-			if test.seedDB != nil {
-				err = test.seedDB()
-				if err != nil {
-					t.Error(err)
-				}
-			}
-
-			err = InsertMany(testExchanges)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, InsertMany(testExchanges))
 
 			err = testhelpers.CloseDatabase(dbConn)
-			if err != nil {
-				t.Error(err)
-			}
+			assert.NoError(t, err)
 		})
 	}
 }
 
 func TestOneAndOneByUUID(t *testing.T) {
-	testCases := []struct {
+	for _, tc := range []struct {
 		name   string
 		config *database.Config
 		seedDB func() error
@@ -123,50 +116,32 @@ func TestOneAndOneByUUID(t *testing.T) {
 		{
 			name: "SQLite",
 			config: &database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb",
 			},
 			seedDB: seed,
 		},
-	}
-
-	for x := range testCases {
-		test := testCases[x]
-
-		t.Run(test.name, func(t *testing.T) {
-			if !testhelpers.CheckValidConfig(&test.config.ConnectionDetails) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !testhelpers.CheckValidConfig(&tc.config.ConnectionDetails) {
 				t.Skip("database not configured skipping test")
 			}
 
-			dbConn, err := testhelpers.ConnectToDatabase(test.config)
-			if err != nil {
-				t.Fatal(err)
-			}
+			dbConn, err := testhelpers.ConnectToDatabase(tc.config)
+			require.NoError(t, err)
 
-			if test.seedDB != nil {
-				err = test.seedDB()
-				if err != nil {
-					t.Error(err)
-				}
+			if tc.seedDB != nil {
+				require.NoError(t, tc.seedDB())
 			}
 
 			ret, err := One("one")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
 			ret2, err := OneByUUID(ret.UUID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			if ret.Name != ret2.Name {
-				t.Fatalf("unexpected value received: %v", ret2.Name)
-			}
-			err = testhelpers.CloseDatabase(dbConn)
-			if err != nil {
-				t.Error(err)
-			}
+			assert.Equal(t, ret.Name, ret2.Name)
+			assert.NoError(t, testhelpers.CloseDatabase(dbConn))
 		})
 	}
 }
@@ -177,8 +152,7 @@ func seed() error {
 
 func TestLoadCSV(t *testing.T) {
 	testData := filepath.Join("..", "..", "..", "testdata", "exchangelist.csv")
-	_, err := LoadCSV(testData)
-	if err != nil {
+	if _, err := LoadCSV(testData); err != nil {
 		t.Fatal(err)
 	}
 }

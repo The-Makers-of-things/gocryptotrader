@@ -2,14 +2,15 @@ package trade
 
 import (
 	"sync"
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+	"uuid"
 
-	"github.com/gofrs/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/database"
-	"github.com/thrasher-corp/gocryptotrader/database/drivers"
 	sqltrade "github.com/thrasher-corp/gocryptotrader/database/repository/trade"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/kline"
@@ -22,24 +23,24 @@ func TestAddTradesToBuffer(t *testing.T) {
 	processor.bufferProcessorInterval = BufferProcessorIntervalTime
 	processor.mutex.Unlock()
 	dbConf := database.Config{
-		Enabled: true,
-		Driver:  database.DBSQLite3,
-		ConnectionDetails: drivers.ConnectionDetails{
-			Host:     "localhost",
-			Database: "./rpctestdb",
-		},
+		Enabled:  true,
+		Driver:   database.DBSQLite3,
+		Host:     "localhost",
+		Database: "./rpctestdb",
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
 	processor.setup(&wg)
 	wg.Wait()
-	database.DB.Config = &dbConf
-	cp, _ := currency.NewPairFromString("BTC-USD")
-	err := AddTradesToBuffer("test!", []Data{
+	err := database.DB.SetConfig(&dbConf)
+	if err != nil {
+		t.Error(err)
+	}
+	err = AddTradesToBuffer([]Data{
 		{
 			Timestamp:    time.Now(),
 			Exchange:     "test!",
-			CurrencyPair: cp,
+			CurrencyPair: currency.NewBTCUSD(),
 			AssetType:    asset.Spot,
 			Price:        1337,
 			Amount:       1337,
@@ -49,15 +50,15 @@ func TestAddTradesToBuffer(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	if atomic.AddInt32(&processor.started, 0) == 0 {
+	if !processor.started.Load() {
 		t.Error("expected the processor to have started")
 	}
 
-	err = AddTradesToBuffer("test!", []Data{
+	err = AddTradesToBuffer([]Data{
 		{
 			Timestamp:    time.Now(),
 			Exchange:     "test!",
-			CurrencyPair: cp,
+			CurrencyPair: currency.NewBTCUSD(),
 			AssetType:    asset.Spot,
 			Price:        0,
 			Amount:       0,
@@ -71,15 +72,14 @@ func TestAddTradesToBuffer(t *testing.T) {
 	processor.buffer = nil
 	processor.mutex.Unlock()
 
-	err = AddTradesToBuffer("test!", []Data{
+	err = AddTradesToBuffer([]Data{
 		{
 			Timestamp:    time.Now(),
 			Exchange:     "test!",
-			CurrencyPair: cp,
+			CurrencyPair: currency.NewBTCUSD(),
 			AssetType:    asset.Spot,
 			Price:        -1,
 			Amount:       -1,
-			Side:         "",
 		},
 	}...)
 	if err != nil {
@@ -95,9 +95,9 @@ func TestAddTradesToBuffer(t *testing.T) {
 	processor.mutex.Unlock()
 }
 
-func TestSqlDataToTrade(t *testing.T) {
+func TestSQLDataToTrade(t *testing.T) {
 	t.Parallel()
-	uuiderino, _ := uuid.NewV4()
+	uuiderino := uuid.NewV4()
 	data, err := SQLDataToTrade(sqltrade.Data{
 		ID:        uuiderino.String(),
 		Timestamp: time.Time{},
@@ -109,27 +109,29 @@ func TestSqlDataToTrade(t *testing.T) {
 		Amount:    1337,
 		Side:      "buy",
 	})
-	if err != nil {
-		t.Error(err)
-	}
-	if len(data) != 1 {
-		t.Fatal("unexpected scenario")
-	}
-	if data[0].Side != order.Buy {
-		t.Error("expected buy side")
-	}
-	if data[0].CurrencyPair.String() != "BTCUSD" {
-		t.Errorf("expected \"BTCUSD\", got %v", data[0].CurrencyPair)
-	}
-	if data[0].AssetType != asset.Spot {
-		t.Error("expected spot")
-	}
+	require.NoError(t, err, "SQLDataToTrade must not error")
+	require.Len(t, data, 1, "SQLDataToTrade must return one trade")
+	assert.Equal(t, uuiderino, data[0].ID, "ID should decode")
+	assert.Equal(t, order.Buy, data[0].Side, "Side should decode")
+	assert.Equal(t, "BTCUSD", data[0].CurrencyPair.String(), "CurrencyPair should decode")
+	assert.Equal(t, asset.Spot, data[0].AssetType, "AssetType should decode")
+
+	_, err = SQLDataToTrade(sqltrade.Data{
+		ID:        "not-a-uuid",
+		Exchange:  "hello",
+		Base:      currency.BTC.String(),
+		Quote:     currency.USD.String(),
+		AssetType: "spot",
+		Side:      "buy",
+	})
+	assert.ErrorIs(t, err, errInvalidTradeID, "SQLDataToTrade should reject a malformed stored ID")
+	assert.ErrorContains(t, err, `"not-a-uuid"`, "error should name the offending ID")
 }
 
 func TestTradeToSQLData(t *testing.T) {
 	t.Parallel()
-	cp := currency.NewPair(currency.BTC, currency.USD)
-	sqlData, err := tradeToSQLData(Data{
+	cp := currency.NewBTCUSD()
+	sqlData := tradeToSQLData(Data{
 		Timestamp:    time.Now(),
 		Exchange:     "test!",
 		CurrencyPair: cp,
@@ -138,9 +140,6 @@ func TestTradeToSQLData(t *testing.T) {
 		Amount:       1337,
 		Side:         order.Buy,
 	})
-	if err != nil {
-		t.Error(err)
-	}
 	if len(sqlData) != 1 {
 		t.Fatal("unexpected result")
 	}
@@ -154,7 +153,7 @@ func TestTradeToSQLData(t *testing.T) {
 
 func TestConvertTradesToCandles(t *testing.T) {
 	t.Parallel()
-	cp, _ := currency.NewPairFromString("BTC-USD")
+	cp := currency.NewBTCUSD()
 	startDate := time.Date(2020, 1, 1, 1, 0, 0, 0, time.UTC)
 	candles, err := ConvertTradesToCandles(kline.FifteenSecond, []Data{
 		{
@@ -198,22 +197,32 @@ func TestConvertTradesToCandles(t *testing.T) {
 
 func TestShutdown(t *testing.T) {
 	t.Parallel()
-	var p Processor
-	p.mutex.Lock()
-	p.bufferProcessorInterval = time.Second
-	p.mutex.Unlock()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go p.Run(&wg)
-	wg.Wait()
-	time.Sleep(time.Millisecond)
-	if atomic.LoadInt32(&p.started) != 1 {
-		t.Error("expected it to start running")
-	}
-	time.Sleep(time.Second * 2)
-	if atomic.LoadInt32(&p.started) != 0 {
-		t.Error("expected it to stop running")
-	}
+	synctest.Test(t, func(t *testing.T) { //nolint:thelper,nolintlint // false positive
+		var p Processor
+		p.mutex.Lock()
+		p.bufferProcessorInterval = time.Millisecond
+		p.mutex.Unlock()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			p.Run(&wg)
+		}()
+		// a failed assertion would otherwise leave Run working, which panics the bubble and aborts the package; the
+		// bound stops a processor that never returns from hanging the test until it times out
+		defer func() {
+			select {
+			case <-stopped:
+			case <-time.After(time.Minute):
+			}
+		}()
+		wg.Wait()
+		assert.True(t, p.started.Load(), "Run should report the processor started")
+		// returns once the processor has drained an empty buffer and stopped its ticker
+		synctest.Sleep(20 * time.Millisecond)
+		assert.False(t, p.started.Load(), "Run should report the processor stopped")
+	})
 }
 
 func TestFilterTradesByTime(t *testing.T) {
@@ -248,4 +257,37 @@ func TestGetTradesInRange(t *testing.T) {
 	if err != nil && err.Error() != "invalid arguments received" {
 		t.Error(err)
 	}
+}
+
+func TestSortByDate(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	trades := []Data{
+		{
+			TID:       "later",
+			Timestamp: base.Add(time.Hour),
+		},
+		{
+			TID:       "equal first",
+			Timestamp: base,
+		},
+		{
+			TID:       "earliest",
+			Timestamp: base.Add(-time.Hour),
+		},
+		{
+			TID:       "equal second",
+			Timestamp: base,
+		},
+	}
+	SortByDate(trades)
+
+	got := make([]time.Time, len(trades))
+	for i := range trades {
+		got[i] = trades[i].Timestamp
+	}
+	assert.Equal(t, []time.Time{base.Add(-time.Hour), base, base, base.Add(time.Hour)}, got,
+		"SortByDate should order oldest first")
+
+	assert.NotPanics(t, func() { SortByDate(nil) }, "SortByDate should accept a nil slice")
 }

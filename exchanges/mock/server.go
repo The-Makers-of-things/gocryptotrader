@@ -1,21 +1,23 @@
 package mock
 
 import (
-	"encoding/json"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/thrasher-corp/gocryptotrader/common"
-	"github.com/thrasher-corp/gocryptotrader/common/crypto"
 	"github.com/thrasher-corp/gocryptotrader/common/file"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 )
 
 // DefaultDirectory defines the main mock directory
@@ -28,6 +30,12 @@ const (
 	textPlain             = "text/plain"
 )
 
+// error declarations
+var (
+	errJSONMockFilePathRequired = errors.New("no path to json mock file found")
+	errNoDataMatched            = errors.New("no data could be matched")
+)
+
 // VCRMock defines the main mock JSON file and attributes
 type VCRMock struct {
 	Routes map[string]map[string][]HTTPResponse `json:"routes"`
@@ -37,12 +45,12 @@ type VCRMock struct {
 // purposes and returns the server connection details
 func NewVCRServer(path string) (string, *http.Client, error) {
 	if path == "" {
-		return "", nil, errors.New("no path to json mock file found")
+		return "", nil, errJSONMockFilePathRequired
 	}
 
 	var mockFile VCRMock
 
-	contents, err := ioutil.ReadFile(path)
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		pathing := strings.Split(path, "/")
 		dirPathing := pathing[:len(pathing)-1]
@@ -84,7 +92,7 @@ func NewVCRServer(path string) (string, *http.Client, error) {
 			RegisterHandler(pattern, mockResponses, newMux)
 		}
 	} else {
-		newMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		newMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			err := json.NewEncoder(w).Encode("There is no mock data available in file please record a new HTTP response. Please follow README.md in the mock package.")
 			if err != nil {
@@ -126,7 +134,7 @@ func RegisterHandler(pattern string, mock map[string][]HTTPResponse, mux *http.S
 		case http.MethodPost, http.MethodPut:
 			switch r.Header.Get(contentType) {
 			case applicationURLEncoded:
-				readBody, err := ioutil.ReadAll(r.Body)
+				readBody, err := io.ReadAll(r.Body)
 				if err != nil {
 					log.Fatal("Mock Test Failure - ReadAll error", err)
 				}
@@ -154,19 +162,33 @@ func RegisterHandler(pattern string, mock map[string][]HTTPResponse, mux *http.S
 				return
 
 			case applicationJSON:
-				readBody, err := ioutil.ReadAll(r.Body)
+				readBody, err := io.ReadAll(r.Body)
 				if err != nil {
 					log.Fatalf("Mock Test Failure - %v", err)
 				}
 
-				reqVals, err := DeriveURLValsFromJSONMap(readBody)
-				if err != nil {
-					log.Fatalf("Mock Test Failure - %v", err)
-				}
+				var payload json.RawMessage
+				switch getJSONBodyShape(strings.TrimSpace(string(readBody))) {
+				case jsonBodyArray:
+					reqVals, err := DeriveURLValsFromJSONArray(readBody)
+					if err != nil {
+						log.Fatalf("DeriveURLValsFromJSONSlice Mock Test Failure - %v", err)
+					}
 
-				payload, err := MatchAndGetResponse(httpResponses, reqVals, false)
-				if err != nil {
-					log.Fatal("Mock Test Failure - MatchAndGetResponse error ", err)
+					payload, err = MatchAndGetResponseJSONSlice(httpResponses, reqVals)
+					if err != nil {
+						log.Fatal("Mock Test Failure - MatchAndGetResponseJSONSlice error ", err)
+					}
+				default:
+					reqVals, err := DeriveURLValsFromJSONMap(readBody)
+					if err != nil {
+						log.Fatalf("DeriveURLValsFromJSONMap Mock Test Failure - %v", err)
+					}
+
+					payload, err = MatchAndGetResponse(httpResponses, reqVals, false)
+					if err != nil {
+						log.Fatal("Mock Test Failure - MatchAndGetResponse error ", err)
+					}
 				}
 
 				MessageWriteJSON(w, http.StatusOK, payload)
@@ -178,21 +200,33 @@ func RegisterHandler(pattern string, mock map[string][]HTTPResponse, mux *http.S
 					log.Fatal("Mock Test Failure - Cannot find header in request")
 				}
 
-				base64data := strings.Join(headerData, "")
-
-				jsonThings, err := crypto.Base64Decode(base64data)
+				jsonThings, err := base64.StdEncoding.DecodeString(strings.Join(headerData, ""))
 				if err != nil {
 					log.Fatal("Mock Test Failure - ", err)
 				}
 
-				reqVals, err := DeriveURLValsFromJSONMap(jsonThings)
-				if err != nil {
-					log.Fatalf("Mock Test Failure - %v", err)
-				}
+				var payload json.RawMessage
+				switch getJSONBodyShape(strings.TrimSpace(string(jsonThings))) {
+				case jsonBodyArray:
+					reqVals, err := DeriveURLValsFromJSONArray(jsonThings)
+					if err != nil {
+						log.Fatalf("Mock Test Failure - %v", err)
+					}
 
-				payload, err := MatchAndGetResponse(httpResponses, reqVals, false)
-				if err != nil {
-					log.Fatal("Mock Test Failure - MatchAndGetResponse error ", err)
+					payload, err = MatchAndGetResponseJSONSlice(httpResponses, reqVals)
+					if err != nil {
+						log.Fatal("Mock Test Failure - MatchAndGetResponseJSONSlice error ", err)
+					}
+				default:
+					reqVals, err := DeriveURLValsFromJSONMap(jsonThings)
+					if err != nil {
+						log.Fatalf("Mock Test Failure - %v", err)
+					}
+
+					payload, err = MatchAndGetResponse(httpResponses, reqVals, false)
+					if err != nil {
+						log.Fatal("Mock Test Failure - MatchAndGetResponse error ", err)
+					}
 				}
 
 				MessageWriteJSON(w, http.StatusOK, payload)
@@ -214,21 +248,23 @@ func RegisterHandler(pattern string, mock map[string][]HTTPResponse, mux *http.S
 			return
 
 		default:
-			log.Fatal("Mock Test Failure - Unhandled HTTP method:",
+			log.Fatalf("Mock Test Failure - Unhandled HTTP method: %s",
 				r.Header.Get(contentType))
 		}
 	})
 }
 
 // MessageWriteJSON writes JSON to a connection
-func MessageWriteJSON(w http.ResponseWriter, status int, data interface{}) {
+func MessageWriteJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set(contentType, applicationJSON)
 	w.WriteHeader(status)
 	if data != nil {
-		err := json.NewEncoder(w).Encode(data)
-		if err != nil {
+		if err := json.NewEncoder(w).Encode(data); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
+			_, wErr := w.Write([]byte(err.Error()))
+			if wErr != nil {
+				log.Println("Mock Test Failure - Writing to HTTP connection", wErr)
+			}
 			log.Fatal("Mock Test Failure - JSON encode error", err)
 		}
 	}
@@ -245,16 +281,17 @@ func MatchAndGetResponse(mockData []HTTPResponse, requestVals url.Values, isQuer
 			data = mockData[i].BodyParams
 		}
 
-		var mockVals = url.Values{}
-		var err error
-		if json.Valid([]byte(data)) {
-			something := make(map[string]interface{})
-			err = json.Unmarshal([]byte(data), &something)
-			if err != nil {
+		mockVals := url.Values{}
+		if data != "" && json.Valid([]byte(data)) {
+			if getJSONBodyShape(data) != jsonBodyObject {
+				continue
+			}
+			dataMap := make(map[string]any)
+			if err := json.Unmarshal([]byte(data), &dataMap); err != nil {
 				return nil, err
 			}
 
-			for k, v := range something {
+			for k, v := range dataMap {
 				switch val := v.(type) {
 				case string:
 					mockVals.Add(k, val)
@@ -262,7 +299,7 @@ func MatchAndGetResponse(mockData []HTTPResponse, requestVals url.Values, isQuer
 					mockVals.Add(k, strconv.FormatBool(val))
 				case float64:
 					mockVals.Add(k, strconv.FormatFloat(val, 'f', -1, 64))
-				case map[string]interface{}, []interface{}, nil:
+				case map[string]any, []any, nil:
 					mockVals.Add(k, fmt.Sprintf("%v", val))
 				default:
 					log.Println(reflect.TypeOf(val))
@@ -270,6 +307,7 @@ func MatchAndGetResponse(mockData []HTTPResponse, requestVals url.Values, isQuer
 				}
 			}
 		} else {
+			var err error
 			mockVals, err = url.ParseQuery(data)
 			if err != nil {
 				return nil, err
@@ -280,5 +318,27 @@ func MatchAndGetResponse(mockData []HTTPResponse, requestVals url.Values, isQuer
 			return mockData[i].Data, nil
 		}
 	}
-	return nil, errors.New("no data could be matched")
+	return nil, errNoDataMatched
+}
+
+// MatchAndGetResponseJSONSlice matches incoming request values against array
+// based body params from the mock data and returns the payload.
+func MatchAndGetResponseJSONSlice(mockData []HTTPResponse, requestVals []url.Values) (json.RawMessage, error) {
+	for i := range mockData {
+		data := mockData[i].BodyParams
+		if !json.Valid([]byte(data)) || getJSONBodyShape(strings.TrimSpace(data)) != jsonBodyArray {
+			continue
+		}
+
+		mockVals, err := DeriveURLValsFromJSONArray([]byte(data))
+		if err != nil {
+			return nil, err
+		}
+
+		if slices.EqualFunc(mockVals, requestVals, MatchURLVals) {
+			return mockData[i].Data, nil
+		}
+	}
+
+	return nil, errNoDataMatched
 }

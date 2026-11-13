@@ -11,6 +11,7 @@ import (
 )
 
 func TestDefaultRetryPolicy(t *testing.T) {
+	t.Parallel()
 	type args struct {
 		Error    error
 		Response *http.Response
@@ -45,7 +46,6 @@ func TestDefaultRetryPolicy(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -70,6 +70,7 @@ func TestDefaultRetryPolicy(t *testing.T) {
 }
 
 func TestRetryAfter(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2020, time.April, 20, 13, 31, 13, 0, time.UTC)
 
 	type args struct {
@@ -110,7 +111,6 @@ func TestRetryAfter(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 

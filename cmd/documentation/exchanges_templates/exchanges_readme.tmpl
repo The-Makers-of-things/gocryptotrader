@@ -1,5 +1,6 @@
 {{define "exchanges" -}}
 {{template "header" .}}
+
 ## Current Features for {{.Name}}
 
 + This package is used to connect and query data from supported exchanges.
@@ -9,9 +10,12 @@ implementation
 
 ## Guide for adding a new exchange
 
-+ A guide on implementing API support for a new exchange can be found [here](../docs/ADD_NEW_EXCHANGE.md)
++ Follow the [new exchange implementation guide](../docs/ADD_NEW_EXCHANGE.md) to add API support.
 
-### Please click GoDocs chevron above to view current GoDoc information for this package
-{{template "contributions"}}
+## websocket notes
+
++ If contributing websocket improvements, please make sure order reports
+follow [these rules](../docs/WS_ORDER_EVENTS.md).
+
 {{template "donations" .}}
 {{end}}

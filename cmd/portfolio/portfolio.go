@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -8,39 +9,37 @@ import (
 
 	"github.com/thrasher-corp/gocryptotrader/config"
 	"github.com/thrasher-corp/gocryptotrader/currency"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/bitfinex"
 	"github.com/thrasher-corp/gocryptotrader/portfolio"
 )
 
 var (
-	priceMap        map[currency.Code]float64
+	priceMap        map[*currency.Item]float64
 	displayCurrency currency.Code
 )
 
 func printSummary(msg string, amount float64) {
 	log.Println()
-	log.Println(fmt.Sprintf("%s in USD: $%.2f", msg, amount))
+	log.Printf("%s in USD: $%.2f", msg, amount)
 
-	if displayCurrency != currency.USD {
-		conv, err := currency.ConvertCurrency(amount,
-			currency.USD,
-			displayCurrency)
+	if !displayCurrency.Equal(currency.USD) {
+		conv, err := currency.ConvertFiat(amount, currency.USD, displayCurrency)
 		if err != nil {
 			log.Println(err)
 		} else {
-			symb, err := currency.GetSymbolByCurrencyName(displayCurrency)
+			var symb string
+			symb, err = currency.GetSymbolByCurrencyName(displayCurrency)
 			if err != nil {
-				log.Println(fmt.Sprintf("%s in %s: %.2f",
+				log.Printf("%s in %s: %.2f",
 					msg,
 					displayCurrency,
-					conv))
+					conv)
 			} else {
-				log.Println(fmt.Sprintf("%s in %s: %s%.2f",
+				log.Printf("%s in %s: %s%.2f",
 					msg,
 					displayCurrency,
 					symb,
-					conv))
+					conv)
 			}
 		}
 	}
@@ -49,7 +48,7 @@ func printSummary(msg string, amount float64) {
 func getOnlineOfflinePortfolio(coins []portfolio.Coin, online bool) {
 	var totals float64
 	for _, x := range coins {
-		value := priceMap[x.Coin] * x.Balance
+		value := priceMap[x.Coin.Item] * x.Balance
 		totals += value
 		log.Printf("\t%v %v Subtotal: $%.2f Coin percentage: %.2f%%\n", x.Coin,
 			x.Balance, value, x.Percentage)
@@ -78,8 +77,7 @@ func main() {
 	log.Println("Loaded config file.")
 
 	displayCurrency = cfg.Currency.FiatDisplayCurrency
-	port := portfolio.Base{}
-	port.Seed(cfg.Portfolio)
+	port := cfg.Portfolio
 	result := port.GetPortfolioSummary()
 
 	log.Println("Fetched portfolio data.")
@@ -89,8 +87,7 @@ func main() {
 		Subtotal float64
 	}
 
-	cfg.RetrieveConfigCurrencyPairs(true, asset.Spot)
-	portfolioMap := make(map[currency.Code]PortfolioTemp)
+	portfolioMap := make(map[*currency.Item]PortfolioTemp)
 	total := float64(0)
 
 	log.Println("Fetching currency data..")
@@ -108,47 +105,55 @@ func main() {
 
 	log.Println("Fetched currency data.")
 	log.Println("Fetching ticker data and calculating totals..")
-	priceMap = make(map[currency.Code]float64)
-	priceMap[currency.USD] = 1
+	priceMap = make(map[*currency.Item]float64)
+	priceMap[currency.USD.Item] = 1
 
 	for _, y := range result.Totals {
-		pf := PortfolioTemp{}
-		pf.Balance = y.Balance
-		pf.Subtotal = 0
+		pf := PortfolioTemp{
+			Balance:  y.Balance,
+			Subtotal: 0,
+		}
 
-		if y.Coin.IsDefaultFiatCurrency() {
-			if y.Coin != currency.USD {
-				conv, err := currency.ConvertCurrency(y.Balance, y.Coin, currency.USD)
+		if y.Coin.IsFiatCurrency() {
+			if !y.Coin.Equal(currency.USD) {
+				conv, err := currency.ConvertFiat(y.Balance, y.Coin, currency.USD)
 				if err != nil {
 					log.Println(err)
 				} else {
-					priceMap[y.Coin] = conv / y.Balance
+					priceMap[y.Coin.Item] = conv / y.Balance
 					pf.Subtotal = conv
 				}
 			} else {
 				pf.Subtotal = y.Balance
 			}
 		} else {
-			bf := bitfinex.Bitfinex{}
+			bf := bitfinex.Exchange{}
 			bf.SetDefaults()
 			bf.Verbose = false
 			pair := "t" + y.Coin.String() + currency.USD.String()
-			ticker, errf := bf.GetTicker(pair)
+			ticker, errf := bf.GetTicker(context.TODO(), pair)
 			if errf != nil {
 				log.Println(errf)
 			} else {
-				priceMap[y.Coin] = ticker.Last
+				priceMap[y.Coin.Item] = ticker.Last
 				pf.Subtotal = ticker.Last * y.Balance
 			}
 		}
-		portfolioMap[y.Coin] = pf
+		portfolioMap[y.Coin.Item] = pf
 		total += pf.Subtotal
 	}
 	log.Println("Done.")
 	log.Println()
 	log.Println("PORTFOLIO TOTALS:")
 	for x, y := range portfolioMap {
-		log.Printf("\t%s Amount: %f Subtotal: $%.2f USD (1 %s = $%.2f USD). Percentage of portfolio %.3f%%", x, y.Balance, y.Subtotal, x, y.Subtotal/y.Balance, y.Subtotal/total*100/1)
+		code := currency.Code{Item: x}
+		log.Printf("\t%s Amount: %f Subtotal: $%.2f USD (1 %s = $%.2f USD). Percentage of portfolio %.3f%%",
+			code,
+			y.Balance,
+			y.Subtotal,
+			code,
+			y.Subtotal/y.Balance,
+			y.Subtotal/total*100/1)
 	}
 	printSummary("\tTotal balance", total)
 
@@ -164,7 +169,7 @@ func main() {
 		log.Printf("\t%s:", x)
 		totals = 0
 		for z := range y {
-			value := priceMap[x] * y[z].Balance
+			value := priceMap[x.Item] * y[z].Balance
 			totals += value
 			log.Printf("\t %s Amount: %f Subtotal: $%.2f Coin percentage: %.2f%%\n",
 				y[z].Address, y[z].Balance, value, y[z].Percentage)
@@ -177,7 +182,7 @@ func main() {
 		log.Printf("\t%s:", x)
 		totals = 0
 		for z, w := range y {
-			value := priceMap[z] * w.Balance
+			value := priceMap[z.Item] * w.Balance
 			totals += value
 			log.Printf("\t %s Amount: %f Subtotal $%.2f Coin percentage: %.2f%%",
 				z, w.Balance, value, w.Percentage)

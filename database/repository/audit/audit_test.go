@@ -2,21 +2,22 @@ package audit
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/database"
-	"github.com/thrasher-corp/gocryptotrader/database/drivers"
 	"github.com/thrasher-corp/gocryptotrader/database/testhelpers"
 )
 
+//nolint:forbidigo // TestMain reports setup and teardown failures before or after a *testing.T exists
 func TestMain(m *testing.M) {
 	var err error
 	testhelpers.PostgresTestDatabase = testhelpers.GetConnectionDetails()
-	testhelpers.TempDir, err = ioutil.TempDir("", "gct-temp")
+	testhelpers.TempDir, err = os.MkdirTemp("", "gct-temp")
 	if err != nil {
 		fmt.Printf("failed to create temp file: %v", err)
 		os.Exit(1)
@@ -32,20 +33,19 @@ func TestMain(m *testing.M) {
 }
 
 func TestAudit(t *testing.T) {
-	testCases := []struct {
+	for _, tc := range []struct {
 		name   string
 		config *database.Config
 		runner func(t *testing.T)
 		closer func(dbConn *database.Instance) error
-		output interface{}
+		output any
 	}{
 		{
 			"SQLite-Write",
 			&database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb",
 			},
-
 			writeAudit,
 			testhelpers.CloseDatabase,
 			nil,
@@ -53,10 +53,9 @@ func TestAudit(t *testing.T) {
 		{
 			"SQLite-Read",
 			&database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb",
 			},
-
 			readHelper,
 			testhelpers.CloseDatabase,
 			nil,
@@ -75,29 +74,18 @@ func TestAudit(t *testing.T) {
 			nil,
 			nil,
 		},
-	}
-
-	for _, tests := range testCases {
-		test := tests
-		t.Run(test.name, func(t *testing.T) {
-			if !testhelpers.CheckValidConfig(&test.config.ConnectionDetails) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !testhelpers.CheckValidConfig(&tc.config.ConnectionDetails) {
 				t.Skip("database not configured skipping test")
 			}
-
-			dbConn, err := testhelpers.ConnectToDatabase(test.config)
-			if err != nil {
-				t.Fatal(err)
+			dbConn, err := testhelpers.ConnectToDatabase(tc.config)
+			require.NoError(t, err)
+			if tc.runner != nil {
+				tc.runner(t)
 			}
-
-			if test.runner != nil {
-				test.runner(t)
-			}
-
-			if test.closer != nil {
-				err = test.closer(dbConn)
-				if err != nil {
-					t.Log(err)
-				}
+			if tc.closer != nil {
+				assert.NoError(t, tc.closer(dbConn))
 			}
 		})
 	}
@@ -107,14 +95,11 @@ func writeAudit(t *testing.T) {
 	t.Helper()
 	var wg sync.WaitGroup
 
-	for x := 0; x < 20; x++ {
-		wg.Add(1)
-
-		go func(x int) {
-			defer wg.Done()
+	for x := range 20 {
+		wg.Go(func() {
 			test := fmt.Sprintf("test-%v", x)
 			Event(test, test, test)
-		}(x)
+		})
 	}
 
 	wg.Wait()

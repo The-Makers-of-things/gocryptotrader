@@ -3,7 +3,17 @@ package nonce
 import (
 	"strconv"
 	"sync"
+	"time"
 )
+
+// UnixNano and Unix are default nonce setters
+var (
+	UnixNano Setter = func() int64 { return time.Now().UnixNano() }
+	Unix     Setter = func() int64 { return time.Now().Unix() }
+)
+
+// Setter is a function that returns a nonce start value.
+type Setter func() int64
 
 // Nonce struct holds the nonce value
 type Nonce struct {
@@ -11,36 +21,17 @@ type Nonce struct {
 	m sync.Mutex
 }
 
-// Inc increments the nonce value
-func (n *Nonce) Inc() {
-	n.m.Lock()
-	n.n++
-	n.m.Unlock()
-}
-
-// Get retrives the nonce value
-func (n *Nonce) Get() Value {
+// GetAndIncrement returns the current nonce value and increments it. If value
+// is 0, it will set the value to the current time.
+func (n *Nonce) GetAndIncrement(set Setter) Value {
 	n.m.Lock()
 	defer n.m.Unlock()
-	return Value(n.n)
-}
-
-// GetInc increments and returns the value of the nonce
-func (n *Nonce) GetInc() Value {
-	n.Inc()
-	return n.Get()
-}
-
-// Set sets the nonce value
-func (n *Nonce) Set(val int64) {
-	n.m.Lock()
-	n.n = val
-	n.m.Unlock()
-}
-
-// String returns a string version of the nonce
-func (n *Nonce) String() string {
-	return n.Get().String()
+	if n.n == 0 {
+		n.n = set()
+	}
+	val := n.n
+	n.n++
+	return Value(val)
 }
 
 // Value is a return type for GetValue

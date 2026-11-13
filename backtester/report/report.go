@@ -5,24 +5,42 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/backtester/common"
+	"github.com/thrasher-corp/gocryptotrader/common/key"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/kline"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
 	"github.com/thrasher-corp/gocryptotrader/log"
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 // GenerateReport sends final data from statistics to a template
 // to create a lovely final report for someone to view
 func (d *Data) GenerateReport() error {
-	log.Info(log.BackTester, "generating report")
+	if d.TemplatePath == "" || d.OutputPath == "" {
+		return nil
+	}
+	log.Infoln(common.Report, "Generating report")
 	err := d.enhanceCandles()
 	if err != nil {
 		return err
 	}
-
+	for i := range d.OriginalCandles {
+		for j := range d.OriginalCandles[i].Candles {
+			if d.OriginalCandles[i].Candles[j].ValidationIssues == "" {
+				continue
+			}
+			d.Warnings = append(d.Warnings, Warning{
+				Exchange: d.OriginalCandles[i].Exchange,
+				Asset:    d.OriginalCandles[i].Asset,
+				Pair:     d.OriginalCandles[i].Pair,
+				Message:  fmt.Sprintf("candle data %v", d.OriginalCandles[i].Candles[j].ValidationIssues),
+			})
+		}
+	}
 	for i := range d.EnhancedCandles {
 		if len(d.EnhancedCandles[i].Candles) >= maxChartLimit {
 			d.EnhancedCandles[i].IsOverLimit = true
@@ -30,20 +48,43 @@ func (d *Data) GenerateReport() error {
 		}
 	}
 
-	tmpl := template.Must(
-		template.ParseFiles(
-			filepath.Join(d.TemplatePath),
-		),
-	)
-	var nickName string
-	if d.Config.Nickname != "" {
-		nickName = d.Config.Nickname + "-"
+	if d.Statistics.FundingStatistics != nil {
+		d.HoldingsOverTimeChart, err = createHoldingsOverTimeChart(d.Statistics.FundingStatistics.Items)
+		if err != nil {
+			return err
+		}
+		if !d.Statistics.FundingStatistics.Report.DisableUSDTracking {
+			d.USDTotalsChart, err = createUSDTotalsChart(d.Statistics.FundingStatistics.TotalUSDStatistics.HoldingValues, d.Statistics.FundingStatistics.Items)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	fileName := fmt.Sprintf(
-		"%v%v-%v.html",
-		nickName,
-		d.Statistics.StrategyName,
-		time.Now().Format("2006-01-02-15-04-05"))
+
+	if d.Statistics.HasCollateral {
+		d.PNLOverTimeChart, err = createPNLCharts(d.Statistics.ExchangeAssetPairStatistics)
+		if err != nil {
+			return err
+		}
+		d.FuturesSpotDiffChart, err = createFuturesSpotDiffChart(d.Statistics.ExchangeAssetPairStatistics)
+		if err != nil {
+			return err
+		}
+	}
+	tmpl := template.Must(
+		template.ParseFiles(d.TemplatePath),
+	)
+	fn := d.Config.Nickname
+	if fn != "" {
+		fn += "-"
+	}
+	fn += d.Statistics.StrategyName + "-"
+	fn += time.Now().Format("2006-01-02-15-04-05")
+
+	fileName, err := common.GenerateFileName(fn, "html")
+	if err != nil {
+		return err
+	}
 	var f *os.File
 	f, err = os.Create(
 		filepath.Join(d.OutputPath,
@@ -56,7 +97,7 @@ func (d *Data) GenerateReport() error {
 	defer func() {
 		err = f.Close()
 		if err != nil {
-			log.Error(log.BackTester, err)
+			log.Errorln(common.Report, err)
 		}
 	}()
 
@@ -64,14 +105,27 @@ func (d *Data) GenerateReport() error {
 	if err != nil {
 		return err
 	}
-	log.Infof(log.BackTester, "successfully saved report to %v\\%v", d.OutputPath, fileName)
+	log.Infof(common.Report, "Successfully saved report to %v", filepath.Join(d.OutputPath, fileName))
 	return nil
 }
 
-// AddKlineItem appends a SET of candles for the report to enhance upon
-// generation
-func (d *Data) AddKlineItem(k *kline.Item) {
+// SetKlineData updates an existing kline item for LIVE data usage
+func (d *Data) SetKlineData(k *kline.Item) error {
+	if len(d.OriginalCandles) == 0 {
+		d.OriginalCandles = append(d.OriginalCandles, k)
+		return nil
+	}
+	for i := range d.OriginalCandles {
+		err := d.OriginalCandles[i].EqualSource(k)
+		if err != nil {
+			continue
+		}
+		d.OriginalCandles[i].Candles = append(d.OriginalCandles[i].Candles, k.Candles...)
+		d.OriginalCandles[i].RemoveDuplicates()
+		return nil
+	}
 	d.OriginalCandles = append(d.OriginalCandles, k)
+	return nil
 }
 
 // enhanceCandles will enhance candle data with order information allowing
@@ -83,20 +137,19 @@ func (d *Data) enhanceCandles() error {
 	if d.Statistics == nil {
 		return errStatisticsUnset
 	}
-	d.Statistics.RiskFreeRate *= 100
+	d.Statistics.RiskFreeRate = d.Statistics.RiskFreeRate.Mul(decimal.NewFromInt(100))
 
 	for intVal := range d.OriginalCandles {
 		lookup := d.OriginalCandles[intVal]
-		enhancedKline := DetailedKline{
+		enhancedKline := EnhancedKline{
 			Exchange:  lookup.Exchange,
 			Asset:     lookup.Asset,
 			Pair:      lookup.Pair,
 			Interval:  lookup.Interval,
-			Watermark: fmt.Sprintf("%v - %v - %v", strings.Title(lookup.Exchange), lookup.Asset.String(), strings.ToUpper(lookup.Pair.String())),
+			Watermark: fmt.Sprintf("%s - %s - %s", cases.Title(language.English).String(lookup.Exchange), lookup.Asset.String(), lookup.Pair.Upper()),
 		}
 
-		statsForCandles :=
-			d.Statistics.ExchangeAssetPairStatistics[lookup.Exchange][lookup.Asset][lookup.Pair]
+		statsForCandles := d.Statistics.ExchangeAssetPairStatistics[key.NewExchangeAssetPair(lookup.Exchange, lookup.Asset, lookup.Pair)]
 		if statsForCandles == nil {
 			continue
 		}
@@ -109,49 +162,50 @@ func (d *Data) enhanceCandles() error {
 			_, offset := time.Now().Zone()
 			tt := d.OriginalCandles[intVal].Candles[j].Time.Add(time.Duration(offset) * time.Second)
 			enhancedCandle := DetailedCandle{
-				Time:         tt.Unix(),
+				UnixMilli:    tt.UnixMilli(),
 				Open:         d.OriginalCandles[intVal].Candles[j].Open,
 				High:         d.OriginalCandles[intVal].Candles[j].High,
 				Low:          d.OriginalCandles[intVal].Candles[j].Low,
 				Close:        d.OriginalCandles[intVal].Candles[j].Close,
 				Volume:       d.OriginalCandles[intVal].Candles[j].Volume,
-				VolumeColour: "rgba(47, 194, 27, 0.8)",
+				VolumeColour: "rgba(50, 204, 30, 0.5)",
 			}
 			if j != 0 {
 				if d.OriginalCandles[intVal].Candles[j].Close < d.OriginalCandles[intVal].Candles[j-1].Close {
-					enhancedCandle.VolumeColour = "rgba(252, 3, 3, 0.8)"
+					enhancedCandle.VolumeColour = "rgba(232, 3, 3, 0.5)"
 				}
 			}
 			if !requiresIteration {
-				if statsForCandles.Events[intVal].SignalEvent.GetTime().Equal(d.OriginalCandles[intVal].Candles[j].Time) &&
-					statsForCandles.Events[intVal].SignalEvent.GetDirection() == common.MissingData &&
+				if statsForCandles.Events[intVal].Time.Equal(d.OriginalCandles[intVal].Candles[j].Time) &&
+					(statsForCandles.Events[intVal].SignalEvent == nil || statsForCandles.Events[intVal].SignalEvent.GetDirection() == order.MissingData) &&
 					len(enhancedKline.Candles) > 0 {
 					enhancedCandle.copyCloseFromPreviousEvent(&enhancedKline)
 				}
 			} else {
 				for k := range statsForCandles.Events {
 					if statsForCandles.Events[k].SignalEvent.GetTime().Equal(d.OriginalCandles[intVal].Candles[j].Time) &&
-						statsForCandles.Events[k].SignalEvent.GetDirection() == common.MissingData &&
+						statsForCandles.Events[k].SignalEvent.GetDirection() == order.MissingData &&
 						len(enhancedKline.Candles) > 0 {
 						enhancedCandle.copyCloseFromPreviousEvent(&enhancedKline)
 					}
 				}
 			}
 			for k := range statsForCandles.FinalOrders.Orders {
-				if statsForCandles.FinalOrders.Orders[k].Detail == nil ||
-					!statsForCandles.FinalOrders.Orders[k].Date.Equal(d.OriginalCandles[intVal].Candles[j].Time) {
+				if statsForCandles.FinalOrders.Orders[k].Order == nil ||
+					!statsForCandles.FinalOrders.Orders[k].Order.Date.Equal(d.OriginalCandles[intVal].Candles[j].Time) {
 					continue
 				}
 				// an order was placed here, can enhance chart!
 				enhancedCandle.MadeOrder = true
-				enhancedCandle.OrderAmount = statsForCandles.FinalOrders.Orders[k].Amount
-				enhancedCandle.PurchasePrice = statsForCandles.FinalOrders.Orders[k].Price
-				enhancedCandle.OrderDirection = statsForCandles.FinalOrders.Orders[k].Side
-				if enhancedCandle.OrderDirection == order.Buy {
+				enhancedCandle.OrderAmount = decimal.MustFromFloat(statsForCandles.FinalOrders.Orders[k].Order.Amount)
+				enhancedCandle.PurchasePrice = statsForCandles.FinalOrders.Orders[k].Order.Price
+				enhancedCandle.OrderDirection = statsForCandles.FinalOrders.Orders[k].Order.Side
+				switch enhancedCandle.OrderDirection {
+				case order.Buy:
 					enhancedCandle.Colour = "green"
 					enhancedCandle.Position = "aboveBar"
 					enhancedCandle.Shape = "arrowDown"
-				} else if enhancedCandle.OrderDirection == order.Sell {
+				case order.Sell:
 					enhancedCandle.Colour = "red"
 					enhancedCandle.Position = "belowBar"
 					enhancedCandle.Shape = "arrowUp"
@@ -167,15 +221,21 @@ func (d *Data) enhanceCandles() error {
 	return nil
 }
 
-func (d *DetailedCandle) copyCloseFromPreviousEvent(enhancedKline *DetailedKline) {
+func (d *DetailedCandle) copyCloseFromPreviousEvent(ek *EnhancedKline) {
+	cp := ek.Candles[len(ek.Candles)-1].Close
 	// if the data is missing, ensure that all values just continue the previous candle's close price visually
-	d.Open = enhancedKline.Candles[len(enhancedKline.Candles)-1].Close
-	d.High = enhancedKline.Candles[len(enhancedKline.Candles)-1].Close
-	d.Low = enhancedKline.Candles[len(enhancedKline.Candles)-1].Close
-	d.Close = enhancedKline.Candles[len(enhancedKline.Candles)-1].Close
-
+	d.Open = cp
+	d.High = cp
+	d.Low = cp
+	d.Close = cp
 	d.Colour = "white"
 	d.Position = "aboveBar"
 	d.Shape = "arrowDown"
-	d.Text = common.MissingData.String()
+	d.Text = order.MissingData.String()
+}
+
+// UseDarkMode sets whether to use a dark theme by default
+// for the html generated report
+func (d *Data) UseDarkMode(use bool) {
+	d.UseDarkTheme = use
 }

@@ -3,23 +3,32 @@ package bithumb
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"net/http"
 	"net/url"
-	"reflect"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/common/crypto"
+	"github.com/thrasher-corp/gocryptotrader/common/key"
 	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
+	"github.com/thrasher-corp/gocryptotrader/exchange/order/limits"
 	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
 )
 
 const (
-	apiURL = "https://api.bithumb.com"
+	apiURL       = "https://api.bithumb.com"
+	tradeBaseURL = "https://www.bithumb.com/react/trade/order/"
 
 	noError = "0000"
 
@@ -27,6 +36,7 @@ const (
 	publicOrderBook          = "/public/orderbook/"
 	publicTransactionHistory = "/public/transaction_history/"
 	publicCandleStick        = "/public/candlestick/"
+	publicAssetStatus        = "/public/assetsstatus/"
 
 	privateAccInfo     = "/info/account"
 	privateAccBalance  = "/info/balance"
@@ -44,31 +54,34 @@ const (
 	privateMarketSell  = "/trade/market_sell"
 )
 
-// Bithumb is the overarching type across the Bithumb package
-type Bithumb struct {
+var (
+	errSymbolIsEmpty       = errors.New("symbol cannot be empty")
+	errUnhandledBalanceTag = errors.New("unhandled balance tag")
+)
+
+// Exchange implements exchange.IBotExchange and contains additional specific api methods for interacting with Bithumb
+type Exchange struct {
 	exchange.Base
+	location *time.Location
+	obm      orderbookManager
 }
 
 // GetTradablePairs returns a list of tradable currencies
-func (b *Bithumb) GetTradablePairs() ([]string, error) {
-	result, err := b.GetAllTickers()
+func (e *Exchange) GetTradablePairs(ctx context.Context) ([]string, error) {
+	result, err := e.GetAllTickers(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var currencies []string
-	for x := range result {
-		currencies = append(currencies, x)
-	}
-	return currencies, nil
+	return slices.AppendSeq(make([]string, 0, len(result)), maps.Keys(result)), nil
 }
 
 // GetTicker returns ticker information
 //
 // symbol e.g. "btc"
-func (b *Bithumb) GetTicker(symbol string) (Ticker, error) {
+func (e *Exchange) GetTicker(ctx context.Context, symbol string) (Ticker, error) {
 	var response TickerResponse
-	err := b.SendHTTPRequest(exchange.RestSpot, publicTicker+strings.ToUpper(symbol), &response)
+	err := e.SendHTTPRequest(ctx, exchange.RestSpot, publicTicker+strings.ToUpper(symbol), &response)
 	if err != nil {
 		return response.Data, err
 	}
@@ -81,9 +94,9 @@ func (b *Bithumb) GetTicker(symbol string) (Ticker, error) {
 }
 
 // GetAllTickers returns all ticker information
-func (b *Bithumb) GetAllTickers() (map[string]Ticker, error) {
+func (e *Exchange) GetAllTickers(ctx context.Context) (map[string]Ticker, error) {
 	var response TickersResponse
-	err := b.SendHTTPRequest(exchange.RestSpot, publicTicker+"all", &response)
+	err := e.SendHTTPRequest(ctx, exchange.RestSpot, publicTicker+"all", &response)
 	if err != nil {
 		return nil, err
 	}
@@ -110,29 +123,76 @@ func (b *Bithumb) GetAllTickers() (map[string]Ticker, error) {
 // GetOrderBook returns current orderbook
 //
 // symbol e.g. "btc"
-func (b *Bithumb) GetOrderBook(symbol string) (Orderbook, error) {
+func (e *Exchange) GetOrderBook(ctx context.Context, symbol string) (*Orderbook, error) {
 	response := Orderbook{}
-	err := b.SendHTTPRequest(exchange.RestSpot, publicOrderBook+strings.ToUpper(symbol), &response)
+	err := e.SendHTTPRequest(ctx, exchange.RestSpot, publicOrderBook+strings.ToUpper(symbol), &response)
 	if err != nil {
-		return response, err
+		return nil, err
 	}
 
 	if response.Status != noError {
-		return response, errors.New(response.Message)
+		return nil, errors.New(response.Message)
 	}
 
-	return response, nil
+	response.Data.Bids.FilterZeroQuantities()
+	response.Data.Asks.FilterZeroQuantities()
+
+	return &response, nil
+}
+
+// FilterZeroQuantities filters out orderbook levels with zero quantity
+func (o *OrderbookLevels) FilterZeroQuantities() {
+	b := (*o)[:0]
+	for _, x := range *o {
+		if x.Quantity > 0 {
+			b = append(b, x)
+		}
+	}
+	*o = b
+}
+
+// GetAssetStatus returns the withdrawal and deposit status for the symbol
+func (e *Exchange) GetAssetStatus(ctx context.Context, symbol string) (*Status, error) {
+	if symbol == "" {
+		return nil, errSymbolIsEmpty
+	}
+	var response Status
+	err := e.SendHTTPRequest(ctx, exchange.RestSpot, publicAssetStatus+strings.ToUpper(symbol), &response)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.Status != noError {
+		return nil, errors.New(response.Message)
+	}
+
+	return &response, nil
+}
+
+// GetAssetStatusAll returns the withdrawal and deposit status for all symbols
+func (e *Exchange) GetAssetStatusAll(ctx context.Context) (*StatusAll, error) {
+	var response StatusAll
+	err := e.SendHTTPRequest(ctx, exchange.RestSpot, publicAssetStatus+"ALL", &response)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.Status != noError {
+		return nil, errors.New(response.Message)
+	}
+
+	return &response, nil
 }
 
 // GetTransactionHistory returns recent transactions
 //
 // symbol e.g. "btc"
-func (b *Bithumb) GetTransactionHistory(symbol string) (TransactionHistory, error) {
+func (e *Exchange) GetTransactionHistory(ctx context.Context, symbol string) (TransactionHistory, error) {
 	response := TransactionHistory{}
 	path := publicTransactionHistory +
 		strings.ToUpper(symbol)
 
-	err := b.SendHTTPRequest(exchange.RestSpot, path, &response)
+	err := e.SendHTTPRequest(ctx, exchange.RestSpot, path, &response)
 	if err != nil {
 		return response, err
 	}
@@ -146,10 +206,10 @@ func (b *Bithumb) GetTransactionHistory(symbol string) (TransactionHistory, erro
 
 // GetAccountInformation returns account information based on the desired
 // order/payment currencies
-func (b *Bithumb) GetAccountInformation(orderCurrency, paymentCurrency string) (Account, error) {
+func (e *Exchange) GetAccountInformation(ctx context.Context, orderCurrency, paymentCurrency string) (Account, error) {
 	var response Account
 	if orderCurrency == "" {
-		return response, errors.New("order currency must be set")
+		return response, errSymbolIsEmpty
 	}
 
 	val := url.Values{}
@@ -159,13 +219,13 @@ func (b *Bithumb) GetAccountInformation(orderCurrency, paymentCurrency string) (
 	}
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateAccInfo, val, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateAccInfo, val, &response)
 }
 
 // GetAccountBalance returns customer wallet information
-func (b *Bithumb) GetAccountBalance(c string) (FullBalance, error) {
+func (e *Exchange) GetAccountBalance(ctx context.Context, c string) (FullBalance, error) {
 	var response Balance
-	var fullBalance = FullBalance{
+	fullBalance := FullBalance{
 		make(map[string]float64),
 		make(map[string]float64),
 		make(map[string]float64),
@@ -178,45 +238,34 @@ func (b *Bithumb) GetAccountBalance(c string) (FullBalance, error) {
 		vals.Set("currency", c)
 	}
 
-	err := b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateAccBalance, vals, &response)
+	err := e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateAccBalance, vals, &response)
 	if err != nil {
 		return fullBalance, err
 	}
 
-	// Added due to increasing of the usuable currencies on exchange, usually
-	// without notificatation, so we dont need to update structs later on
+	// Added due to increasing of the usable currencies on exchange, usually
+	// without notification, so we dont need to update structs later on
 	for tag, datum := range response.Data {
-		splitTag := strings.Split(tag, "_")
-		c := splitTag[len(splitTag)-1]
-		var val float64
-		if reflect.TypeOf(datum).String() != "float64" {
-			val, err = strconv.ParseFloat(datum.(string), 64)
-			if err != nil {
-				return fullBalance, err
-			}
-		} else {
-			val = datum.(float64)
+		kind, _, _ := strings.Cut(tag, "_")
+		_, c, found := strings.CutLast(tag, "_")
+		if !found {
+			return fullBalance, fmt.Errorf("%w: %q has no currency", errUnhandledBalanceTag, tag)
 		}
+		val := datum.Float64()
 
-		switch splitTag[0] {
+		switch kind {
 		case "available":
 			fullBalance.Available[c] = val
-
 		case "in":
 			fullBalance.InUse[c] = val
-
 		case "total":
 			fullBalance.Total[c] = val
-
 		case "misu":
 			fullBalance.Misu[c] = val
-
 		case "xcoin":
 			fullBalance.Xcoin[c] = val
-
 		default:
-			return fullBalance, fmt.Errorf("getaccountbalance error tag name %s unhandled",
-				splitTag)
+			return fullBalance, fmt.Errorf("%w: %q", errUnhandledBalanceTag, tag)
 		}
 	}
 
@@ -226,12 +275,12 @@ func (b *Bithumb) GetAccountBalance(c string) (FullBalance, error) {
 // GetWalletAddress returns customer wallet address
 //
 // currency e.g. btc, ltc or "", will default to btc without currency specified
-func (b *Bithumb) GetWalletAddress(currency string) (WalletAddressRes, error) {
+func (e *Exchange) GetWalletAddress(ctx context.Context, curr currency.Code) (WalletAddressRes, error) {
 	response := WalletAddressRes{}
 	params := url.Values{}
-	params.Set("currency", strings.ToUpper(currency))
+	params.Set("currency", curr.Upper().String())
 
-	err := b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateWalletAdd, params, &response)
+	err := e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateWalletAdd, params, &response)
 	if err != nil {
 		return response, err
 	}
@@ -239,18 +288,41 @@ func (b *Bithumb) GetWalletAddress(currency string) (WalletAddressRes, error) {
 	if response.Data.WalletAddress == "" {
 		return response,
 			fmt.Errorf("deposit address needs to be created via the Bithumb website before retrieval for currency %s",
-				currency)
+				curr.String())
+	}
+
+	var address, tag string
+	switch curr {
+	case currency.XRP:
+		splitStr := "&dt="
+		if !strings.Contains(response.Data.WalletAddress, splitStr) {
+			return response, errors.New("unable to parse XRP deposit address")
+		}
+		splitter := strings.Split(response.Data.WalletAddress, splitStr)
+		address, tag = splitter[0], splitter[1]
+	case currency.XLM, currency.BNB:
+		splitStr := "&memo="
+		if !strings.Contains(response.Data.WalletAddress, splitStr) {
+			return response, fmt.Errorf("unable to parse %s deposit address", curr.String())
+		}
+		splitter := strings.Split(response.Data.WalletAddress, splitStr)
+		address, tag = splitter[0], splitter[1]
+	}
+
+	if tag != "" {
+		response.Data.WalletAddress = address
+		response.Data.Tag = tag
 	}
 
 	return response, nil
 }
 
 // GetLastTransaction returns customer last transaction
-func (b *Bithumb) GetLastTransaction() (LastTransactionTicker, error) {
+func (e *Exchange) GetLastTransaction(ctx context.Context) (LastTransactionTicker, error) {
 	response := LastTransactionTicker{}
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateTicker, nil, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateTicker, nil, &response)
 }
 
 // GetOrders returns order list
@@ -260,40 +332,60 @@ func (b *Bithumb) GetLastTransaction() (LastTransactionTicker, error) {
 // count: Value : 1 ~1000 (default : 100)
 // after: YYYY-MM-DD hh:mm:ss's UNIX Timestamp
 // (2014-11-28 16:40:01 = 1417160401000)
-func (b *Bithumb) GetOrders(orderID, transactionType, count, after, currency string) (Orders, error) {
+func (e *Exchange) GetOrders(ctx context.Context, orderID, transactionType string, count int64, after time.Time, orderCurrency, paymentCurrency currency.Code) (Orders, error) {
 	response := Orders{}
-
 	params := url.Values{}
-	if len(orderID) > 0 {
+
+	if orderCurrency.IsEmpty() {
+		return response, currency.ErrCurrencyCodeEmpty
+	}
+	if !paymentCurrency.IsEmpty() {
+		params.Set("payment_currency", paymentCurrency.Upper().String())
+	}
+
+	params.Set("order_currency", orderCurrency.Upper().String())
+
+	if orderID != "" {
 		params.Set("order_id", orderID)
 	}
 
-	if len(transactionType) > 0 {
+	if transactionType != "" {
 		params.Set("type", transactionType)
 	}
 
-	if len(count) > 0 {
-		params.Set("count", count)
+	if count > 0 {
+		params.Set("count", strconv.FormatInt(count, 10))
 	}
 
-	if len(after) > 0 {
-		params.Set("after", after)
-	}
-
-	if len(currency) > 0 {
-		params.Set("currency", strings.ToUpper(currency))
+	if !after.IsZero() {
+		params.Set("after", after.Format(time.DateTime))
 	}
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateOrders, params, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateOrders, params, &response)
 }
 
 // GetUserTransactions returns customer transactions
-func (b *Bithumb) GetUserTransactions() (UserTransactions, error) {
-	response := UserTransactions{}
+func (e *Exchange) GetUserTransactions(ctx context.Context, offset, count, searchType int64, orderCurrency, paymentCurrency currency.Code) (UserTransactions, error) {
+	params := url.Values{}
+	if offset > 0 {
+		params.Set("offset", strconv.FormatInt(offset, 10))
+	}
+	if count > 0 {
+		params.Set("count", strconv.FormatInt(count, 10))
+	}
+	if searchType > 0 {
+		params.Set("searchGb", strconv.FormatInt(searchType, 10))
+	}
+	if !orderCurrency.IsEmpty() {
+		params.Set("order_currency", orderCurrency.String())
+	}
+	if !paymentCurrency.IsEmpty() {
+		params.Set("payment_currency", paymentCurrency.String())
+	}
+	var response UserTransactions
 
-	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateUserTrans, nil, &response)
+	return response, e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateUserTrans, params, &response)
 }
 
 // PlaceTrade executes a trade order
@@ -303,101 +395,85 @@ func (b *Bithumb) GetUserTransactions() (UserTransactions, error) {
 // transactionType: Transaction type(bid : purchase, ask : sales)
 // units: Order quantity
 // price: Transaction amount per currency
-func (b *Bithumb) PlaceTrade(orderCurrency, transactionType string, units float64, price int64) (OrderPlace, error) {
+func (e *Exchange) PlaceTrade(ctx context.Context, orderCurrency, transactionType string, units float64, price int64) (OrderPlace, error) {
 	response := OrderPlace{}
 
 	params := url.Values{}
 	params.Set("order_currency", strings.ToUpper(orderCurrency))
-	params.Set("Payment_currency", "KRW")
+	params.Set("payment_currency", "KRW")
 	params.Set("type", strings.ToUpper(transactionType))
 	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
 	params.Set("price", strconv.FormatInt(price, 10))
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privatePlaceTrade, params, &response)
-}
-
-// ModifyTrade modifies an order already on the exchange books
-func (b *Bithumb) ModifyTrade(orderID, orderCurrency, transactionType string, units float64, price int64) (OrderPlace, error) {
-	response := OrderPlace{}
-
-	params := url.Values{}
-	params.Set("order_currency", strings.ToUpper(orderCurrency))
-	params.Set("Payment_currency", "KRW")
-	params.Set("type", strings.ToUpper(transactionType))
-	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
-	params.Set("price", strconv.FormatInt(price, 10))
-	params.Set("order_id", orderID)
-
-	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privatePlaceTrade, params, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privatePlaceTrade, params, &response)
 }
 
 // GetOrderDetails returns specific order details
 //
 // orderID: Order number registered for purchase/sales
 // transactionType: Transaction type(bid : purchase, ask : sales)
-// currency: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM, BTG, EOS
+// ccy: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM, BTG, EOS
 // (default value: BTC)
-func (b *Bithumb) GetOrderDetails(orderID, transactionType, currency string) (OrderDetails, error) {
+func (e *Exchange) GetOrderDetails(ctx context.Context, orderID, transactionType, ccy string) (OrderDetails, error) {
 	response := OrderDetails{}
 
 	params := url.Values{}
 	params.Set("order_id", strings.ToUpper(orderID))
 	params.Set("type", transactionType)
-	params.Set("currency", strings.ToUpper(currency))
+	params.Set("currency", strings.ToUpper(ccy))
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateOrderDetail, params, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateOrderDetail, params, &response)
 }
 
 // CancelTrade cancels a customer purchase/sales transaction
 // transactionType: Transaction type(bid : purchase, ask : sales)
 // orderID: Order number registered for purchase/sales
-// currency: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM, BTG, EOS
+// ccy: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM, BTG, EOS
 // (default value: BTC)
-func (b *Bithumb) CancelTrade(transactionType, orderID, currency string) (ActionStatus, error) {
+func (e *Exchange) CancelTrade(ctx context.Context, transactionType, orderID, ccy string) (ActionStatus, error) {
 	response := ActionStatus{}
 
 	params := url.Values{}
 	params.Set("order_id", strings.ToUpper(orderID))
 	params.Set("type", strings.ToUpper(transactionType))
-	params.Set("currency", strings.ToUpper(currency))
+	params.Set("currency", strings.ToUpper(ccy))
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateCancelTrade, nil, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateCancelTrade, nil, &response)
 }
 
 // WithdrawCrypto withdraws a customer currency to an address
 //
 // address: Currency withdrawing address
 // destination: Currency withdrawal Destination Tag (when withdraw XRP) OR
-// Currency withdrawal Payment Id (when withdraw XMR)
+// Currency withdrawal Payment ID (when withdraw XMR)
 // currency: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM
 // (default value: BTC)
 // units: Quantity to withdraw currency
-func (b *Bithumb) WithdrawCrypto(address, destination, currency string, units float64) (ActionStatus, error) {
+func (e *Exchange) WithdrawCrypto(ctx context.Context, address, destination, ccy string, units float64) (ActionStatus, error) {
 	response := ActionStatus{}
 
 	params := url.Values{}
 	params.Set("address", address)
-	if len(destination) > 0 {
+	if destination != "" {
 		params.Set("destination", destination)
 	}
-	params.Set("currency", strings.ToUpper(currency))
+	params.Set("currency", strings.ToUpper(ccy))
 	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateBTCWithdraw, params, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateBTCWithdraw, params, &response)
 }
 
 // RequestKRWDepositDetails returns Bithumb banking details for deposit
 // information
-func (b *Bithumb) RequestKRWDepositDetails() (KRWDeposit, error) {
+func (e *Exchange) RequestKRWDepositDetails(ctx context.Context) (KRWDeposit, error) {
 	response := KRWDeposit{}
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateKRWDeposit, nil, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateKRWDeposit, nil, &response)
 }
 
 // RequestKRWWithdraw allows a customer KRW withdrawal request
@@ -405,7 +481,7 @@ func (b *Bithumb) RequestKRWDepositDetails() (KRWDeposit, error) {
 // bank: Bankcode with bank name e.g. (bankcode)_(bankname)
 // account: Withdrawing bank account number
 // price: 	Withdrawing amount
-func (b *Bithumb) RequestKRWWithdraw(bank, account string, price int64) (ActionStatus, error) {
+func (e *Exchange) RequestKRWWithdraw(ctx context.Context, bank, account string, price int64) (ActionStatus, error) {
 	response := ActionStatus{}
 
 	params := url.Values{}
@@ -414,7 +490,7 @@ func (b *Bithumb) RequestKRWWithdraw(bank, account string, price int64) (ActionS
 	params.Set("price", strconv.FormatInt(price, 10))
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateKRWWithdraw, params, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateKRWWithdraw, params, &response)
 }
 
 // MarketBuyOrder initiates a buy order through available order books
@@ -422,15 +498,16 @@ func (b *Bithumb) RequestKRWWithdraw(bank, account string, price int64) (ActionS
 // currency: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM, BTG, EOS
 // (default value: BTC)
 // units: Order quantity
-func (b *Bithumb) MarketBuyOrder(currency string, units float64) (MarketBuy, error) {
+func (e *Exchange) MarketBuyOrder(ctx context.Context, pair currency.Pair, units float64) (MarketBuy, error) {
 	response := MarketBuy{}
 
 	params := url.Values{}
-	params.Set("currency", strings.ToUpper(currency))
+	params.Set("order_currency", strings.ToUpper(pair.Base.String()))
+	params.Set("payment_currency", strings.ToUpper(pair.Quote.String()))
 	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateMarketBuy, params, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateMarketBuy, params, &response)
 }
 
 // MarketSellOrder initiates a sell order through available order books
@@ -438,39 +515,45 @@ func (b *Bithumb) MarketBuyOrder(currency string, units float64) (MarketBuy, err
 // currency: BTC, ETH, DASH, LTC, ETC, XRP, BCH, XMR, ZEC, QTUM, BTG, EOS
 // (default value: BTC)
 // units: Order quantity
-func (b *Bithumb) MarketSellOrder(currency string, units float64) (MarketSell, error) {
+func (e *Exchange) MarketSellOrder(ctx context.Context, pair currency.Pair, units float64) (MarketSell, error) {
 	response := MarketSell{}
 
 	params := url.Values{}
-	params.Set("currency", strings.ToUpper(currency))
+	params.Set("order_currency", strings.ToUpper(pair.Base.String()))
+	params.Set("payment_currency", strings.ToUpper(pair.Quote.String()))
 	params.Set("units", strconv.FormatFloat(units, 'f', -1, 64))
 
 	return response,
-		b.SendAuthenticatedHTTPRequest(exchange.RestSpot, privateMarketSell, params, &response)
+		e.SendAuthenticatedHTTPRequest(ctx, exchange.RestSpot, privateMarketSell, params, &response)
 }
 
 // SendHTTPRequest sends an unauthenticated HTTP request
-func (b *Bithumb) SendHTTPRequest(ep exchange.URL, path string, result interface{}) error {
-	endpoint, err := b.API.Endpoints.GetURL(ep)
+func (e *Exchange) SendHTTPRequest(ctx context.Context, ep exchange.URL, path string, result any) error {
+	endpoint, err := e.API.Endpoints.GetURL(ep)
 	if err != nil {
 		return err
 	}
-	return b.SendPayload(context.Background(), &request.Item{
-		Method:        http.MethodGet,
-		Path:          endpoint + path,
-		Result:        result,
-		Verbose:       b.Verbose,
-		HTTPDebugging: b.HTTPDebugging,
-		HTTPRecording: b.HTTPRecording,
-	})
+	item := &request.Item{
+		Method:                 http.MethodGet,
+		Path:                   endpoint + path,
+		Result:                 result,
+		Verbose:                e.Verbose,
+		HTTPDebugging:          e.HTTPDebugging,
+		HTTPRecording:          e.HTTPRecording,
+		HTTPMockDataSliceLimit: e.HTTPMockDataSliceLimit,
+	}
+	return e.SendPayload(ctx, request.Unset, func() (*request.Item, error) {
+		return item, nil
+	}, request.UnauthenticatedRequest)
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request to bithumb
-func (b *Bithumb) SendAuthenticatedHTTPRequest(ep exchange.URL, path string, params url.Values, result interface{}) error {
-	if !b.AllowAuthenticatedRequest() {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet, b.Name)
+func (e *Exchange) SendAuthenticatedHTTPRequest(ctx context.Context, ep exchange.URL, path string, params url.Values, result any) error {
+	creds, err := e.GetCredentials(ctx)
+	if err != nil {
+		return err
 	}
-	endpoint, err := b.API.Endpoints.GetURL(ep)
+	endpoint, err := e.API.Endpoints.GetURL(ep)
 	if err != nil {
 		return err
 	}
@@ -478,45 +561,48 @@ func (b *Bithumb) SendAuthenticatedHTTPRequest(ep exchange.URL, path string, par
 		params = url.Values{}
 	}
 
-	n := b.Requester.GetNonceMilli().String()
-
-	params.Set("endpoint", path)
-	payload := params.Encode()
-	hmacPayload := path + string('\x00') + payload + string('\x00') + n
-	hmac := crypto.GetHMAC(crypto.HashSHA512,
-		[]byte(hmacPayload),
-		[]byte(b.API.Credentials.Secret))
-	hmacStr := crypto.HexEncodeToString(hmac)
-
-	headers := make(map[string]string)
-	headers["Api-Key"] = b.API.Credentials.Key
-	headers["Api-Sign"] = crypto.Base64Encode([]byte(hmacStr))
-	headers["Api-Nonce"] = n
-	headers["Content-Type"] = "application/x-www-form-urlencoded"
-
 	var intermediary json.RawMessage
+	err = e.SendPayload(ctx, request.Auth, func() (*request.Item, error) {
+		// This is time window sensitive
+		n := strconv.FormatInt(time.Now().UnixMilli(), 10)
+
+		params.Set("endpoint", path)
+
+		payload := params.Encode()
+		hmacPayload := path + string('\x00') + payload + string('\x00') + n
+
+		hmac, err := crypto.GetHMAC(crypto.HashSHA512, []byte(hmacPayload), []byte(creds.Secret))
+		if err != nil {
+			return nil, err
+		}
+
+		headers := make(map[string]string)
+		headers["Api-Key"] = creds.Key
+		headers["Api-Sign"] = base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(hmac)))
+		headers["Api-Nonce"] = n
+		headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+		return &request.Item{
+			Method:                 http.MethodPost,
+			Path:                   endpoint + path,
+			Headers:                headers,
+			Body:                   bytes.NewBufferString(payload),
+			Result:                 &intermediary,
+			NonceEnabled:           true,
+			Verbose:                e.Verbose,
+			HTTPDebugging:          e.HTTPDebugging,
+			HTTPRecording:          e.HTTPRecording,
+			HTTPMockDataSliceLimit: e.HTTPMockDataSliceLimit,
+		}, nil
+	}, request.AuthenticatedRequest)
+	if err != nil {
+		return err
+	}
 
 	errCapture := struct {
 		Status  string `json:"status"`
 		Message string `json:"message"`
 	}{}
-
-	err = b.SendPayload(context.Background(), &request.Item{
-		Method:        http.MethodPost,
-		Path:          endpoint + path,
-		Headers:       headers,
-		Body:          bytes.NewBufferString(payload),
-		Result:        &intermediary,
-		AuthRequest:   true,
-		NonceEnabled:  true,
-		Verbose:       b.Verbose,
-		HTTPDebugging: b.HTTPDebugging,
-		HTTPRecording: b.HTTPRecording,
-		Endpoint:      request.Auth})
-	if err != nil {
-		return err
-	}
-
 	err = json.Unmarshal(intermediary, &errCapture)
 	if err == nil {
 		if errCapture.Status != "" && errCapture.Status != noError {
@@ -530,13 +616,13 @@ func (b *Bithumb) SendAuthenticatedHTTPRequest(ep exchange.URL, path string, par
 }
 
 // GetFee returns an estimate of fee based on type of transaction
-func (b *Bithumb) GetFee(feeBuilder *exchange.FeeBuilder) (float64, error) {
+func (e *Exchange) GetFee(feeBuilder *exchange.FeeBuilder) (float64, error) {
 	var fee float64
 
 	switch feeBuilder.FeeType {
 	case exchange.CryptocurrencyTradeFee:
 		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount)
-	case exchange.CyptocurrencyDepositFee:
+	case exchange.CryptocurrencyDepositFee:
 		fee = getDepositFee(feeBuilder.Pair.Base, feeBuilder.Amount)
 	case exchange.CryptocurrencyWithdrawalFee:
 		fee = getWithdrawalFee(feeBuilder.Pair.Base)
@@ -607,8 +693,39 @@ var errCode = map[string]string{
 }
 
 // GetCandleStick returns candle stick data for requested pair
-func (b *Bithumb) GetCandleStick(symbol, interval string) (resp OHLCVResponse, err error) {
+func (e *Exchange) GetCandleStick(ctx context.Context, symbol, interval string) (resp *OHLCVResponse, err error) {
 	path := publicCandleStick + symbol + "/" + interval
-	err = b.SendHTTPRequest(exchange.RestSpot, path, &resp)
-	return
+	err = e.SendHTTPRequest(ctx, exchange.RestSpot, path, &resp)
+	return resp, err
+}
+
+// FetchExchangeLimits fetches spot order execution limits
+func (e *Exchange) FetchExchangeLimits(ctx context.Context) ([]limits.MinMaxLevel, error) {
+	ticks, err := e.GetAllTickers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	l := make([]limits.MinMaxLevel, 0, len(ticks))
+	for code, data := range ticks {
+		l = append(l, limits.MinMaxLevel{
+			Key:               key.NewExchangeAssetPair(e.Name, asset.Spot, currency.NewPair(currency.NewCode(code), currency.KRW)),
+			MinimumBaseAmount: getAmountMinimum(data.ClosingPrice),
+		})
+	}
+	return l, nil
+}
+
+// getAmountMinimum derives the minimum amount based on current price. This
+// keeps amount in line with front end, rounded to 4 decimal places. As
+// transaction policy:
+// https://en.bithumb.com/customer_support/info_guide?seq=537&categorySeq=302
+// Seems to not be inline with front end limits.
+func getAmountMinimum(unitPrice float64) float64 {
+	if unitPrice <= 0 {
+		return 0
+	}
+	ratio := 500 / unitPrice
+	pow := math.Pow(10, float64(4))
+	return math.Ceil(ratio*pow) / pow // Round up our units
 }

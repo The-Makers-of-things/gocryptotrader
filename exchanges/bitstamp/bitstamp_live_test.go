@@ -1,4 +1,4 @@
-//+build mock_test_off
+//go:build mock_test_off
 
 // This will build if build tag mock_test_off is parsed and will do live testing
 // using all tests in (exchange)_test.go
@@ -9,32 +9,30 @@ import (
 	"os"
 	"testing"
 
-	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/exchange/accounts"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/sharedtestvalues"
+	testexch "github.com/thrasher-corp/gocryptotrader/internal/testing/exchange"
 )
 
-var mockTests = false
+var (
+	mockTests = false
+	// Please supply your own credentials here to do authenticated endpoint testing.
+	apiCredentials = &accounts.Credentials{
+		Key:      "",
+		Secret:   "",
+		ClientID: "", // customerID used to log in
+	}
+)
 
 func TestMain(m *testing.M) {
-	cfg := config.GetConfig()
-	err := cfg.LoadConfig("../../testdata/configtest.json", true)
-	if err != nil {
-		log.Fatal("Bitstamp load config error", err)
+	e = new(Exchange)
+	if err := testexch.Setup(e); err != nil {
+		log.Fatalf("Bitstamp Setup error: %s", err)
 	}
-	bitstampConfig, err := cfg.GetExchangeConfig("Bitstamp")
-	if err != nil {
-		log.Fatal("Bitstamp Setup() init error", err)
+	if apiCredentials.Key != "" && apiCredentials.Secret != "" {
+		e.API.AuthenticatedSupport = true
+		e.SetCredentials(apiCredentials)
 	}
-	bitstampConfig.API.AuthenticatedSupport = true
-	bitstampConfig.API.Credentials.Key = apiKey
-	bitstampConfig.API.Credentials.Secret = apiSecret
-	bitstampConfig.API.Credentials.ClientID = customerID
-	b.SetDefaults()
-	b.Websocket = sharedtestvalues.NewTestWebsocket()
-	err = b.Setup(bitstampConfig)
-	if err != nil {
-		log.Fatal("Bitstamp setup error", err)
-	}
-	log.Printf(sharedtestvalues.LiveTesting, b.Name)
+	log.Printf(sharedtestvalues.LiveTesting, e.Name)
 	os.Exit(m.Run())
 }

@@ -3,10 +3,17 @@ package base
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/thrasher-corp/gocryptotrader/common"
+)
+
+var (
+	errNoProvider            = errors.New("no supporting foreign exchange providers set")
+	errUnsupportedCurrencies = errors.New("currencies not supported by provider")
 )
 
 // IFXProvider enforces standard functions for all foreign exchange providers
@@ -60,7 +67,7 @@ func (p *Provider) GetNewRate(base string, currencies []string) (map[string]floa
 func (p Provider) CheckCurrencies(currencies []string) []string {
 	var spillOver []string
 	for _, c := range currencies {
-		if !common.StringDataCompareInsensitive(p.SupportedCurrencies, c) {
+		if !common.StringSliceCompareInsensitive(p.SupportedCurrencies, c) {
 			spillOver = append(spillOver, c)
 		}
 	}
@@ -69,12 +76,6 @@ func (p Provider) CheckCurrencies(currencies []string) []string {
 
 // GetCurrencyData returns currency data from enabled FX providers
 func (f *FXHandler) GetCurrencyData(baseCurrency string, currencies []string) (map[string]float64, error) {
-	var fullRange = currencies
-
-	if !common.StringDataCompareInsensitive(currencies, baseCurrency) {
-		fullRange = append(fullRange, baseCurrency)
-	}
-
 	f.mtx.Lock()
 	defer f.mtx.Unlock()
 
@@ -82,75 +83,44 @@ func (f *FXHandler) GetCurrencyData(baseCurrency string, currencies []string) (m
 		return nil, errors.New("primary foreign exchange provider details not set")
 	}
 
-	shunt := f.Primary.CheckCurrencies(fullRange)
 	rates, err := f.Primary.GetNewRate(baseCurrency, currencies)
 	if err != nil {
-		return f.backupGetRate(baseCurrency, currencies)
+		backupRates, backupErr := f.backupGetRate(baseCurrency, currencies)
+		if backupErr != nil {
+			return nil, fmt.Errorf("primary provider %s failed: %w; fallback providers failed: %w",
+				f.Primary.Provider.GetName(),
+				err,
+				backupErr)
+		}
+		return backupRates, nil
 	}
 
-	if len(shunt) != 0 {
-		rateNew, err := f.backupGetRate(baseCurrency, shunt)
-		if err != nil {
-			return nil, fmt.Errorf("failed to update rate map for currencies %v %v",
-				shunt,
-				err)
-		}
-
-		for key, val := range rateNew {
-			rates[key] = val
-		}
-
-		return rates, nil
-	}
-
+	// Spillover stays with the primary: support results cannot be merged safely yet, as a provider sent an empty list
+	// answers with every rate it has and would overwrite the primary's quotes.
 	return rates, nil
 }
 
-// backupGetRate uses the currencies that are supported and falls through, and
-// errors when unsupported currency found
+// backupGetRate uses the currencies that are supported and falls through, and errors when unsupported currency found
 func (f *FXHandler) backupGetRate(base string, currencies []string) (map[string]float64, error) {
 	if f.Support == nil {
-		return nil, errors.New("no supporting foreign exchange providers set")
+		return nil, errNoProvider
 	}
-
-	var shunt []string
 	rate := make(map[string]float64)
-
 	for i := range f.Support {
-		if len(shunt) != 0 {
-			shunt = f.Support[i].CheckCurrencies(shunt)
-			newRate, err := f.Support[i].GetNewRate(base, shunt)
-			if err != nil {
-				continue
-			}
-
-			for k, v := range newRate {
-				rate[k] = v
-			}
-
-			if len(shunt) != 0 {
-				continue
-			}
-
-			return rate, nil
-		}
-
-		shunt = f.Support[i].CheckCurrencies(currencies)
-		newRate, err := f.Support[i].GetNewRate(base, currencies)
+		missed := f.Support[i].CheckCurrencies(currencies)
+		toGet := slices.DeleteFunc(currencies, func(s string) bool {
+			return common.StringSliceContains(missed, s)
+		})
+		newRate, err := f.Support[i].GetNewRate(base, toGet)
 		if err != nil {
+			return nil, err
+		}
+		maps.Copy(rate, newRate)
+		if len(missed) != 0 {
+			currencies = missed
 			continue
 		}
-
-		for k, v := range newRate {
-			rate[k] = v
-		}
-
-		if len(shunt) != 0 {
-			continue
-		}
-
 		return rate, nil
 	}
-
-	return nil, fmt.Errorf("currencies %s not supported", shunt)
+	return nil, fmt.Errorf("%w: %s", errUnsupportedCurrencies, currencies)
 }

@@ -1,11 +1,37 @@
 package engine
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
 	"os"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/thrasher-corp/gocryptotrader/common/cache"
 	"github.com/thrasher-corp/gocryptotrader/config"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/bitfinex"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/bitstamp"
+	"github.com/thrasher-corp/gocryptotrader/portfolio/withdraw"
 )
+
+// blockedCIExchanges are exchanges that are not able to be tested on CI
+var blockedCIExchanges = []string{
+	"binance", // binance API is banned from executing within the US where github Actions is ran
+	"bybit",   // bybit API is banned from executing within the US where github Actions is ran
+}
+
+func isCITest() bool {
+	return os.Getenv("CI") == "true"
+}
 
 func TestLoadConfigWithSettings(t *testing.T) {
 	empty := ""
@@ -48,7 +74,6 @@ func TestLoadConfigWithSettings(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// prepare the 'flags'
 			flagSet := make(map[string]bool)
@@ -74,14 +99,25 @@ func TestLoadConfigWithSettings(t *testing.T) {
 
 func TestStartStopDoesNotCausePanic(t *testing.T) {
 	t.Parallel()
+	tempDir := t.TempDir()
 	botOne, err := NewFromSettings(&Settings{
 		ConfigFile:   config.TestFile,
 		EnableDryRun: true,
+		DataDir:      tempDir,
 	}, nil)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
-
+	botOne.Settings.EnableGRPC = false
+	botOne.Settings.EnableGRPCProxy = false
+	botOne.Config.RemoteControl.GRPC.Enabled = false
+	botOne.Config.RemoteControl.GRPC.GRPCProxyEnabled = false
+	for i := range botOne.Config.Exchanges {
+		if botOne.Config.Exchanges[i].Name != testExchange {
+			// there is no need to load all exchanges for this test
+			botOne.Config.Exchanges[i].Enabled = false
+		}
+	}
 	if err = botOne.Start(); err != nil {
 		t.Error(err)
 	}
@@ -89,23 +125,204 @@ func TestStartStopDoesNotCausePanic(t *testing.T) {
 	botOne.Stop()
 }
 
-func TestStartStopTwoDoesNotCausePanic(t *testing.T) {
-	t.Skip("Closing global currency.storage from two bots causes panic")
+func TestGetRuntimeContext(t *testing.T) {
 	t.Parallel()
+	var nilBot *Engine
+	assert.Nil(t, nilBot.getRuntimeContext().Done(), "nil bot should return a background context")
+
+	bot := &Engine{}
+	assert.Nil(t, bot.getRuntimeContext().Done(), "zero-value bot should return a background context")
+
+	ctx := bot.EnsureRuntimeContext()
+	require.NotNil(t, ctx, "runtime context must be created")
+	assert.Same(t, ctx, bot.getRuntimeContext(), "stored runtime context should be returned")
+}
+
+func TestGetRuntimeCancel(t *testing.T) {
+	t.Parallel()
+	var nilBot *Engine
+	assert.Nil(t, nilBot.getRuntimeCancel(), "nil bot should not return a cancel function")
+
+	bot := &Engine{}
+	assert.Nil(t, bot.getRuntimeCancel(), "zero-value bot should not return a cancel function")
+
+	bot.EnsureRuntimeContext()
+	assert.NotNil(t, bot.getRuntimeCancel(), "runtime cancel should be returned after setup")
+}
+
+func TestCancelRuntimeContext(t *testing.T) {
+	t.Parallel()
+	var nilBot *Engine
+	assert.NotPanics(t, func() { nilBot.cancelRuntimeContext() }, "nil bot should ignore runtime context cancellation")
+
+	bot := &Engine{}
+	assert.NotPanics(t, func() { bot.cancelRuntimeContext() }, "zero-value bot should ignore runtime context cancellation")
+
+	ctx := bot.EnsureRuntimeContext()
+	require.NoError(t, ctx.Err(), "runtime context must start active")
+
+	bot.cancelRuntimeContext()
+	assert.ErrorIs(t, ctx.Err(), context.Canceled, "runtime context should be cancelled")
+}
+
+func TestClearRuntimeContext(t *testing.T) {
+	t.Parallel()
+	var nilBot *Engine
+	assert.NotPanics(t, func() { nilBot.clearRuntimeContext() }, "nil bot should ignore runtime context clearing")
+
+	bot := &Engine{}
+	bot.EnsureRuntimeContext()
+	require.NotNil(t, bot.getRuntimeCancel(), "runtime cancel must be stored before clearing")
+
+	bot.clearRuntimeContext()
+	assert.Nil(t, bot.getRuntimeContext().Done(), "cleared runtime context should fall back to background")
+	assert.Nil(t, bot.getRuntimeCancel(), "cleared runtime cancel should be removed")
+}
+
+func TestSetRuntimeShutdownRequested(t *testing.T) {
+	t.Parallel()
+	var nilBot *Engine
+	assert.NotPanics(t, func() { nilBot.setRuntimeShutdownRequested(true) }, "nil bot should ignore shutdown setter calls")
+
+	bot := &Engine{}
+	bot.setRuntimeShutdownRequested(true)
+	assert.True(t, bot.runtimeShutdownRequested, "shutdown flag should be set")
+
+	bot.setRuntimeShutdownRequested(false)
+	assert.False(t, bot.runtimeShutdownRequested, "shutdown flag should be cleared")
+}
+
+func TestIsRuntimeShutdownRequested(t *testing.T) {
+	t.Parallel()
+	var nilBot *Engine
+	assert.False(t, nilBot.isRuntimeShutdownRequested(), "nil bot should report no shutdown request")
+
+	bot := &Engine{}
+	assert.False(t, bot.isRuntimeShutdownRequested(), "zero-value bot should default to no shutdown request")
+
+	bot.runtimeShutdownRequested = true
+	assert.True(t, bot.isRuntimeShutdownRequested(), "stored shutdown request should be reported")
+}
+
+func TestEnsureRuntimeContext(t *testing.T) {
+	t.Parallel()
+	var nilBot *Engine
+	assert.Nil(t, nilBot.EnsureRuntimeContext().Done(), "nil bot should return a background context")
+
+	bot := &Engine{}
+	ctx := bot.EnsureRuntimeContext()
+	require.NotNil(t, ctx, "runtime context must be created")
+	require.NoError(t, ctx.Err(), "runtime context must start active")
+	assert.Same(t, ctx, bot.runtimeCtx, "runtime context should be stored")
+	assert.NotNil(t, bot.runtimeCancel, "runtime cancel should be stored")
+	assert.Same(t, ctx, bot.EnsureRuntimeContext(), "existing runtime context should be reused")
+}
+
+func TestEnsureRuntimeContextReturnsExistingCanceledContextAfterShutdownRequest(t *testing.T) {
+	t.Parallel()
+	bot := &Engine{}
+	ctx := bot.EnsureRuntimeContext()
+	require.NotNil(t, ctx, "runtime context must be created before shutdown")
+	require.NoError(t, ctx.Err(), "runtime context must start active before shutdown")
+
+	bot.RequestShutdown()
+	ctxAfterShutdown := bot.EnsureRuntimeContext()
+	assert.Same(t, ctx, ctxAfterShutdown, "shutdown-requested runtime context should reuse the existing context")
+	require.ErrorIs(t, ctxAfterShutdown.Err(), context.Canceled, "shutdown-requested runtime context must stay cancelled")
+}
+
+func TestEnsureRuntimeContextShutdownRequestedWithoutExistingContext(t *testing.T) {
+	t.Parallel()
+	bot := &Engine{}
+	bot.setRuntimeShutdownRequested(true)
+
+	ctx := bot.EnsureRuntimeContext()
+	require.ErrorIs(t, ctx.Err(), context.Canceled, "shutdown-requested runtime context must be cancelled")
+	assert.Nil(t, bot.runtimeCtx, "shutdown-requested path should not store a runtime context")
+	assert.Nil(t, bot.runtimeCancel, "shutdown-requested path should not store a runtime cancel function")
+}
+
+func TestEnsureRuntimeContextCancelPresentWithoutContextReturnsBackground(t *testing.T) {
+	t.Parallel()
+	bot := &Engine{runtimeCancel: func() {}}
+
+	ctx := bot.EnsureRuntimeContext()
+	assert.Nil(t, ctx.Done(), "missing runtime context should fall back to background")
+	assert.NotNil(t, bot.runtimeCancel, "existing runtime cancel should be preserved")
+	assert.Nil(t, bot.runtimeCtx, "background fallback should not create a runtime context")
+}
+
+func TestRequestShutdown(t *testing.T) {
+	t.Parallel()
+	var nilBot *Engine
+	assert.NotPanics(t, func() { nilBot.RequestShutdown() }, "nil bot should ignore shutdown requests")
+
+	bot := &Engine{}
+	ctx := bot.EnsureRuntimeContext()
+	require.NoError(t, ctx.Err(), "runtime context must start active")
+
+	bot.RequestShutdown()
+	assert.True(t, bot.isRuntimeShutdownRequested(), "shutdown request should be recorded")
+	assert.ErrorIs(t, ctx.Err(), context.Canceled, "runtime context should be cancelled on shutdown request")
+}
+
+func TestWaitForGPRCShutdownDoesNotBlockWithoutShutdownReceiver(t *testing.T) {
+	t.Parallel()
+	bot := &Engine{
+		GRPCShutdownSignal: make(chan struct{}, 1),
+		Settings:           Settings{Shutdown: make(chan struct{})},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		bot.waitForGPRCShutdown()
+		close(done)
+	}()
+
+	bot.GRPCShutdownSignal <- struct{}{}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForGPRCShutdown blocked without shutdown receiver")
+	}
+}
+
+var enableExperimentalTest = false
+
+func TestStartStopTwoDoesNotCausePanic(t *testing.T) {
+	t.Parallel()
+	if !enableExperimentalTest {
+		t.Skip("test is functional, however does not need to be included in go test runs")
+	}
+	tempDir := t.TempDir()
+	tempDir2 := t.TempDir()
 	botOne, err := NewFromSettings(&Settings{
 		ConfigFile:   config.TestFile,
 		EnableDryRun: true,
+		DataDir:      tempDir,
 	}, nil)
 	if err != nil {
 		t.Error(err)
 	}
+	botOne.Settings.EnableGRPC = false
+	botOne.Settings.EnableGRPCProxy = false
+	botOne.Config.RemoteControl.GRPC.Enabled = false
+	botOne.Config.RemoteControl.GRPC.GRPCProxyEnabled = false
+
 	botTwo, err := NewFromSettings(&Settings{
 		ConfigFile:   config.TestFile,
 		EnableDryRun: true,
+		DataDir:      tempDir2,
 	}, nil)
 	if err != nil {
 		t.Error(err)
 	}
+	botTwo.Settings.EnableGRPC = false
+	botTwo.Settings.EnableGRPCProxy = false
+	botTwo.Config.RemoteControl.GRPC.Enabled = false
+	botTwo.Config.RemoteControl.GRPC.GRPCProxyEnabled = false
+
 	if err = botOne.Start(); err != nil {
 		t.Error(err)
 	}
@@ -115,4 +332,569 @@ func TestStartStopTwoDoesNotCausePanic(t *testing.T) {
 
 	botOne.Stop()
 	botTwo.Stop()
+}
+
+func TestGetExchangeByName(t *testing.T) {
+	t.Parallel()
+	_, err := (*ExchangeManager)(nil).GetExchangeByName("tehehe")
+	assert.ErrorIs(t, err, ErrNilSubsystem)
+
+	em := NewExchangeManager()
+	exch, err := em.NewExchangeByName(testExchange)
+	require.NoError(t, err)
+
+	exch.SetDefaults()
+	exch.SetEnabled(true)
+	err = em.Add(exch)
+	require.NoError(t, err)
+
+	e := &Engine{ExchangeManager: em}
+
+	if !exch.IsEnabled() {
+		t.Errorf("TestGetExchangeByName: Unexpected result")
+	}
+
+	exch.SetEnabled(false)
+	bfx, err := e.GetExchangeByName(testExchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bfx.IsEnabled() {
+		t.Errorf("TestGetExchangeByName: Unexpected result")
+	}
+	if exch.GetName() != testExchange {
+		t.Errorf("TestGetExchangeByName: Unexpected result")
+	}
+
+	_, err = e.GetExchangeByName("Asdasd")
+	assert.ErrorIs(t, err, ErrExchangeNotFound)
+}
+
+func TestLoadExchangeConcurrently(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	e := &Engine{ExchangeManager: NewExchangeManager(), Config: &config.Config{}, runtimeCtx: ctx}
+	for _, name := range exchange.Exchanges {
+		e.Config.Exchanges = append(e.Config.Exchanges, config.Exchange{
+			Name:                          name,
+			WebsocketResponseCheckTimeout: config.DefaultWebsocketResponseCheckTimeout,
+			WebsocketResponseMaxLimit:     config.DefaultWebsocketResponseMaxLimit,
+			WebsocketTrafficTimeout:       config.DefaultWebsocketTrafficTimeout,
+		})
+	}
+	var wg sync.WaitGroup
+	for _, name := range exchange.Exchanges {
+		// Each load looks its config up among names the other loads are standardising; the cancelled context stops
+		// Bootstrap before it sends a request
+		wg.Go(func() {
+			err := e.LoadExchange(name)
+			assert.Truef(t, onlyCancelled(err), "LoadExchange should fail only on Bootstrap's cancelled context for %s, got: %v", name, err)
+		})
+	}
+	wg.Wait()
+	for i, name := range exchange.Exchanges {
+		exch, err := NewExchangeManager().NewExchangeByName(name)
+		require.NoError(t, err, "NewExchangeByName must not error")
+		exch.SetDefaults()
+		assert.Equal(t, exch.GetName(), e.Config.Exchanges[i].Name, "LoadExchange should standardise the exchange config's name")
+	}
+}
+
+// TestLoadExchangeEnabledRaceIsProtected checks that LoadExchange's writes to an exchange
+// config's Enabled field are synchronised with the config's readers, so that a bot loading
+// an exchange cannot race a concurrently served GetInfo request
+func TestLoadExchangeEnabledRaceIsProtected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	testExchanges := []string{testExchange, "Bitfinex"}
+	e := &Engine{ExchangeManager: NewExchangeManager(), Config: &config.Config{}, runtimeCtx: ctx}
+	for _, name := range testExchanges {
+		e.Config.Exchanges = append(e.Config.Exchanges, config.Exchange{
+			Name:                          name,
+			WebsocketResponseCheckTimeout: config.DefaultWebsocketResponseCheckTimeout,
+			WebsocketResponseMaxLimit:     config.DefaultWebsocketResponseMaxLimit,
+			WebsocketTrafficTimeout:       config.DefaultWebsocketTrafficTimeout,
+		})
+	}
+
+	var wg sync.WaitGroup
+	for _, name := range testExchanges {
+		// The cancelled context stops Bootstrap after Setup, so each load still enables the config and each unload disables it
+		wg.Go(func() {
+			for range 20 {
+				err := e.LoadExchange(name)
+				assert.Truef(t, onlyCancelled(err), "LoadExchange should fail only on Bootstrap's cancelled context for %s, got: %v", name, err)
+				assert.NoErrorf(t, e.UnloadExchange(name), "UnloadExchange should not error for %s", name)
+			}
+		})
+	}
+	for range 2 {
+		// CountEnabledExchanges, GetEnabledExchanges and GetDisabledExchanges serve RPC and startup reads
+		wg.Go(func() {
+			for range 200 {
+				_ = e.Config.CountEnabledExchanges()
+				_ = e.Config.GetEnabledExchanges()
+				_ = e.Config.GetDisabledExchanges()
+			}
+		})
+	}
+	wg.Wait()
+	assert.Zero(t, e.Config.CountEnabledExchanges(), "UnloadExchange should leave every exchange config disabled")
+}
+
+// TestLoadExchangeRollbackRaceIsProtected checks that LoadExchange's rollback after a failed Setup is synchronised
+// with the config's readers
+func TestLoadExchangeRollbackRaceIsProtected(t *testing.T) {
+	t.Parallel()
+	// Should Setup ever pass, the cancelled context stops Bootstrap before it sends a request
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	// Setup rejects a config without websocket timeouts, so every load takes LoadExchange's rollback path
+	e := &Engine{ExchangeManager: NewExchangeManager(), Config: &config.Config{Exchanges: []config.Exchange{{Name: testExchange}}}, runtimeCtx: ctx}
+	loaded := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer close(loaded)
+		for range 20 {
+			assert.ErrorContains(t, e.LoadExchange(testExchange), "invalid traffic timeout", "LoadExchange should fail Setup without websocket timeouts")
+		}
+	})
+	wg.Go(func() {
+		for {
+			select {
+			case <-loaded:
+				return
+			default:
+				_ = e.Config.CountEnabledExchanges()
+				_ = e.Config.GetEnabledExchanges()
+				_ = e.Config.GetDisabledExchanges()
+			}
+		}
+	})
+	wg.Wait()
+	assert.Zero(t, e.Config.CountEnabledExchanges(), "LoadExchange should roll the exchange config back to disabled when Setup fails")
+}
+
+// onlyCancelled reports whether err consists solely of context cancellations, however they are wrapped or joined
+func onlyCancelled(err error) bool {
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		if errs := e.Unwrap(); len(errs) > 0 {
+			for _, err := range errs {
+				if !onlyCancelled(err) {
+					return false
+				}
+			}
+			return true
+		}
+	case interface{ Unwrap() error }:
+		if inner := e.Unwrap(); inner != nil {
+			return onlyCancelled(inner)
+		}
+	}
+	return errors.Is(err, context.Canceled)
+}
+
+func TestUnloadExchange(t *testing.T) {
+	t.Parallel()
+	em := NewExchangeManager()
+	exch, err := em.NewExchangeByName(testExchange)
+	require.NoError(t, err)
+
+	exch.SetDefaults()
+	exch.SetEnabled(true)
+	err = em.Add(exch)
+	require.NoError(t, err)
+
+	e := &Engine{
+		ExchangeManager: em,
+		Config:          &config.Config{Exchanges: []config.Exchange{{Name: testExchange}}},
+	}
+	err = e.UnloadExchange("asdf")
+	assert.ErrorIs(t, err, config.ErrExchangeNotFound)
+
+	err = e.UnloadExchange(testExchange)
+	if err != nil {
+		t.Errorf("TestUnloadExchange: Failed to get exchange. %s",
+			err)
+	}
+
+	err = e.UnloadExchange(testExchange)
+	assert.ErrorIs(t, err, ErrExchangeNotFound)
+}
+
+func TestDryRunParamInteraction(t *testing.T) {
+	t.Parallel()
+	bot := &Engine{
+		ExchangeManager: NewExchangeManager(),
+		Settings:        Settings{},
+		Config: &config.Config{
+			Exchanges: []config.Exchange{
+				{
+					Name:                    testExchange,
+					WebsocketTrafficTimeout: time.Second,
+				},
+			},
+		},
+	}
+	err := bot.LoadExchange(testExchange)
+	assert.NoError(t, err, "LoadExchange should not error")
+
+	exchCfg, err := bot.Config.GetExchangeConfig(testExchange)
+	if err != nil {
+		t.Error(err)
+	}
+	if exchCfg.Verbose {
+		t.Error("verbose should have been disabled")
+	}
+	if err = bot.UnloadExchange(testExchange); err != nil {
+		t.Error(err)
+	}
+
+	// Now set dryrun mode to true,
+	// enable exchange verbose mode and verify that verbose mode
+	// will be set on Bitfinex
+	bot.Settings.EnableDryRun = true
+	bot.Settings.CheckParamInteraction = true
+	bot.Settings.EnableExchangeVerbose = true
+
+	err = bot.LoadExchange(testExchange)
+	assert.NoError(t, err, "LoadExchange should not error")
+
+	exchCfg, err = bot.Config.GetExchangeConfig(testExchange)
+	if err != nil {
+		t.Error(err)
+	}
+	if !bot.Settings.EnableDryRun ||
+		!exchCfg.Verbose {
+		t.Error("dryrun should be true and verbose should be true")
+	}
+}
+
+func TestValidateAPICredentials(t *testing.T) {
+	t.Parallel()
+	t.Run("no enabled assets", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		err := validateAPICredentials(t.Context(), testExchange, nil, func(context.Context, asset.Item) error {
+			called = true
+			return nil
+		})
+		require.ErrorIs(t, err, asset.ErrNotEnabled, "validation must fail when no assets are enabled")
+		assert.ErrorContains(t, err, testExchange, "error should name the exchange it came from")
+		assert.False(t, called, "validation should not run without an enabled asset")
+	})
+
+	errDeliveryAccountMissing := errors.New("delivery account missing")
+	var validated asset.Items
+	err := validateAPICredentials(t.Context(), testExchange, asset.Items{
+		asset.DeliveryFutures,
+		asset.USDTMarginedFutures,
+	}, func(_ context.Context, a asset.Item) error {
+		validated = append(validated, a)
+		if a == asset.DeliveryFutures {
+			return errDeliveryAccountMissing
+		}
+		return nil
+	})
+	require.NoError(t, err, "validation must succeed when another enabled account is available")
+	assert.Equal(t, asset.Items{asset.DeliveryFutures, asset.USDTMarginedFutures}, validated,
+		"validation should try another enabled futures account after an account-specific failure")
+
+	err = validateAPICredentials(t.Context(), testExchange, asset.Items{asset.DeliveryFutures}, func(context.Context, asset.Item) error {
+		return errDeliveryAccountMissing
+	})
+	require.ErrorIs(t, err, errDeliveryAccountMissing, "validation must return an error when every enabled account fails")
+
+	var seen asset.Items
+	err = validateAPICredentials(t.Context(), testExchange, asset.Items{
+		asset.Options,
+		asset.USDTMarginedFutures,
+		asset.Margin,
+		asset.Spot,
+		asset.PerpetualSwap,
+		asset.DeliveryFutures,
+		asset.Index,
+	}, func(_ context.Context, a asset.Item) error {
+		seen = append(seen, a)
+		return errDeliveryAccountMissing
+	})
+	require.ErrorIs(t, err, errDeliveryAccountMissing, "mixed asset validation must return the aggregated error")
+	assert.Equal(t, asset.Items{
+		asset.Spot,
+		asset.USDTMarginedFutures,
+		asset.PerpetualSwap,
+		asset.DeliveryFutures,
+		asset.Options,
+		asset.Margin,
+		asset.Index,
+	}, seen, "assets should be tried spot first, then futures, then the rest")
+	for _, a := range seen {
+		assert.ErrorContainsf(t, err, a.String()+": "+errDeliveryAccountMissing.Error(), "aggregated error should name %s and why it failed", a)
+	}
+
+	for _, venueWideErr := range []error{
+		exchange.ErrCredentialsAreEmpty,
+		exchange.ErrAuthenticationSupportNotEnabled,
+		&url.Error{Op: "Get", URL: "https://example.com/accounts", Err: context.DeadlineExceeded},
+	} {
+		validated = nil
+		err = validateAPICredentials(t.Context(), testExchange, asset.Items{asset.Spot, asset.USDTMarginedFutures}, func(_ context.Context, a asset.Item) error {
+			validated = append(validated, a)
+			return fmt.Errorf("%w, authenticated request failed", venueWideErr)
+		})
+		require.ErrorIs(t, err, venueWideErr, "venue-wide failure must be returned")
+		assert.Equal(t, asset.Items{asset.Spot}, validated, "venue-wide failure should stop further validation")
+	}
+}
+
+func TestFlagSetWith(t *testing.T) {
+	var isRunning bool
+	flags := make(FlagSet)
+	// Flag not set default to config
+	flags.WithBool("NOT SET", &isRunning, true)
+	if !isRunning {
+		t.Fatalf("received: '%v' but expected: '%v'", isRunning, true)
+	}
+	flags.WithBool("NOT SET", &isRunning, false)
+	if isRunning {
+		t.Fatalf("received: '%v' but expected: '%v'", isRunning, false)
+	}
+
+	flags["IS SET"] = true
+	isRunning = true
+	// Flag set true which will override config
+	flags.WithBool("IS SET", &isRunning, true)
+	if !isRunning {
+		t.Fatalf("received: '%v' but expected: '%v'", isRunning, true)
+	}
+	flags.WithBool("IS SET", &isRunning, false)
+	if !isRunning {
+		t.Fatalf("received: '%v' but expected: '%v'", isRunning, true)
+	}
+
+	flags["IS SET"] = true
+	isRunning = false
+	// Flag set false which will override config
+	flags.WithBool("IS SET", &isRunning, true)
+	if isRunning {
+		t.Fatalf("received: '%v' but expected: '%v'", isRunning, false)
+	}
+	flags.WithBool("IS SET", &isRunning, false)
+	if isRunning {
+		t.Fatalf("received: '%v' but expected: '%v'", isRunning, false)
+	}
+}
+
+func TestRegisterWebsocketDataHandler(t *testing.T) {
+	t.Parallel()
+	var e *Engine
+	err := e.RegisterWebsocketDataHandler(nil, false)
+	require.ErrorIs(t, err, errNilBot)
+
+	e = &Engine{WebsocketRoutineManager: &WebsocketRoutineManager{}}
+	err = e.RegisterWebsocketDataHandler(func(_ string, _ any) error { return nil }, false)
+	require.NoError(t, err)
+}
+
+func TestSetDefaultWebsocketDataHandler(t *testing.T) {
+	t.Parallel()
+	var e *Engine
+	err := e.SetDefaultWebsocketDataHandler()
+	require.ErrorIs(t, err, errNilBot)
+
+	e = &Engine{WebsocketRoutineManager: &WebsocketRoutineManager{}}
+	err = e.SetDefaultWebsocketDataHandler()
+	require.NoError(t, err)
+}
+
+func TestSettingsPrint(t *testing.T) {
+	t.Parallel()
+	var s *Settings
+	s.PrintLoadedSettings()
+
+	s = &Settings{}
+	s.PrintLoadedSettings()
+}
+
+var unsupportedDefaultConfigExchanges = []string{
+	"poloniex", // poloniex has dropped support for the API GCT has implemented //TODO: drop this when supported
+}
+
+func TestGetDefaultConfigurations(t *testing.T) {
+	t.Parallel()
+	em := NewExchangeManager()
+	for i := range exchange.Exchanges {
+		name := strings.ToLower(exchange.Exchanges[i])
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			exch, err := em.NewExchangeByName(name)
+			require.NoError(t, err, "NewExchangeByName must not error")
+
+			if isCITest() && slices.Contains(blockedCIExchanges, name) {
+				t.Skipf("skipping %s due to CI test restrictions", name)
+			}
+
+			if slices.Contains(unsupportedDefaultConfigExchanges, name) {
+				t.Skipf("skipping %s unsupported", name)
+			}
+
+			defaultCfg, err := exchange.GetDefaultConfig(t.Context(), exch)
+			require.NoError(t, err, "GetDefaultConfig must not error")
+			require.NotNil(t, defaultCfg)
+			assert.NotEmpty(t, defaultCfg.Name, "Name should not be empty")
+			assert.True(t, defaultCfg.Enabled, "Enabled should have the correct value")
+
+			if exch.SupportsWebsocket() {
+				assert.Positive(t, defaultCfg.WebsocketResponseCheckTimeout, "WebsocketResponseCheckTimeout should be positive")
+				assert.Positive(t, defaultCfg.WebsocketResponseMaxLimit, "WebsocketResponseMaxLimit should be positive")
+				assert.Positive(t, defaultCfg.WebsocketTrafficTimeout, "WebsocketTrafficTimeout should be positive")
+			}
+
+			require.NoError(t, exch.Setup(defaultCfg), "Setup must not error")
+		})
+	}
+}
+
+func TestSetupExchanges(t *testing.T) {
+	t.Parallel()
+
+	t.Run("No enabled exchanges", func(t *testing.T) {
+		t.Parallel()
+		e := &Engine{
+			Config: &config.Config{Exchanges: []config.Exchange{{Name: testExchange}}},
+		}
+		assert.ErrorIs(t, e.SetupExchanges(), ErrNoExchangesLoaded)
+	})
+
+	t.Run("EnableAllExchanges with specific exchanges set", func(t *testing.T) {
+		t.Parallel()
+		e := &Engine{
+			Config: &config.Config{},
+			Settings: Settings{
+				CoreSettings: CoreSettings{
+					EnableAllExchanges: true,
+					Exchanges:          "Bitstamp,Bitfinex",
+				},
+			},
+		}
+		assert.EqualError(t, e.SetupExchanges(), "cannot enable all exchanges and specific exchanges concurrently")
+	})
+
+	t.Run("Settings dry run toggling", func(t *testing.T) {
+		t.Parallel()
+		e := &Engine{
+			Config: &config.Config{},
+			Settings: Settings{
+				CoreSettings: CoreSettings{
+					EnableAllPairs:     true,
+					EnableAllExchanges: true,
+				},
+				ExchangeTuningSettings: ExchangeTuningSettings{
+					EnableExchangeVerbose:          true,
+					EnableExchangeWebsocketSupport: true,
+					EnableExchangeAutoPairUpdates:  true,
+					DisableExchangeAutoPairUpdates: true,
+					HTTPUserAgent:                  "test",
+					HTTPProxy:                      "test",
+					HTTPTimeout:                    1,
+					EnableExchangeHTTPDebugging:    true,
+				},
+			},
+		}
+		assert.ErrorIs(t, e.SetupExchanges(), ErrNoExchangesLoaded)
+		assert.False(t, e.Settings.EnableDryRun)
+		e.Settings.CheckParamInteraction = true
+		assert.ErrorIs(t, e.SetupExchanges(), ErrNoExchangesLoaded)
+		assert.True(t, e.Settings.EnableDryRun)
+	})
+
+	// Test that overridden exchange inputs are handled correctly
+	testCases := []struct {
+		name           string
+		exchangeString string
+		expectedError  string
+	}{
+		{"Invalid exchange pair", "bob|jill", "exchange bob|jill not found"},
+		{"Single invalid exchange", "bob", "exchange bob not found"},
+		{"Mixed valid and invalid exchanges", "bob,bitstamp", "exchange bob not found"},
+		{"Valid exchange", "BiTSTaMp", "no exchanges have been loaded"}, // Proper exchange name, but not loaded
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := &Engine{
+				Config:   &config.Config{},
+				Settings: Settings{CoreSettings: CoreSettings{Exchanges: tc.exchangeString}},
+			}
+			assert.ErrorContains(t, e.SetupExchanges(), tc.expectedError)
+		})
+	}
+
+	t.Run("Two valid exchanges with exchanges flag toggled", func(t *testing.T) {
+		t.Parallel()
+		e := &Engine{Config: &config.Config{}}
+
+		exchLoader := func(exch exchange.IBotExchange) {
+			exch.SetDefaults()
+			exch.GetBase().Features.Supports.RESTCapabilities.AutoPairUpdates = false
+			cfg, err := exchange.GetDefaultConfig(t.Context(), exch)
+			require.NoError(t, err)
+			e.Config.Exchanges = append(e.Config.Exchanges, *cfg)
+		}
+
+		e.ExchangeManager = NewExchangeManager()
+		exchLoader(new(bitstamp.Exchange))
+		exchLoader(new(bitfinex.Exchange))
+		assert.ElementsMatch(t, []string{"Bitstamp", "Bitfinex"}, e.Config.GetEnabledExchanges())
+
+		t.Run("Load specific exchange", func(t *testing.T) {
+			e.Settings.Exchanges = "BiTfInEx"
+			assert.NoError(t, e.SetupExchanges(), "SetupExchanges with a valid exchange should not error")
+			exchanges, err := e.ExchangeManager.GetExchanges()
+			require.NoError(t, err)
+			require.Len(t, exchanges, 1)
+			assert.Equal(t, "Bitfinex", exchanges[0].GetName())
+		})
+
+		t.Run("Load all enabled exchanges", func(t *testing.T) {
+			e.Settings.Exchanges = ""
+			assert.NoError(t, e.SetupExchanges(), "SetupExchanges with all enabled exchanges should not error")
+			exchanges, err := e.ExchangeManager.GetExchanges()
+			require.NoError(t, err)
+			require.Len(t, exchanges, 2)
+			exchangeNames := []string{exchanges[0].GetName(), exchanges[1].GetName()}
+			assert.ElementsMatch(t, []string{"Bitstamp", "Bitfinex"}, exchangeNames)
+		})
+	})
+}
+
+// Not parallel: it swaps the package-level cache the parallel withdrawal tests use
+func TestValidateSettingsWithdrawCacheSize(t *testing.T) {
+	oldCache, oldSize := withdraw.Cache, withdraw.CacheSize
+	t.Cleanup(func() { withdraw.Cache, withdraw.CacheSize = oldCache, oldSize })
+
+	for _, size := range []uint64{1, 3, 26} {
+		withdraw.Cache = cache.New(oldSize)
+		validateSettings(&Engine{Config: &config.Config{}}, &Settings{WithdrawCacheSize: size}, FlagSet{"withdrawcachesize": true})
+		assert.Equal(t, size, withdraw.CacheSize, "CacheSize should take the flag's value")
+		for i := range size + 1 {
+			withdraw.Cache.Add(i, i)
+		}
+		assert.Equalf(t, size, withdraw.Cache.Len(), "the withdrawal cache should hold the flag's size of %d", size)
+		assert.Falsef(t, withdraw.Cache.Contains(uint64(0)), "the withdrawal cache should evict its oldest entry beyond %d", size)
+	}
+
+	unflagged := cache.New(oldSize)
+	withdraw.Cache, withdraw.CacheSize = unflagged, oldSize
+	validateSettings(&Engine{Config: &config.Config{}}, &Settings{WithdrawCacheSize: 2}, FlagSet{})
+	assert.Same(t, unflagged, withdraw.Cache, "the withdrawal cache should be left alone without the flag")
+	assert.Equal(t, oldSize, withdraw.CacheSize, "CacheSize should be left alone without the flag")
+	for i := range oldSize + 1 {
+		unflagged.Add(i, i)
+	}
+	assert.Equal(t, oldSize, unflagged.Len(), "the withdrawal cache should keep its size without the flag")
 }

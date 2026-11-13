@@ -2,45 +2,37 @@ package currency
 
 import (
 	"fmt"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNewConversionFromString(t *testing.T) {
-	expected := "AUDUSD"
-	conv, err := NewConversionFromString(expected)
-	if err != nil {
-		t.Error(err)
-	}
-	if conv.String() != expected {
-		t.Errorf("NewConversion() error expected %s but received %s",
-			expected,
-			conv)
-	}
+	conv, err := NewConversionFromString("AUDUSD")
+	assert.NoError(t, err, "NewConversionFromString should not error")
+	assert.Equal(t, "AUDUSD", conv.String(), "Should provide correct conversion currency")
+	r, err := conv.GetRate()
+	assert.NoError(t, err, "GetRate should not error")
+	assert.Positive(t, r, "Should provide correct conversion rate")
 
-	newexpected := strings.ToLower(expected)
-	conv, err = NewConversionFromString(newexpected)
-	if err != nil {
-		t.Error(err)
-	}
-	if conv.String() != newexpected {
-		t.Errorf("NewConversion() error expected %s but received %s",
-			newexpected,
-			conv)
-	}
+	conv, err = NewConversionFromString("audusd")
+	assert.NoError(t, err, "NewConversionFromString should not error")
+	assert.Equal(t, "audusd", conv.String(), "Should provide correct conversion for lowercase")
+	r, err = conv.GetRate()
+	assert.NoError(t, err, "GetRate should not error")
+	assert.Positive(t, r, "Should provide correct conversion rate")
 }
 
 func TestNewConversionFromStrings(t *testing.T) {
 	from := "AUD"
 	to := "USD"
-	expected := "AUDUSD"
 
 	conv, err := NewConversionFromStrings(from, to)
 	if err != nil {
 		t.Error(err)
 	}
 
-	if conv.String() != expected {
+	if expected := "AUDUSD"; conv.String() != expected {
 		t.Errorf("NewConversion() error expected %s but received %s",
 			expected,
 			conv)
@@ -50,14 +42,13 @@ func TestNewConversionFromStrings(t *testing.T) {
 func TestNewConversion(t *testing.T) {
 	from := NewCode("AUD")
 	to := NewCode("USD")
-	expected := "AUDUSD"
 
 	conv, err := NewConversion(from, to)
 	if err != nil {
 		t.Error(err)
 	}
 
-	if conv.String() != expected {
+	if expected := "AUDUSD"; conv.String() != expected {
 		t.Errorf("NewConversion() error expected %s but received %s",
 			expected,
 			conv)
@@ -79,8 +70,7 @@ func TestConversionIsInvalid(t *testing.T) {
 	}
 
 	to = AUD
-	conv, err = NewConversion(from, to)
-	if err == nil {
+	if _, err = NewConversion(from, to); err == nil {
 		t.Error("Expected error")
 	}
 }
@@ -100,8 +90,7 @@ func TestConversionIsFiatPair(t *testing.T) {
 	}
 
 	to = LTC
-	conv, err = NewConversion(from, to)
-	if err == nil {
+	if _, err = NewConversion(from, to); err == nil {
 		t.Error("Expected error")
 	}
 }
@@ -159,17 +148,16 @@ func TestConversionsRatesSystem(t *testing.T) {
 	p := SuperDuperConversionSystem.m[USD.Item][AUD.Item]
 	// inverse * to a rate
 	pi := SuperDuperConversionSystem.m[AUD.Item][USD.Item]
-	r := *p * 1000
+
 	expectedRate := 1396.9317581
-	if r != expectedRate {
+	if r := *p * 1000; r != expectedRate {
 		t.Errorf("Convert() error expected %.13f but received %.13f",
 			expectedRate,
 			r)
 	}
 
-	inverseR := *pi * expectedRate
 	expectedInverseRate := float64(1000)
-	if inverseR != expectedInverseRate {
+	if inverseR := *pi * expectedRate; inverseR != expectedInverseRate {
 		t.Errorf("Convert() error expected %.13f but received %.13f",
 			expectedInverseRate,
 			inverseR)

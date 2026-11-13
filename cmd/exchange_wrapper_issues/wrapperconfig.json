@@ -39,6 +39,11 @@
    "secret": "Secret",
    "otpSecret": "-"
   },
+  "binanceus": {
+   "key": "Key",
+   "secret": "Secret",
+   "otpSecret": "-"
+  },
   "bitfinex": {
    "key": "Key",
    "secret": "Secret",
@@ -50,11 +55,6 @@
    "otpSecret": "-"
   },
   "bithumb": {
-   "key": "Key",
-   "secret": "Secret",
-   "otpSecret": "-"
-  },
-  "bitmex": {
    "key": "Key",
    "secret": "Secret",
    "otpSecret": "-"
@@ -80,15 +80,15 @@
    "secret": "Secret",
    "otpSecret": "-"
   },
+  "bybit": {
+   "key": "Key",
+   "secret": "Secret",
+   "otpSecret": "-"
+  },
   "coinbasepro": {
    "key": "Key",
    "secret": "Secret",
    "clientID": "ClientID",
-   "otpSecret": "-"
-  },
-  "coinbene": {
-   "key": "Key",
-   "secret": "Secret",
    "otpSecret": "-"
   },
   "coinut": {
@@ -96,16 +96,11 @@
    "clientID": "ClientID",
    "otpSecret": "-"
   },
-  "exmo": {
-   "key": "Key",
-   "secret": "Secret",
-   "otpSecret": "-"
-  },
-  "ftx": {
-   "key": "Key",
-   "secret": "Secret",
-   "otpSecret": "-"
-  },
+  "deribit": {
+    "key": "Key",
+    "secret": "Secret",
+    "otpSecret": "-"
+   },
   "gateio": {
    "key": "Key",
    "secret": "Secret",
@@ -136,17 +131,12 @@
    "secret": "Secret",
    "otpSecret": "-"
   },
-  "lakebtc": {
-   "key": "Key",
-   "secret": "Secret",
-   "otpSecret": "-"
+  "kucoin":{
+    "key": "Key",
+    "secret": "Secret",
+    "otpSecret": "-"
   },
   "lbank": {
-   "key": "Key",
-   "secret": "Secret",
-   "otpSecret": "-"
-  },
-  "localbitcoins": {
    "key": "Key",
    "secret": "Secret",
    "otpSecret": "-"
@@ -157,7 +147,7 @@
    "clientID": "ClientID",
    "otpSecret": "-"
   },
-  "okex": {
+  "okx": {
    "key": "Key",
    "secret": "Secret",
    "clientID": "ClientID",

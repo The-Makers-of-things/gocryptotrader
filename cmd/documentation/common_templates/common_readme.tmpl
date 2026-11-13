@@ -1,8 +1,9 @@
 {{define "common" -}}
 {{template "header" .}}
+
 ## Current Features for {{.Name}}
 
-#### This package collates basic broad functions that are used throughout this codebase.
+### This package collates basic broad functions that are used throughout this codebase
 
 + Coding example
 
@@ -16,8 +17,5 @@ upper := strings.ToUpper(testString)
 // upper == "AAAAA"
 ```
 
-
-### Please click GoDocs chevron above to view current GoDoc information for this package
-{{template "contributions"}}
 {{template "donations" .}}
 {{end}}

@@ -2,6 +2,7 @@ package timeperiods
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"time"
 
@@ -13,17 +14,17 @@ import (
 // eg if no comparisonTimes match, you will receive 1 TimeRange of Start End with dataInRange = false
 // eg2 if 1 comparisonTime matches in the middle of start and end, you will receive three ranges
 func FindTimeRangesContainingData(start, end time.Time, period time.Duration, comparisonTimes []time.Time) ([]TimeRange, error) {
-	var errs common.Errors
+	var errs error
 	if start.IsZero() {
-		errs = append(errs, errors.New("invalid start time"))
+		errs = common.AppendError(errs, errors.New("invalid start time"))
 	}
 	if end.IsZero() {
-		errs = append(errs, errors.New("invalid end time"))
+		errs = common.AppendError(errs, errors.New("invalid end time"))
 	}
 	if err := validatePeriod(period); err != nil {
-		errs = append(errs, err)
+		errs = common.AppendError(errs, err)
 	}
-	if len(errs) > 0 {
+	if errs != nil {
 		return nil, errs
 	}
 	var t TimePeriodCalculator
@@ -33,7 +34,6 @@ func FindTimeRangesContainingData(start, end time.Time, period time.Duration, co
 	t.comparisonTimes = comparisonTimes
 
 	t.setTimePeriodExists()
-	t.Sort(false)
 	t.calculateRanges()
 
 	return t.TimeRanges, nil
@@ -52,17 +52,17 @@ func validatePeriod(period time.Duration) error {
 // CalculateTimePeriodsInRange can break down start and end times into time periods
 // eg 1 hourly intervals
 func CalculateTimePeriodsInRange(start, end time.Time, period time.Duration) ([]TimePeriod, error) {
-	var errs common.Errors
+	var errs error
 	if start.IsZero() {
-		errs = append(errs, errors.New("invalid start time"))
+		errs = common.AppendError(errs, errors.New("invalid start time"))
 	}
 	if end.IsZero() {
-		errs = append(errs, errors.New("invalid end time"))
+		errs = common.AppendError(errs, errors.New("invalid end time"))
 	}
 	if err := validatePeriod(period); err != nil {
-		errs = append(errs, err)
+		errs = common.AppendError(errs, err)
 	}
-	if len(errs) > 0 {
+	if errs != nil {
 		return nil, errs
 	}
 
@@ -100,7 +100,6 @@ func (t *TimePeriodCalculator) calculateRanges() {
 		}
 		tr.HasDataInRange = t.TimePeriods[len(t.TimePeriods)-1].dataInRange
 		t.TimeRanges = append(t.TimeRanges, tr)
-		tr = TimeRange{}
 	}
 }
 
@@ -112,7 +111,7 @@ func (t *TimePeriodCalculator) calculatePeriods() {
 		return
 	}
 	iterateDateMate := t.start
-	for !iterateDateMate.Equal(t.end) && !iterateDateMate.After(t.end) {
+	for !iterateDateMate.Equal(t.end) && iterateDateMate.Before(t.end) {
 		tp := TimePeriod{
 			Time:        iterateDateMate,
 			dataInRange: false,
@@ -126,23 +125,39 @@ func (t *TimePeriodCalculator) calculatePeriods() {
 // against calculated TimePeriods to determine whether
 // there is existing data within the time period
 func (t *TimePeriodCalculator) setTimePeriodExists() {
+	periodOffset := len(t.TimePeriods)
 	t.calculatePeriods()
-	for i := range t.TimePeriods {
-		for j := range t.comparisonTimes {
-			if t.comparisonTimes[j].Truncate(t.periodDuration).Equal(t.TimePeriods[i].Time) {
-				t.TimePeriods[i].dataInRange = true
-				break
+	if len(t.TimePeriods) == 0 {
+		return
+	}
+	newPeriods := t.TimePeriods[periodOffset:]
+	// Check every period retained from earlier calls because the same
+	// timestamp may appear in more than one previously appended range.
+	for i := range t.comparisonTimes {
+		comparisonTime := t.comparisonTimes[i].Truncate(t.periodDuration)
+		for j := range periodOffset {
+			if t.TimePeriods[j].Time.Equal(comparisonTime) {
+				t.TimePeriods[j].dataInRange = true
 			}
+		}
+		// The range appended by calculatePeriods contains one entry per
+		// interval in ascending time order. Find the first period at or after
+		// comparisonTime, then mark it only when the timestamps match exactly.
+		periodIndex := sort.Search(len(newPeriods), func(j int) bool {
+			return !newPeriods[j].Time.Before(comparisonTime)
+		})
+		if periodIndex < len(newPeriods) && newPeriods[periodIndex].Time.Equal(comparisonTime) {
+			newPeriods[periodIndex].dataInRange = true
 		}
 	}
 }
 
 // Sort will sort the time period asc or desc
 func (t *TimePeriodCalculator) Sort(desc bool) {
-	sort.Slice(t.TimePeriods, func(i, j int) bool {
+	slices.SortFunc(t.TimePeriods, func(a, b TimePeriod) int {
 		if desc {
-			return t.TimePeriods[i].Time.After(t.TimePeriods[j].Time)
+			return b.Time.Compare(a.Time)
 		}
-		return t.TimePeriods[i].Time.Before(t.TimePeriods[j].Time)
+		return a.Time.Compare(b.Time)
 	})
 }

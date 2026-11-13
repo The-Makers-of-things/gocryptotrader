@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/thrasher-corp/gocryptotrader/config"
@@ -13,9 +12,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var (
-	dbConn *database.Instance
-)
+var dbConn *database.Instance
 
 func load(c *cli.Context) error {
 	var conf config.Config
@@ -28,7 +25,7 @@ func load(c *cli.Context) error {
 		return database.ErrDatabaseSupportDisabled
 	}
 
-	err = openDBConnection(c, conf.Database.Driver)
+	err = openDBConnection(c, &conf.Database)
 	if err != nil {
 		return err
 	}
@@ -43,22 +40,23 @@ func load(c *cli.Context) error {
 	return nil
 }
 
-func openDBConnection(c *cli.Context, driver string) (err error) {
+func openDBConnection(c *cli.Context, cfg *database.Config) (err error) {
 	if c.IsSet("verbose") {
 		boil.DebugMode = true
 	}
-	if driver == database.DBPostgreSQL {
-		dbConn, err = dbPSQL.Connect()
-		if err != nil {
-			return fmt.Errorf("database failed to connect: %v, some features that utilise a database will be unavailable", err)
-		}
-		return nil
-	} else if driver == database.DBSQLite || driver == database.DBSQLite3 {
-		dbConn, err = dbsqlite3.Connect()
-		if err != nil {
-			return fmt.Errorf("database failed to connect: %v, some features that utilise a database will be unavailable", err)
-		}
-		return nil
+
+	switch cfg.Driver {
+	case database.DBPostgreSQL:
+		dbConn, err = dbPSQL.Connect(cfg)
+	case database.DBSQLite, database.DBSQLite3:
+		dbConn, err = dbsqlite3.Connect(cfg.Database)
+	default:
+		return fmt.Errorf("unsupported database driver: %q", cfg.Driver)
 	}
-	return errors.New("no connection established")
+
+	if err != nil {
+		return fmt.Errorf("database failed to connect: %w, some features that utilise a database will be unavailable", err)
+	}
+
+	return nil
 }

@@ -1,98 +1,74 @@
+// Package convert formats numeric types into human friendly strings
 package convert
 
 import (
-	"fmt"
 	"math"
 	"strconv"
-	"time"
+	"strings"
+
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
-// FloatFromString format
-func FloatFromString(raw interface{}) (float64, error) {
-	str, ok := raw.(string)
-	if !ok {
-		return 0, fmt.Errorf("unable to parse, value not string: %T", raw)
+// IntToHumanFriendlyString converts an int to a comma separated string at the thousand point
+// eg 1000 becomes 1,000
+func IntToHumanFriendlyString(number int64, thousandsSep string) string {
+	// The sign is split off the formatted text rather than the input because negating math.MinInt64 overflows
+	magnitude, neg := strings.CutPrefix(strconv.FormatInt(number, 10), "-")
+	return numberToHumanFriendlyString(magnitude, 0, "", thousandsSep, neg)
+}
+
+// FloatToHumanFriendlyString converts a float to a comma separated string at the thousand point
+// eg 1000 becomes 1,000
+func FloatToHumanFriendlyString(number float64, decimals uint, decPoint, thousandsSep string) string {
+	neg := number < 0
+	number = math.Abs(number)
+	decimals = min(decimals, math.MaxInt32) // strconv.FormatFloat takes an int precision
+	return numberToHumanFriendlyString(strconv.FormatFloat(number, 'f', int(decimals), 64), decimals, decPoint, thousandsSep, neg)
+}
+
+// DecimalToHumanFriendlyString converts a decimal number to a comma separated string at the thousand point
+// eg 1000 becomes 1,000
+func DecimalToHumanFriendlyString(number decimal.Decimal, rounding uint, decPoint, thousandsSep string) string {
+	neg := number.IsNegative()
+	if neg {
+		number = number.Abs()
 	}
-	flt, err := strconv.ParseFloat(str, 64)
-	if err != nil {
-		return 0, fmt.Errorf("could not convert value: %s Error: %s", str, err)
+	if _, frac, ok := strings.Cut(number.String(), "."); ok {
+		rounding = min(rounding, uint(len(frac)))
+	} else {
+		rounding = 0
 	}
-	return flt, nil
+	rounding = min(rounding, math.MaxInt32) // decimal.StringFixed takes an int32 place count
+	return numberToHumanFriendlyString(number.StringFixed(int32(rounding)), rounding, decPoint, thousandsSep, neg)
 }
 
-// IntFromString format
-func IntFromString(raw interface{}) (int, error) {
-	str, ok := raw.(string)
-	if !ok {
-		return 0, fmt.Errorf("unable to parse, value not string: %T", raw)
+// numberToHumanFriendlyString groups the integer component of an already formatted number with thousandsSep,
+// where dec is the number of decimal places str carries
+func numberToHumanFriendlyString(str string, dec uint, decPoint, thousandsSep string, neg bool) string {
+	if dec+1 > uint(len(str)) {
+		dec = 0
 	}
-	n, err := strconv.Atoi(str)
-	if err != nil {
-		return 0, fmt.Errorf("unable to parse as int: %T", raw)
+	integer, fraction := str, ""
+	if dec > 0 {
+		integer, fraction = str[:len(str)-int(dec)-1], str[len(str)-int(dec):]
 	}
-	return n, nil
-}
 
-// Int64FromString format
-func Int64FromString(raw interface{}) (int64, error) {
-	str, ok := raw.(string)
-	if !ok {
-		return 0, fmt.Errorf("unable to parse, value not string: %T", raw)
+	groups := max(len(integer)-1, 0) / 3
+	lead := len(integer) - groups*3 // The leading group carries the remainder so every following group is exactly three digits
+
+	var b strings.Builder
+	b.Grow(len(str) + groups*len(thousandsSep) + len(decPoint) + 1)
+	if neg {
+		b.WriteByte('-')
 	}
-	n, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("unable to parse as int64: %T", raw)
+	b.WriteString(integer[:lead])
+	for i := lead; i < len(integer); i += 3 {
+		b.WriteString(thousandsSep)
+		b.WriteString(integer[i : i+3])
 	}
-	return n, nil
-}
-
-// TimeFromUnixTimestampFloat format
-func TimeFromUnixTimestampFloat(raw interface{}) (time.Time, error) {
-	ts, ok := raw.(float64)
-	if !ok {
-		return time.Time{}, fmt.Errorf("unable to parse, value not float64: %T", raw)
+	if dec > 0 {
+		b.WriteString(decPoint)
+		b.WriteString(fraction)
 	}
-	return time.Unix(0, int64(ts)*int64(time.Millisecond)), nil
-}
-
-// TimeFromUnixTimestampDecimal converts a unix timestamp in decimal form to
-// a time.Time
-func TimeFromUnixTimestampDecimal(input float64) time.Time {
-	i, f := math.Modf(input)
-	return time.Unix(int64(i), int64(f*(1e9)))
-}
-
-// UnixTimestampToTime returns time.time
-func UnixTimestampToTime(timeint64 int64) time.Time {
-	return time.Unix(timeint64, 0)
-}
-
-// UnixTimestampStrToTime returns a time.time and an error
-func UnixTimestampStrToTime(timeStr string) (time.Time, error) {
-	i, err := strconv.ParseInt(timeStr, 10, 64)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return time.Unix(i, 0), nil
-}
-
-// UnixMillis converts a UnixNano timestamp to milliseconds
-func UnixMillis(t time.Time) int64 {
-	return t.UnixNano() / int64(time.Millisecond)
-}
-
-// RecvWindow converts a supplied time.Duration to milliseconds
-func RecvWindow(d time.Duration) int64 {
-	return int64(d) / int64(time.Millisecond)
-}
-
-// BoolPtr takes in boolen condition and returns pointer version of it
-func BoolPtr(condition bool) *bool {
-	b := condition
-	return &b
-}
-
-// UnixMillisToNano converts Unix milli time to UnixNano
-func UnixMillisToNano(milli int64) int64 {
-	return milli * int64(time.Millisecond)
+	return b.String()
 }

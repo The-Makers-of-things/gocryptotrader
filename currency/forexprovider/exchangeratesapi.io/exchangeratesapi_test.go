@@ -2,10 +2,13 @@ package exchangerates
 
 import (
 	"errors"
+	"log"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/currency/forexprovider/base"
 )
 
@@ -17,11 +20,16 @@ const (
 )
 
 func TestMain(t *testing.M) {
-	e.Setup(base.Settings{
+	switch err := e.Setup(base.Settings{
 		Name:      "ExchangeRates",
 		APIKey:    apiKey,
 		APIKeyLvl: apiKeyLevel,
-	})
+	}); {
+	case err == nil, errors.Is(err, errAPIKeyNotSet):
+		// Tests needing credentials skip themselves via isAPIKeySet
+	default:
+		log.Fatal(err)
+	}
 	os.Exit(t.Run())
 }
 
@@ -54,22 +62,20 @@ func TestGetLatestRates(t *testing.T) {
 	}
 
 	if result.Base != "EUR" {
-		t.Fatalf("unexepcted result. Base currency should be EUR")
+		t.Fatalf("unexpected result. Base currency should be EUR")
 	}
 
 	if result.Rates["EUR"] != 1 {
-		t.Fatalf("unexepcted result. EUR value should be 1")
+		t.Fatalf("unexpected result. EUR value should be 1")
 	}
 
 	if len(result.Rates) <= 1 {
-		t.Fatalf("unexepcted result. Rates map should be 1")
+		t.Fatalf("unexpected result. Rates map should be 1")
 	}
 
 	if e.APIKeyLvl <= apiKeyFree {
 		_, err = e.GetLatestRates("USD", "")
-		if !errors.Is(err, errCannotSetBaseCurrencyOnFreePlan) {
-			t.Errorf("expected: %s, got %s", errCannotSetBaseCurrencyOnFreePlan, err)
-		}
+		assert.ErrorIs(t, err, errCannotSetBaseCurrencyOnFreePlan)
 	}
 
 	result, err = e.GetLatestRates("EUR", "AUD")
@@ -78,11 +84,11 @@ func TestGetLatestRates(t *testing.T) {
 	}
 
 	if result.Base != "EUR" {
-		t.Fatalf("unexepcted result. Base currency should be EUR")
+		t.Fatalf("unexpected result. Base currency should be EUR")
 	}
 
 	if len(result.Rates) != 1 {
-		t.Fatalf("unexepcted result. Rates len should be 1")
+		t.Fatalf("unexpected result. Rates len should be 1")
 	}
 }
 
@@ -98,9 +104,7 @@ func TestGetHistoricalRates(t *testing.T) {
 
 	if e.APIKeyLvl <= apiKeyFree {
 		_, err = e.GetHistoricalRates(time.Now(), "USD", []string{"AUD"})
-		if !errors.Is(err, errCannotSetBaseCurrencyOnFreePlan) {
-			t.Errorf("expected: %s, got %s", errCannotSetBaseCurrencyOnFreePlan, err)
-		}
+		assert.ErrorIs(t, err, errCannotSetBaseCurrencyOnFreePlan)
 	}
 
 	_, err = e.GetHistoricalRates(time.Now(), "EUR", []string{"AUD,USD"})
@@ -116,9 +120,8 @@ func TestConvertCurrency(t *testing.T) {
 
 	if e.APIKeyLvl <= apiKeyFree {
 		_, err := e.ConvertCurrency("USD", "AUD", 1000, time.Time{})
-		if !errors.Is(err, errAPIKeyLevelRestrictedAccess) {
-			t.Errorf("expected: %s, got %s", errAPIKeyLevelRestrictedAccess, err)
-		}
+		assert.ErrorIs(t, err, errAPIKeyLevelRestrictedAccess)
+
 		return
 	}
 
@@ -140,22 +143,17 @@ func TestGetTimeSeriesRates(t *testing.T) {
 
 	if e.APIKeyLvl <= apiKeyFree {
 		_, err := e.GetTimeSeriesRates(time.Time{}, time.Time{}, "EUR", []string{"EUR,USD"})
-		if !errors.Is(err, errAPIKeyLevelRestrictedAccess) {
-			t.Errorf("expected %s, got %s", errAPIKeyLevelRestrictedAccess, err)
-		}
+		assert.ErrorIs(t, err, errAPIKeyLevelRestrictedAccess)
+
 		return
 	}
 
 	_, err := e.GetTimeSeriesRates(time.Time{}, time.Time{}, "USD", []string{"EUR", "USD"})
-	if err == nil {
-		t.Fatal("empty startDate endDate params should throw an error")
-	}
+	require.ErrorIs(t, err, errStartEndDatesInvalid)
 
 	tmNow := time.Now()
 	_, err = e.GetTimeSeriesRates(tmNow.AddDate(0, 1, 0), tmNow, "USD", []string{"EUR", "USD"})
-	if err == nil {
-		t.Fatal("future startTime should throw an error")
-	}
+	require.ErrorIs(t, err, errStartAfterEnd)
 
 	_, err = e.GetTimeSeriesRates(tmNow.AddDate(0, -1, 0), tmNow, "EUR", []string{"AUD,USD"})
 	if err != nil {
@@ -170,9 +168,8 @@ func TestGetFluctuation(t *testing.T) {
 
 	if e.APIKeyLvl <= apiKeyFree {
 		_, err := e.GetFluctuations(time.Time{}, time.Time{}, "EUR", "")
-		if !errors.Is(err, errAPIKeyLevelRestrictedAccess) {
-			t.Errorf("expected: %s, got %s", errAPIKeyLevelRestrictedAccess, err)
-		}
+		assert.ErrorIs(t, err, errAPIKeyLevelRestrictedAccess)
+
 		return
 	}
 
@@ -207,8 +204,7 @@ func TestGetRates(t *testing.T) {
 		t.Skip("API key not set, skipping test")
 	}
 
-	_, err := e.GetRates("EUR", "")
-	if err != nil {
+	if _, err := e.GetRates("EUR", ""); err != nil {
 		t.Fatalf("failed to GetRates. Err: %s", err)
 	}
 }

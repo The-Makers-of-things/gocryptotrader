@@ -3,13 +3,12 @@ package communications
 import (
 	"testing"
 
-	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/communications/base"
 )
 
 func TestNewComm(t *testing.T) {
-	var cfg config.CommunicationsConfig
-	_, err := NewComm(&cfg)
-	if err == nil {
+	var cfg base.CommunicationsConfig
+	if _, err := NewComm(&cfg); err == nil {
 		t.Error("NewComm should have failed on no enabled communication mediums")
 	}
 

@@ -2,10 +2,23 @@ package math
 
 import (
 	"errors"
+	"fmt"
 	"math"
+	"math/big"
+	"strings"
+
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
 var (
+	// ErrNoNegativeResults is returned when no negative results are allowed
+	ErrNoNegativeResults = errors.New("cannot calculate with no negative values")
+	// ErrInexactConversion is returned when a decimal does not convert to float exactly
+	ErrInexactConversion = errors.New("inexact conversion from decimal to float detected")
+	// ErrPowerDifferenceTooSmall when values are too close when calculating the exponent value,
+	// it returns zero
+	ErrPowerDifferenceTooSmall = errors.New("calculated power is too small to use")
+
 	errZeroValue               = errors.New("cannot calculate average of no values")
 	errNegativeValueOutOfRange = errors.New("received negative number less than -1")
 	errGeometricNegative       = errors.New("cannot calculate a geometric mean with negative values")
@@ -13,6 +26,11 @@ var (
 	errCAGRNoIntervals         = errors.New("cannot calculate CAGR with no intervals")
 	errCAGRZeroOpenValue       = errors.New("cannot calculate CAGR with an open value of 0")
 	errInformationBadLength    = errors.New("benchmark rates length does not match returns rates")
+
+	one        = decimal.NewFromInt(1)
+	two        = decimal.NewFromInt(2)
+	oneHundred = decimal.NewFromInt(100)
+	twoHundred = decimal.NewFromInt(200)
 )
 
 // CalculateAmountWithFee returns a calculated fee included amount on fee
@@ -25,16 +43,75 @@ func CalculateFee(amount, fee float64) float64 {
 	return amount * (fee / 100)
 }
 
-// CalculatePercentageGainOrLoss returns the percentage rise over a certain
-// period
-func CalculatePercentageGainOrLoss(priceNow, priceThen float64) float64 {
-	return (priceNow - priceThen) / priceThen * 100
+// PercentageChange returns the percentage change between two numbers, x is reference value.
+func PercentageChange(x, y float64) float64 {
+	return (y - x) / x * 100
 }
 
-// CalculatePercentageDifference returns the percentage of difference between
-// multiple time periods
-func CalculatePercentageDifference(amount, secondAmount float64) float64 {
-	return (amount - secondAmount) / ((amount + secondAmount) / 2) * 100
+// PercentageDifference returns difference between two numbers as a percentage of their average
+func PercentageDifference(x, y float64) float64 {
+	return math.Abs(x-y) / ((x + y) / 2) * 100
+}
+
+// PercentageDifferenceDecimal returns the difference between two decimal values as a percentage of their average
+func PercentageDifferenceDecimal(x, y decimal.Decimal) decimal.Decimal {
+	if x.IsZero() && y.IsZero() {
+		return decimal.Zero
+	}
+	return x.Sub(y).Abs().Div(x.Add(y).Div(two)).Mul(oneHundred)
+}
+
+// SignedPercentageDifferenceDecimal returns the difference between two decimal
+// values as a percentage of the absolute value of their average. A positive or
+// negative result indicates whether x is greater than or less than y. Zero may
+// also mean the difference is below the selected backend's precision. A zero
+// sum returns zero to avoid division by zero.
+func SignedPercentageDifferenceDecimal(x, y decimal.Decimal) decimal.Decimal {
+	sum := x.Add(y)
+	if sum.IsZero() {
+		return decimal.Zero
+	}
+	return x.Sub(y).Mul(twoHundred).Div(sum.Abs())
+}
+
+// CompareSignedPercentageDifferenceDecimal compares the signed percentage
+// difference between x and y with target, returning standard Cmp semantics. It
+// avoids division and compares exact cross-products so backend multiplication
+// cannot round away a difference near the target boundary. Its result may
+// differ from comparing SignedPercentageDifferenceDecimal's rounded value with
+// target.
+func CompareSignedPercentageDifferenceDecimal(x, y, target decimal.Decimal) int {
+	sum := x.Add(y)
+	if sum.IsZero() {
+		return decimal.Zero.Cmp(target)
+	}
+	result := x.Sub(y).Mul(twoHundred).Cmp(target.Mul(sum.Abs()))
+	// A truncated product differs from the exact product by less than one unit
+	// in the backend's last fractional place. The scaled difference is a whole
+	// number of those units, so only an equal result can hide discarded digits.
+	if result != 0 || decimal.MaxFractionalDigits == 0 ||
+		fractionalDigits(target)+fractionalDigits(sum) <= decimal.MaxFractionalDigits {
+		return result
+	}
+
+	// Decimal.String returns a valid, canonical decimal representation in both backends.
+	xRat, _ := new(big.Rat).SetString(x.String())
+	yRat, _ := new(big.Rat).SetString(y.String())
+	sumRat := new(big.Rat).Add(xRat, yRat)
+	targetRat, _ := new(big.Rat).SetString(target.String())
+	difference := new(big.Rat).Sub(xRat, yRat)
+	difference.Mul(difference, big.NewRat(200, 1))
+	targetRat.Mul(targetRat, sumRat.Abs(sumRat))
+	return difference.Cmp(targetRat)
+}
+
+func fractionalDigits(value decimal.Decimal) int {
+	text := value.String()
+	point := strings.IndexByte(text, '.')
+	if point == -1 {
+		return 0
+	}
+	return len(text) - point - 1
 }
 
 // CalculateNetProfit returns net profit
@@ -82,9 +159,9 @@ func InformationRatio(returnsRates, benchmarkRates []float64, averageValues, ave
 	if len(benchmarkRates) != len(returnsRates) {
 		return 0, errInformationBadLength
 	}
-	var diffs []float64
+	diffs := make([]float64, len(returnsRates))
 	for i := range returnsRates {
-		diffs = append(diffs, returnsRates[i]-benchmarkRates[i])
+		diffs[i] = returnsRates[i] - benchmarkRates[i]
 	}
 	stdDev, err := PopulationStandardDeviation(diffs)
 	if err != nil {
@@ -128,11 +205,11 @@ func SampleStandardDeviation(values []float64) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	var superMean []float64
+	superMean := make([]float64, len(values))
 	var combined float64
 	for i := range values {
 		result := math.Pow(values[i]-mean, 2)
-		superMean = append(superMean, result)
+		superMean[i] = result
 		combined += result
 	}
 	avg := combined / (float64(len(superMean)) - 1)
@@ -180,7 +257,8 @@ func FinancialGeometricMean(values []float64) (float64, error) {
 		modVal := values[i] + 1
 		product *= modVal
 	}
-	geometricPower := math.Pow(product, 1/float64(len(values)))
+	prod := 1 / float64(len(values))
+	geometricPower := math.Pow(product, prod)
 	if geometricPower > 0 {
 		// we minus 1 because we manipulated the values to be non-zero/negative
 		geometricPower--
@@ -224,9 +302,9 @@ func SharpeRatio(movementPerCandle []float64, riskFreeRatePerInterval, average f
 	if totalIntervals == 0 {
 		return 0, errZeroValue
 	}
-	var excessReturns []float64
+	excessReturns := make([]float64, len(movementPerCandle))
 	for i := range movementPerCandle {
-		excessReturns = append(excessReturns, movementPerCandle[i]-riskFreeRatePerInterval)
+		excessReturns[i] = movementPerCandle[i] - riskFreeRatePerInterval
 	}
 	standardDeviation, err := PopulationStandardDeviation(excessReturns)
 	if err != nil {
@@ -237,4 +315,237 @@ func SharpeRatio(movementPerCandle []float64, riskFreeRatePerInterval, average f
 	}
 
 	return (average - riskFreeRatePerInterval) / standardDeviation, nil
+}
+
+// DecimalCompoundAnnualGrowthRate Calculates CAGR.
+// Using years, intervals per year would be 1 and number of intervals would be the number of years
+// Using days, intervals per year would be 365 and number of intervals would be the number of days
+func DecimalCompoundAnnualGrowthRate(openValue, closeValue, intervalsPerYear, numberOfIntervals decimal.Decimal) (decimal.Decimal, error) {
+	if numberOfIntervals.IsZero() {
+		return decimal.Zero, errCAGRNoIntervals
+	}
+	if openValue.IsZero() {
+		return decimal.Zero, errCAGRZeroOpenValue
+	}
+	closeOverOpen := closeValue.Div(openValue)
+	exp := intervalsPerYear.Div(numberOfIntervals)
+	pow := DecimalPow(closeOverOpen, exp)
+	if pow.IsZero() {
+		return decimal.Zero, ErrPowerDifferenceTooSmall
+	}
+	k := pow.Sub(one).Mul(oneHundred)
+	return k, nil
+}
+
+// DecimalCalmarRatio is a function of the average compounded annual rate of return versus its maximum drawdown.
+// The higher the Calmar ratio, the better it performed on a risk-adjusted basis during the given time frame, which is mostly commonly set at 36 months
+func DecimalCalmarRatio(highestPrice, lowestPrice, average, riskFreeRateForPeriod decimal.Decimal) (decimal.Decimal, error) {
+	if highestPrice.IsZero() {
+		return decimal.Zero, errCalmarHighest
+	}
+	drawdownDiff := highestPrice.Sub(lowestPrice).Div(highestPrice)
+	if drawdownDiff.IsZero() {
+		return decimal.Zero, nil
+	}
+	return average.Sub(riskFreeRateForPeriod).Div(drawdownDiff), nil
+}
+
+// DecimalInformationRatio The information ratio (IR) is a measurement of portfolio returns beyond the returns of a benchmark,
+// usually an index, compared to the volatility of those returns.
+// The benchmark used is typically an index that represents the market or a particular sector or industry.
+func DecimalInformationRatio(returnsRates, benchmarkRates []decimal.Decimal, averageValues, averageComparison decimal.Decimal) (decimal.Decimal, error) {
+	if len(benchmarkRates) != len(returnsRates) {
+		return decimal.Zero, errInformationBadLength
+	}
+	diffs := make([]decimal.Decimal, len(returnsRates))
+	for i := range returnsRates {
+		diffs[i] = returnsRates[i].Sub(benchmarkRates[i])
+	}
+	stdDev, err := DecimalPopulationStandardDeviation(diffs)
+	if err != nil && !errors.Is(err, ErrInexactConversion) {
+		return decimal.Zero, err
+	}
+	if stdDev.IsZero() {
+		return decimal.Zero, nil
+	}
+	return averageValues.Sub(averageComparison).Div(stdDev), nil
+}
+
+// DecimalPopulationStandardDeviation calculates standard deviation using population based calculation
+func DecimalPopulationStandardDeviation(values []decimal.Decimal) (decimal.Decimal, error) {
+	if len(values) < 2 {
+		return decimal.Zero, nil
+	}
+	valAvg, err := DecimalArithmeticMean(values)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	diffs := make([]decimal.Decimal, len(values))
+	for x := range values {
+		val := values[x].Sub(valAvg)
+		exp := two
+		pow := DecimalPow(val, exp)
+		diffs[x] = pow
+	}
+	var diffAvg decimal.Decimal
+	diffAvg, err = DecimalArithmeticMean(diffs)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	f, exact := diffAvg.Float64()
+	err = nil
+	if !exact {
+		err = fmt.Errorf("%w from %v to %v", ErrInexactConversion, diffAvg, f)
+	}
+	resp := decimal.MustFromFloat(math.Sqrt(f))
+	return resp, err
+}
+
+// DecimalSampleStandardDeviation standard deviation is a statistic that
+// measures the dispersion of a dataset relative to its mean and
+// is calculated as the square root of the variance
+func DecimalSampleStandardDeviation(values []decimal.Decimal) (decimal.Decimal, error) {
+	if len(values) < 2 {
+		return decimal.Zero, nil
+	}
+	mean, err := DecimalArithmeticMean(values)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	superMean := make([]decimal.Decimal, len(values))
+	var combined decimal.Decimal
+	for i := range values {
+		pow := values[i].Sub(mean).Pow(two)
+		superMean[i] = pow
+		combined.Add(pow)
+	}
+	avg := combined.Div(decimal.NewFromInt(int64(len(superMean))).Sub(one))
+	f, exact := avg.Float64()
+	err = nil
+	if !exact {
+		err = fmt.Errorf("%w from %v to %v", ErrInexactConversion, avg, f)
+	}
+	sqrt := math.Sqrt(f)
+	return decimal.MustFromFloat(sqrt), err
+}
+
+// DecimalGeometricMean is an average which indicates the central tendency or
+// typical value of a set of numbers by using the product of their values
+// The geometric average can only process positive numbers
+func DecimalGeometricMean(values []decimal.Decimal) (decimal.Decimal, error) {
+	if len(values) == 0 {
+		return decimal.Zero, errZeroValue
+	}
+	product := one
+	for i := range values {
+		if values[i].LessThanOrEqual(decimal.Zero) {
+			// cannot use negative or zero values in geometric calculation
+			return decimal.Zero, errGeometricNegative
+		}
+		product = product.Mul(values[i])
+	}
+	exp := one.Div(decimal.NewFromInt(int64(len(values))))
+	pow := DecimalPow(product, exp)
+	geometricPower := pow
+	return geometricPower, nil
+}
+
+// DecimalPow is lovely because shopspring decimal cannot
+// handle ^0.x and instead returns 1
+func DecimalPow(x, y decimal.Decimal) decimal.Decimal {
+	pow := math.Pow(x.InexactFloat64(), y.InexactFloat64())
+	if math.IsNaN(pow) || math.IsInf(pow, 0) {
+		return decimal.Zero
+	}
+	return decimal.MustFromFloat(pow)
+}
+
+// DecimalFinancialGeometricMean is a modified geometric average to assess
+// the negative returns of investments. It accepts It adds +1 to each
+// This does impact the final figures as it is modifying values
+// It is still ultimately calculating a geometric average
+// which should only be compared to other financial geometric averages
+func DecimalFinancialGeometricMean(values []decimal.Decimal) (decimal.Decimal, error) {
+	if len(values) == 0 {
+		return decimal.Zero, errZeroValue
+	}
+	product := 1.0
+	for i := range values {
+		if values[i].LessThan(decimal.NewFromInt(-1)) {
+			// cannot lose more than 100%, figures are incorrect
+			// losing exactly 100% will return a 0 value, but is not an error
+			return decimal.Zero, errNegativeValueOutOfRange
+		}
+		// as we cannot have negative or zero value geometric numbers
+		// adding a 1 to the percentage movements allows for differentiation between
+		// negative numbers (eg -0.1 translates to 0.9) and positive numbers (eg 0.1 becomes 1.1)
+		modVal := values[i].Add(one).InexactFloat64()
+		product *= modVal
+	}
+	prod := 1 / float64(len(values))
+	geometricPower := math.Pow(product, prod)
+	if geometricPower > 0 {
+		// we minus 1 because we manipulated the values to be non-zero/negative
+		geometricPower--
+	}
+	return decimal.MustFromFloat(geometricPower), nil
+}
+
+// DecimalArithmeticMean is the basic form of calculating an average.
+// Divide the sum of all values by the length of values
+func DecimalArithmeticMean(values []decimal.Decimal) (decimal.Decimal, error) {
+	if len(values) == 0 {
+		return decimal.Zero, errZeroValue
+	}
+	var sumOfValues decimal.Decimal
+	for x := range values {
+		sumOfValues = sumOfValues.Add(values[x])
+	}
+	return sumOfValues.Div(decimal.NewFromInt(int64(len(values)))), nil
+}
+
+// DecimalSortinoRatio returns sortino ratio of backtest compared to risk-free
+func DecimalSortinoRatio(movementPerCandle []decimal.Decimal, riskFreeRatePerInterval, average decimal.Decimal) (decimal.Decimal, error) {
+	if len(movementPerCandle) == 0 {
+		return decimal.Zero, errZeroValue
+	}
+	totalNegativeResultsSquared := decimal.Zero
+	for x := range movementPerCandle {
+		if movementPerCandle[x].Sub(riskFreeRatePerInterval).LessThan(decimal.Zero) {
+			totalNegativeResultsSquared = totalNegativeResultsSquared.Add(movementPerCandle[x].Sub(riskFreeRatePerInterval).Pow(two))
+		}
+	}
+	if totalNegativeResultsSquared.IsZero() {
+		return decimal.Zero, ErrNoNegativeResults
+	}
+	f, exact := totalNegativeResultsSquared.Float64()
+	var err error
+	if !exact {
+		err = fmt.Errorf("%w from %v to %v", ErrInexactConversion, totalNegativeResultsSquared, f)
+	}
+	fAverageDownsideDeviation := math.Sqrt(f / float64(len(movementPerCandle)))
+	averageDownsideDeviation := decimal.MustFromFloat(fAverageDownsideDeviation)
+
+	return average.Sub(riskFreeRatePerInterval).Div(averageDownsideDeviation), err
+}
+
+// DecimalSharpeRatio returns sharpe ratio of backtest compared to risk-free
+func DecimalSharpeRatio(movementPerCandle []decimal.Decimal, riskFreeRatePerInterval, average decimal.Decimal) (decimal.Decimal, error) {
+	totalIntervals := decimal.NewFromInt(int64(len(movementPerCandle)))
+	if totalIntervals.IsZero() {
+		return decimal.Zero, errZeroValue
+	}
+	excessReturns := make([]decimal.Decimal, len(movementPerCandle))
+	for i := range movementPerCandle {
+		excessReturns[i] = movementPerCandle[i].Sub(riskFreeRatePerInterval)
+	}
+	standardDeviation, err := DecimalPopulationStandardDeviation(excessReturns)
+	if err != nil && !errors.Is(err, ErrInexactConversion) {
+		return decimal.Zero, err
+	}
+	if standardDeviation.IsZero() {
+		return decimal.Zero, nil
+	}
+
+	return average.Sub(riskFreeRatePerInterval).Div(standardDeviation), nil
 }

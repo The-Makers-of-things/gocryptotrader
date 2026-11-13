@@ -5,7 +5,11 @@ import (
 	"time"
 )
 
-// Settings stores engine params
+// Settings stores engine params. Please define a settings struct for automatic
+// display of instance settings. For example, if you define a struct named
+// ManagerSettings, it will be displayed as a subheading "Manager Settings"
+// and individual field names such as 'EnableManager' will be displayed
+// as "Enable Manager: true/false".
 type Settings struct {
 	ConfigFile            string
 	DataDir               string
@@ -14,17 +18,28 @@ type Settings struct {
 	GoMaxProcs            int
 	CheckParamInteraction bool
 
-	// Core Settings
+	CoreSettings
+	ExchangeSyncerSettings
+	ForexSettings
+	ExchangeTuningSettings
+	WithdrawSettings
+
+	// Main shutdown channel
+	Shutdown chan struct{}
+}
+
+// CoreSettings defines settings related to core engine operations
+type CoreSettings struct {
 	EnableDryRun                bool
 	EnableAllExchanges          bool
 	EnableAllPairs              bool
 	EnableCoinmarketcapAnalysis bool
 	EnablePortfolioManager      bool
+	EnableDataHistoryManager    bool
 	PortfolioManagerDelay       time.Duration
 	EnableGRPC                  bool
 	EnableGRPCProxy             bool
-	EnableWebsocketRPC          bool
-	EnableDeprecatedRPC         bool
+	EnableGRPCShutdown          bool
 	EnableCommsRelayer          bool
 	EnableExchangeSyncManager   bool
 	EnableDepositAddressManager bool
@@ -32,60 +47,64 @@ type Settings struct {
 	EnableOrderManager          bool
 	EnableConnectivityMonitor   bool
 	EnableDatabaseManager       bool
-	EnableGCTScriptManager      bool
 	EnableNTPClient             bool
 	EnableWebsocketRoutine      bool
+	EnableCurrencyStateManager  bool
 	EventManagerDelay           time.Duration
+	EnableFuturesTracking       bool
 	Verbose                     bool
+	EnableDispatcher            bool
+	DispatchMaxWorkerAmount     int
+	DispatchJobsLimit           int
+	Exchanges                   string
+}
 
-	// Exchange syncer settings
+// ExchangeSyncerSettings defines settings for the exchange pair synchronisation
+type ExchangeSyncerSettings struct {
 	EnableTickerSyncing    bool
 	EnableOrderbookSyncing bool
 	EnableTradeSyncing     bool
-	SyncWorkers            int
+	SyncWorkersCount       int
 	SyncContinuously       bool
 	SyncTimeoutREST        time.Duration
 	SyncTimeoutWebsocket   time.Duration
+}
 
-	// Forex settings
+// ForexSettings defines settings related to the foreign exchange services
+type ForexSettings struct {
+	EnableAllRatesToday     bool
 	EnableCurrencyConverter bool
 	EnableCurrencyLayer     bool
+	EnableExchangeRates     bool
 	EnableFixer             bool
+	EnableFXMacroData       bool
 	EnableOpenExchangeRates bool
-	EnableExchangeRateHost  bool
+}
 
-	// Exchange tuning settings
-	EnableExchangeHTTPRateLimiter  bool
-	EnableExchangeHTTPDebugging    bool
-	EnableExchangeVerbose          bool
-	ExchangePurgeCredentials       bool
-	EnableExchangeAutoPairUpdates  bool
-	DisableExchangeAutoPairUpdates bool
-	EnableExchangeRESTSupport      bool
-	EnableExchangeWebsocketSupport bool
-	MaxHTTPRequestJobsLimit        int
-	TradeBufferProcessingInterval  time.Duration
-	RequestMaxRetryAttempts        int
+// ExchangeTuningSettings defines settings related to an exchange
+type ExchangeTuningSettings struct {
+	EnableExchangeHTTPRateLimiter       bool
+	EnableExchangeHTTPDebugging         bool
+	EnableExchangeVerbose               bool
+	ExchangePurgeCredentials            bool
+	EnableExchangeAutoPairUpdates       bool
+	DisableExchangeAutoPairUpdates      bool
+	EnableExchangeRESTSupport           bool
+	EnableExchangeWebsocketSupport      bool
+	TradeBufferProcessingInterval       time.Duration
+	RequestMaxRetryAttempts             int
+	AlertSystemPreAllocationCommsBuffer int // See exchanges/alert.go
+	ExchangeShutdownTimeout             time.Duration
+	HTTPTimeout                         time.Duration
+	HTTPUserAgent                       string
+	HTTPProxy                           string
+	GlobalHTTPTimeout                   time.Duration
+	GlobalHTTPUserAgent                 string
+	GlobalHTTPProxy                     string
+}
 
-	// Global HTTP related settings
-	GlobalHTTPTimeout   time.Duration
-	GlobalHTTPUserAgent string
-	GlobalHTTPProxy     string
-
-	// Exchange HTTP related settings
-	HTTPTimeout   time.Duration
-	HTTPUserAgent string
-	HTTPProxy     string
-
-	// Dispatch system settings
-	EnableDispatcher        bool
-	DispatchMaxWorkerAmount int
-	DispatchJobsLimit       int
-
-	// GCTscript settings
-	MaxVirtualMachines uint
-
-	// Withdraw settings
+// WithdrawSettings defines settings related to Withdrawing cryptocurrency
+type WithdrawSettings struct {
 	WithdrawCacheSize uint64
 }
 
@@ -96,9 +115,11 @@ const (
 	MsgStatusSuccess string = "success"
 	// MsgStatusError message to display when failure occurs
 	MsgStatusError string = "error"
+	grpcName       string = "grpc"
+	grpcProxyName  string = "grpc_proxy"
 )
 
 // newConfigMutex only locks and unlocks on engine creation functions
 // as engine modifies global files, this protects the main bot creation
-// functions from interfering with eachother
+// functions from interfering with each other
 var newEngineMutex sync.Mutex

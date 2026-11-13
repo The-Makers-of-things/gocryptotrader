@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/thrasher-corp/gocryptotrader/common"
@@ -21,13 +23,13 @@ func (c *CurrencyConverter) Setup(config base.Settings) error {
 	c.APIKey = config.APIKey
 	c.APIKeyLvl = config.APIKeyLvl
 	c.Enabled = config.Enabled
-	c.RESTPollingDelay = config.RESTPollingDelay
 	c.Verbose = config.Verbose
 	c.PrimaryProvider = config.PrimaryProvider
-	c.Requester = request.New(c.Name,
+	var err error
+	c.Requester, err = request.New(c.Name,
 		common.NewHTTPClientWithTimeout(base.DefaultTimeOut),
-		request.WithLimiter(request.NewBasicRateLimit(rateInterval, requestRate)))
-	return nil
+		request.WithLimiter(request.NewBasicRateLimit(rateInterval, requestRate, 1)))
+	return err
 }
 
 // GetRates is a wrapper function to return rates
@@ -38,9 +40,9 @@ func (c *CurrencyConverter) GetRates(baseCurrency, symbols string) (map[string]f
 		return c.Convert(baseCurrency, symbols)
 	}
 
-	var completedStrings []string
+	completedStrings := make([]string, len(splitSymbols))
 	for x := range splitSymbols {
-		completedStrings = append(completedStrings, baseCurrency+"_"+splitSymbols[x])
+		completedStrings[x] = baseCurrency + "_" + splitSymbols[x]
 	}
 
 	if (c.APIKey != "" && c.APIKey != "Key") || len(completedStrings) == 2 {
@@ -57,14 +59,13 @@ func (c *CurrencyConverter) GetRates(baseCurrency, symbols string) (map[string]f
 				continue
 			}
 			for k, v := range result {
-				rates[strings.Replace(k, "_", "", -1)] = v
+				rates[strings.ReplaceAll(k, "_", "")] = v
 			}
 		}
 	}
 
 	currLen := len(completedStrings)
-	mod := currLen % 2
-	if mod == 0 {
+	if mod := currLen % 2; mod == 0 {
 		processBatch(currLen)
 		return rates, nil
 	}
@@ -76,7 +77,7 @@ func (c *CurrencyConverter) GetRates(baseCurrency, symbols string) (map[string]f
 	}
 
 	for k, v := range result {
-		rates[strings.Replace(k, "_", "", -1)] = v
+		rates[strings.ReplaceAll(k, "_", "")] = v
 	}
 
 	return rates, nil
@@ -127,12 +128,7 @@ func (c *CurrencyConverter) GetSupportedCurrencies() ([]string, error) {
 		return nil, err
 	}
 
-	var currencies []string
-	for key := range result.Results {
-		currencies = append(currencies, key)
-	}
-
-	return currencies, nil
+	return slices.AppendSeq(make([]string, 0, len(result.Results)), maps.Keys(result.Results)), nil
 }
 
 // GetCountries returns a list of the supported countries and
@@ -150,24 +146,27 @@ func (c *CurrencyConverter) GetCountries() (map[string]CountryItem, error) {
 
 // SendHTTPRequest sends a HTTP request, if account is not free it automatically
 // upgrades request to SSL.
-func (c *CurrencyConverter) SendHTTPRequest(endPoint string, values url.Values, result interface{}) error {
+func (c *CurrencyConverter) SendHTTPRequest(endPoint string, values url.Values, result any) error {
 	var path string
-	var auth bool
+	var auth request.AuthType
 	if c.APIKey == "" || c.APIKey == defaultAPIKey {
 		path = fmt.Sprintf("%s%s/%s?", APIEndpointFreeURL, APIEndpointVersion, endPoint)
-		auth = true
+		auth = request.AuthenticatedRequest
 	} else {
 		path = fmt.Sprintf("%s%s%s?", APIEndpointURL, APIEndpointVersion, endPoint)
 		values.Set("apiKey", c.APIKey)
+		auth = request.UnauthenticatedRequest
 	}
+
 	path += values.Encode()
-
-	err := c.Requester.SendPayload(context.Background(), &request.Item{
-		Method:      path,
-		Result:      result,
-		AuthRequest: auth,
-		Verbose:     c.Verbose})
-
+	item := &request.Item{
+		Method:  path,
+		Result:  result,
+		Verbose: c.Verbose,
+	}
+	err := c.Requester.SendPayload(context.TODO(), request.Unset, func() (*request.Item, error) {
+		return item, nil
+	}, auth)
 	if err != nil {
 		return fmt.Errorf("currency converter API SendHTTPRequest error %s with path %s",
 			err,

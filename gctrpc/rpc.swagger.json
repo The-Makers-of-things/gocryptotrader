@@ -4,6 +4,11 @@
     "title": "rpc.proto",
     "version": "version not set"
   },
+  "tags": [
+    {
+      "name": "GoCryptoTraderService"
+    }
+  ],
   "consumes": [
     "application/json"
   ],
@@ -13,7 +18,7 @@
   "paths": {
     "/v1/addevent": {
       "post": {
-        "operationId": "GoCryptoTrader_AddEvent",
+        "operationId": "GoCryptoTraderService_AddEvent",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -24,7 +29,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -39,13 +44,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/addportfolioaddress": {
       "post": {
-        "operationId": "GoCryptoTrader_AddPortfolioAddress",
+        "operationId": "GoCryptoTraderService_AddPortfolioAddress",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -56,7 +61,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -71,13 +76,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/cancelallorders": {
       "post": {
-        "operationId": "GoCryptoTrader_CancelAllOrders",
+        "operationId": "GoCryptoTraderService_CancelAllOrders",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -88,7 +93,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -103,13 +108,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/cancelbatchorders": {
       "post": {
-        "operationId": "GoCryptoTrader_CancelBatchOrders",
+        "operationId": "GoCryptoTraderService_CancelBatchOrders",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -120,7 +125,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -135,13 +140,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/cancelorder": {
       "post": {
-        "operationId": "GoCryptoTrader_CancelOrder",
+        "operationId": "GoCryptoTraderService_CancelOrder",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -152,7 +157,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -167,13 +172,45 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/changepositionmargin": {
+      "post": {
+        "operationId": "GoCryptoTraderService_ChangePositionMargin",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcChangePositionMarginResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcChangePositionMarginRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/converttradestocandles": {
       "get": {
-        "operationId": "GoCryptoTrader_ConvertTradesToCandles",
+        "operationId": "GoCryptoTraderService_ConvertTradesToCandles",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -184,7 +221,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -214,7 +251,7 @@
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
             "in": "query",
             "required": false,
             "type": "string"
@@ -232,7 +269,7 @@
             "type": "string"
           },
           {
-            "name": "time_interval",
+            "name": "timeInterval",
             "in": "query",
             "required": false,
             "type": "string",
@@ -252,13 +289,211 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/currencystatedeposit": {
+      "get": {
+        "operationId": "GoCryptoTraderService_CurrencyStateDeposit",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGenericResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/currencystategetall": {
+      "get": {
+        "operationId": "GoCryptoTraderService_CurrencyStateGetAll",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcCurrencyStateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/currencystatetrading": {
+      "get": {
+        "operationId": "GoCryptoTraderService_CurrencyStateTrading",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGenericResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/currencystatetradingpair": {
+      "get": {
+        "operationId": "GoCryptoTraderService_CurrencyStateTradingPair",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGenericResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/currencystatewithdraw": {
+      "get": {
+        "operationId": "GoCryptoTraderService_CurrencyStateWithdraw",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGenericResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/disableexchange": {
       "post": {
-        "operationId": "GoCryptoTrader_DisableExchange",
+        "operationId": "GoCryptoTraderService_DisableExchange",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -269,7 +504,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -284,13 +519,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/disablesubsystem": {
       "get": {
-        "operationId": "GoCryptoTrader_DisableSubsystem",
+        "operationId": "GoCryptoTraderService_DisableSubsystem",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -301,7 +536,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -314,13 +549,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/enableexchange": {
       "post": {
-        "operationId": "GoCryptoTrader_EnableExchange",
+        "operationId": "GoCryptoTraderService_EnableExchange",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -331,7 +566,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -346,13 +581,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/enablesubsystem": {
       "get": {
-        "operationId": "GoCryptoTrader_EnableSubsystem",
+        "operationId": "GoCryptoTraderService_EnableSubsystem",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -363,7 +598,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -376,13 +611,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/findmissingsavedcandleintervals": {
       "get": {
-        "operationId": "GoCryptoTrader_FindMissingSavedCandleIntervals",
+        "operationId": "GoCryptoTraderService_FindMissingSavedCandleIntervals",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -393,19 +628,19 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "parameters": [
           {
-            "name": "exchange_name",
+            "name": "exchangeName",
             "in": "query",
             "required": false,
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
             "in": "query",
             "required": false,
             "type": "string"
@@ -449,13 +684,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/findmissingsavedtradeintervals": {
       "get": {
-        "operationId": "GoCryptoTrader_FindMissingSavedTradeIntervals",
+        "operationId": "GoCryptoTraderService_FindMissingSavedTradeIntervals",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -466,19 +701,19 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "parameters": [
           {
-            "name": "exchange_name",
+            "name": "exchangeName",
             "in": "query",
             "required": false,
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
             "in": "query",
             "required": false,
             "type": "string"
@@ -515,270 +750,24 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/gctscript/autoload": {
-      "post": {
-        "operationId": "GoCryptoTrader_GCTScriptAutoLoadToggle",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGenericResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/gctrpcGCTScriptAutoLoadRequest"
-            }
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/gctscript/execute": {
+    "/v1/getaccountbalances": {
       "get": {
-        "operationId": "GoCryptoTrader_GCTScriptExecute",
+        "operationId": "GoCryptoTraderService_GetAccountBalances",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/gctrpcGenericResponse"
+              "$ref": "#/definitions/gctrpcGetAccountBalancesResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "script.UUID",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          },
-          {
-            "name": "script.name",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          },
-          {
-            "name": "script.path",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          },
-          {
-            "name": "script.next_run",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/gctscript/query": {
-      "get": {
-        "operationId": "GoCryptoTrader_GCTScriptQuery",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGCTScriptQueryResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "script.UUID",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          },
-          {
-            "name": "script.name",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          },
-          {
-            "name": "script.path",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          },
-          {
-            "name": "script.next_run",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/gctscript/read": {
-      "post": {
-        "operationId": "GoCryptoTrader_GCTScriptReadScript",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGCTScriptQueryResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/gctrpcGCTScriptReadScriptRequest"
-            }
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/gctscript/status": {
-      "get": {
-        "operationId": "GoCryptoTrader_GCTScriptStatus",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGCTScriptStatusResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/gctscript/stop": {
-      "post": {
-        "operationId": "GoCryptoTrader_GCTScriptListAll",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGCTScriptStatusResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/gctrpcGCTScriptListAllRequest"
-            }
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/gctscript/upload": {
-      "post": {
-        "operationId": "GoCryptoTrader_GCTScriptUpload",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGenericResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/gctrpcGCTScriptUploadRequest"
-            }
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/getaccountinfo": {
-      "get": {
-        "operationId": "GoCryptoTrader_GetAccountInfo",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetAccountInfoResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -790,20 +779,20 @@
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
             "in": "query",
             "required": false,
             "type": "string"
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/getaccountinfostream": {
+    "/v1/getaccountbalancesstream": {
       "get": {
-        "operationId": "GoCryptoTrader_GetAccountInfoStream",
+        "operationId": "GoCryptoTraderService_GetAccountBalancesStream",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -811,19 +800,19 @@
               "type": "object",
               "properties": {
                 "result": {
-                  "$ref": "#/definitions/gctrpcGetAccountInfoResponse"
+                  "$ref": "#/definitions/gctrpcGetAccountBalancesResponse"
                 },
                 "error": {
-                  "$ref": "#/definitions/runtimeStreamError"
+                  "$ref": "#/definitions/rpcStatus"
                 }
               },
-              "title": "Stream result of gctrpcGetAccountInfoResponse"
+              "title": "Stream result of gctrpcGetAccountBalancesResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -835,20 +824,90 @@
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
             "in": "query",
             "required": false,
             "type": "string"
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getactivedatahistoryjobs": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetActiveDataHistoryJobs",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcDataHistoryJobs"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getallmanagedpositions": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetAllManagedPositions",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetManagedPositionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "includeFullOrderData",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "getFundingPayments",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "includeFullFundingRates",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "includePredictedRate",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getauditevent": {
       "get": {
-        "operationId": "GoCryptoTrader_GetAuditEvent",
+        "operationId": "GoCryptoTraderService_GetAuditEvent",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -859,25 +918,25 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "parameters": [
           {
-            "name": "start_date",
+            "name": "startDate",
             "in": "query",
             "required": false,
             "type": "string"
           },
           {
-            "name": "end_date",
+            "name": "endDate",
             "in": "query",
             "required": false,
             "type": "string"
           },
           {
-            "name": "order_by",
+            "name": "orderBy",
             "in": "query",
             "required": false,
             "type": "string"
@@ -898,13 +957,165 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getavailabletransferchains": {
+      "post": {
+        "operationId": "GoCryptoTraderService_GetAvailableTransferChains",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetAvailableTransferChainsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetAvailableTransferChainsRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getcollateral": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetCollateral",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetCollateralResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "includeBreakdown",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "calculateOffline",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "includeZeroValues",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getcollateralmode": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetCollateralMode",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetCollateralModeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      },
+      "post": {
+        "operationId": "GoCryptoTraderService_SetCollateralMode",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcSetCollateralModeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcSetCollateralModeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getcommunicationrelayers": {
       "get": {
-        "operationId": "GoCryptoTrader_GetCommunicationRelayers",
+        "operationId": "GoCryptoTraderService_GetCommunicationRelayers",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -915,18 +1126,18 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getconfig": {
       "get": {
-        "operationId": "GoCryptoTrader_GetConfig",
+        "operationId": "GoCryptoTraderService_GetConfig",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -937,18 +1148,18 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getcryptodepositaddress": {
       "post": {
-        "operationId": "GoCryptoTrader_GetCryptocurrencyDepositAddress",
+        "operationId": "GoCryptoTraderService_GetCryptocurrencyDepositAddress",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -959,7 +1170,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -974,13 +1185,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getcryptodepositaddresses": {
       "post": {
-        "operationId": "GoCryptoTrader_GetCryptocurrencyDepositAddresses",
+        "operationId": "GoCryptoTraderService_GetCryptocurrencyDepositAddresses",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -991,7 +1202,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1006,13 +1217,187 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getcurrencytradeurl": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetCurrencyTradeURL",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetCurrencyTradeURLResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getdatahistoryjobdetails": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetDataHistoryJobDetails",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcDataHistoryJob"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "nickname",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "fullDetails",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getdatahistoryjobsbetween": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetDataHistoryJobsBetween",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcDataHistoryJobs"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getdatahistoryjobsummary": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetDataHistoryJobSummary",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcDataHistoryJob"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "nickname",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "fullDetails",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getevents": {
       "get": {
-        "operationId": "GoCryptoTrader_GetEvents",
+        "operationId": "GoCryptoTraderService_GetEvents",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1023,18 +1408,18 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getexchangeassets": {
       "get": {
-        "operationId": "GoCryptoTrader_GetExchangeAssets",
+        "operationId": "GoCryptoTraderService_GetExchangeAssets",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1045,7 +1430,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1058,13 +1443,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getexchangeinfo": {
       "get": {
-        "operationId": "GoCryptoTrader_GetExchangeInfo",
+        "operationId": "GoCryptoTraderService_GetExchangeInfo",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1075,7 +1460,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1088,13 +1473,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getexchangeorderbookstream": {
       "get": {
-        "operationId": "GoCryptoTrader_GetExchangeOrderbookStream",
+        "operationId": "GoCryptoTraderService_GetExchangeOrderbookStream",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -1105,7 +1490,7 @@
                   "$ref": "#/definitions/gctrpcOrderbookResponse"
                 },
                 "error": {
-                  "$ref": "#/definitions/runtimeStreamError"
+                  "$ref": "#/definitions/rpcStatus"
                 }
               },
               "title": "Stream result of gctrpcOrderbookResponse"
@@ -1114,7 +1499,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1127,24 +1512,24 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getexchangeotp": {
       "get": {
-        "operationId": "GoCryptoTrader_GetExchangeOTPCode",
+        "operationId": "GoCryptoTraderService_GetExchangeOTPCode",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/gctrpcGetExchangeOTPReponse"
+              "$ref": "#/definitions/gctrpcGetExchangeOTPResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1157,13 +1542,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getexchangeotps": {
       "get": {
-        "operationId": "GoCryptoTrader_GetExchangeOTPCodes",
+        "operationId": "GoCryptoTraderService_GetExchangeOTPCodes",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1174,18 +1559,18 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getexchangepairs": {
       "post": {
-        "operationId": "GoCryptoTrader_GetExchangePairs",
+        "operationId": "GoCryptoTraderService_GetExchangePairs",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1196,7 +1581,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1211,13 +1596,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getexchanges": {
       "get": {
-        "operationId": "GoCryptoTrader_GetExchanges",
+        "operationId": "GoCryptoTraderService_GetExchanges",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1228,7 +1613,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1241,13 +1626,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getexchangetickerstream": {
       "get": {
-        "operationId": "GoCryptoTrader_GetExchangeTickerStream",
+        "operationId": "GoCryptoTraderService_GetExchangeTickerStream",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -1258,7 +1643,7 @@
                   "$ref": "#/definitions/gctrpcTickerResponse"
                 },
                 "error": {
-                  "$ref": "#/definitions/runtimeStreamError"
+                  "$ref": "#/definitions/rpcStatus"
                 }
               },
               "title": "Stream result of gctrpcTickerResponse"
@@ -1267,7 +1652,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1280,13 +1665,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getforexproviders": {
       "get": {
-        "operationId": "GoCryptoTrader_GetForexProviders",
+        "operationId": "GoCryptoTraderService_GetForexProviders",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1297,18 +1682,18 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/getforexrates": {
       "get": {
-        "operationId": "GoCryptoTrader_GetForexRates",
+        "operationId": "GoCryptoTraderService_GetForexRates",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1319,18 +1704,276 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getfundingrates": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetFundingRates",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetFundingRatesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "paymentCurrency",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "includePredicted",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "includePayments",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "respectHistoryLimits",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getfuturespositionsorders": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetFuturesPositionsOrders",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetFuturesPositionsOrdersResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "respectOrderHistoryLimits",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "syncWithOrderManager",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getfuturespositionssummary": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetFuturesPositionsSummary",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetFuturesPositionsSummaryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/gethistoriccandles": {
       "get": {
-        "operationId": "GoCryptoTrader_GetHistoricCandles",
+        "operationId": "GoCryptoTraderService_GetHistoricCandles",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1341,7 +1984,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1371,7 +2014,7 @@
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
             "in": "query",
             "required": false,
             "type": "string"
@@ -1389,14 +2032,14 @@
             "type": "string"
           },
           {
-            "name": "time_interval",
+            "name": "timeInterval",
             "in": "query",
             "required": false,
             "type": "string",
             "format": "int64"
           },
           {
-            "name": "ex_request",
+            "name": "exRequest",
             "in": "query",
             "required": false,
             "type": "boolean"
@@ -1408,13 +2051,13 @@
             "type": "boolean"
           },
           {
-            "name": "use_db",
+            "name": "useDb",
             "in": "query",
             "required": false,
             "type": "boolean"
           },
           {
-            "name": "fill_missing_with_trades",
+            "name": "fillMissingWithTrades",
             "in": "query",
             "required": false,
             "type": "boolean"
@@ -1427,151 +2070,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/getinfo": {
+    "/v1/gethistorictrades": {
       "get": {
-        "operationId": "GoCryptoTrader_GetInfo",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetInfoResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/getloggerdetails": {
-      "get": {
-        "operationId": "GoCryptoTrader_GetLoggerDetails",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetLoggerDetailsResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "logger",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/getorder": {
-      "post": {
-        "operationId": "GoCryptoTrader_GetOrder",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcOrderDetails"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetOrderRequest"
-            }
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/getorderbook": {
-      "post": {
-        "operationId": "GoCryptoTrader_GetOrderbook",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcOrderbookResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetOrderbookRequest"
-            }
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/getorderbooks": {
-      "get": {
-        "operationId": "GoCryptoTrader_GetOrderbooks",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetOrderbooksResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/getorderbookstream": {
-      "get": {
-        "operationId": "GoCryptoTrader_GetOrderbookStream",
+        "operationId": "GoCryptoTraderService_GetHistoricTrades",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -1579,19 +2084,19 @@
               "type": "object",
               "properties": {
                 "result": {
-                  "$ref": "#/definitions/gctrpcOrderbookResponse"
+                  "$ref": "#/definitions/gctrpcSavedTradesResponse"
                 },
                 "error": {
-                  "$ref": "#/definitions/runtimeStreamError"
+                  "$ref": "#/definitions/rpcStatus"
                 }
               },
-              "title": "Stream result of gctrpcOrderbookResponse"
+              "title": "Stream result of gctrpcSavedTradesResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1621,20 +2126,258 @@
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "end",
             "in": "query",
             "required": false,
             "type": "string"
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/getorders": {
+    "/v1/getinfo": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetInfo",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetInfoResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getlatestfundingrate": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetLatestFundingRate",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetLatestFundingRateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "includePredicted",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getleverage": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetLeverage",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetLeverageResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "underlyingPair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "marginType",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "orderSide",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      },
       "post": {
-        "operationId": "GoCryptoTrader_GetOrders",
+        "operationId": "GoCryptoTraderService_SetLeverage",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcSetLeverageResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcSetLeverageRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getloggerdetails": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetLoggerDetails",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetLoggerDetailsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "logger",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getmanagedorders": {
+      "post": {
+        "operationId": "GoCryptoTraderService_GetManagedOrders",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1645,7 +2388,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1660,90 +2403,580 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/getportfolio": {
+    "/v1/getmanagedposition": {
       "get": {
-        "operationId": "GoCryptoTrader_GetPortfolio",
+        "operationId": "GoCryptoTraderService_GetManagedPosition",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/gctrpcGetPortfolioResponse"
+              "$ref": "#/definitions/gctrpcGetManagedPositionsResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "includeFullOrderData",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "getFundingPayments",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "includeFullFundingRates",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "includePredictedRate",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getmarginrateshistory": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetMarginRatesHistory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetMarginRatesHistoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "currency",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "getPredictedRate",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "getLendingPayments",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "getBorrowRates",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "getBorrowCosts",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "includeAllRates",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "calculateOffline",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "takerFeeRate",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getmargintype": {
+      "post": {
+        "operationId": "GoCryptoTraderService_SetMarginType",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcSetMarginTypeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcSetMarginTypeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getopeninterest": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetOpenInterest",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOpenInterestResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getorder": {
+      "post": {
+        "operationId": "GoCryptoTraderService_GetOrder",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcOrderDetails"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOrderRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getorderbook": {
+      "post": {
+        "operationId": "GoCryptoTraderService_GetOrderbook",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcOrderbookResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOrderbookRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getorderbookamountbyimpact": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetOrderbookAmountByImpact",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOrderbookAmountByImpactResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "impactPercentage",
+            "in": "query",
+            "required": false,
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "name": "sell",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "requiresRestOrderbook",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getorderbookamountbynominal": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetOrderbookAmountByNominal",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOrderbookAmountByNominalResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "nominalPercentage",
+            "in": "query",
+            "required": false,
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "name": "sell",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "requiresRestOrderbook",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getorderbookmovement": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetOrderbookMovement",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOrderbookMovementResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "in": "query",
+            "required": false,
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "name": "sell",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "requiresRestOrderbook",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "purchase",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getorderbooks": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetOrderbooks",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOrderbooksResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/getportfoliosummary": {
+    "/v1/getorderbookstream": {
       "get": {
-        "operationId": "GoCryptoTrader_GetPortfolioSummary",
+        "operationId": "GoCryptoTraderService_GetOrderbookStream",
         "responses": {
           "200": {
-            "description": "A successful response.",
+            "description": "A successful response.(streaming responses)",
             "schema": {
-              "$ref": "#/definitions/gctrpcGetPortfolioSummaryResponse"
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/gctrpcOrderbookResponse"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of gctrpcOrderbookResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/getrpcendpoints": {
-      "get": {
-        "operationId": "GoCryptoTrader_GetRPCEndpoints",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetRPCEndpointsResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/getsavedtrades": {
-      "get": {
-        "operationId": "GoCryptoTrader_GetSavedTrades",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcSavedTradesResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1773,7 +3006,137 @@
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getorders": {
+      "post": {
+        "operationId": "GoCryptoTraderService_GetOrders",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOrdersResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetOrdersRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getportfolio": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetPortfolio",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetPortfolioResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getportfoliosummary": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetPortfolioSummary",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetPortfolioSummaryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getrecenttrades": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetRecentTrades",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcSavedTradesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "assetType",
             "in": "query",
             "required": false,
             "type": "string"
@@ -1792,109 +3155,46 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/getsubsystems": {
+    "/v1/getrpcendpoints": {
       "get": {
-        "operationId": "GoCryptoTrader_GetSubsystems",
+        "operationId": "GoCryptoTraderService_GetRPCEndpoints",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/gctrpcGetSusbsytemsResponse"
+              "$ref": "#/definitions/gctrpcGetRPCEndpointsResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/getticker": {
-      "post": {
-        "operationId": "GoCryptoTrader_GetTicker",
+    "/v1/getsavedtrades": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetSavedTrades",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/gctrpcTickerResponse"
+              "$ref": "#/definitions/gctrpcSavedTradesResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetTickerRequest"
-            }
-          }
-        ],
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/gettickers": {
-      "get": {
-        "operationId": "GoCryptoTrader_GetTickers",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/gctrpcGetTickersResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "tags": [
-          "GoCryptoTrader"
-        ]
-      }
-    },
-    "/v1/gettickerstream": {
-      "get": {
-        "operationId": "GoCryptoTrader_GetTickerStream",
-        "responses": {
-          "200": {
-            "description": "A successful response.(streaming responses)",
-            "schema": {
-              "type": "object",
-              "properties": {
-                "result": {
-                  "$ref": "#/definitions/gctrpcTickerResponse"
-                },
-                "error": {
-                  "$ref": "#/definitions/runtimeStreamError"
-                }
-              },
-              "title": "Stream result of gctrpcTickerResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1924,20 +3224,398 @@
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "end",
             "in": "query",
             "required": false,
             "type": "string"
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getsubsystems": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetSubsystems",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetSubsystemsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/gettechnicalanalysis": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetTechnicalAnalysis",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetTechnicalAnalysisResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "assetType",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "algorithmType",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "fastPeriod",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "slowPeriod",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "standardDeviationUp",
+            "in": "query",
+            "required": false,
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "name": "standardDeviationDown",
+            "in": "query",
+            "required": false,
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "name": "movingAverageType",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "otherExchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "otherPair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "otherPair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "otherPair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "otherAssetType",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/getticker": {
+      "post": {
+        "operationId": "GoCryptoTraderService_GetTicker",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcTickerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetTickerRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/gettickers": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetTickers",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGetTickersResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/gettickerstream": {
+      "get": {
+        "operationId": "GoCryptoTraderService_GetTickerStream",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/gctrpcTickerResponse"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of gctrpcTickerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "assetType",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/modifyorder": {
+      "get": {
+        "operationId": "GoCryptoTraderService_ModifyOrder",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcModifyOrderResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "exchange",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "orderId",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.delimiter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.base",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pair.quote",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "in": "query",
+            "required": false,
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "name": "price",
+            "in": "query",
+            "required": false,
+            "type": "number",
+            "format": "double"
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/removeevent": {
       "post": {
-        "operationId": "GoCryptoTrader_RemoveEvent",
+        "operationId": "GoCryptoTraderService_RemoveEvent",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1948,7 +3626,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1963,13 +3641,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/removeportfolioaddress": {
       "post": {
-        "operationId": "GoCryptoTrader_RemovePortfolioAddress",
+        "operationId": "GoCryptoTraderService_RemovePortfolioAddress",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -1980,7 +3658,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -1995,13 +3673,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/setallexchangepairs": {
       "get": {
-        "operationId": "GoCryptoTrader_SetAllExchangePairs",
+        "operationId": "GoCryptoTraderService_SetAllExchangePairs",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2012,7 +3690,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2031,13 +3709,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/setexchangeasset": {
-      "get": {
-        "operationId": "GoCryptoTrader_SetExchangeAsset",
+    "/v1/setdatahistoryjobstatus": {
+      "post": {
+        "operationId": "GoCryptoTraderService_SetDataHistoryJobStatus",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2048,7 +3726,39 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcSetDataHistoryJobStatusRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/setexchangeasset": {
+      "get": {
+        "operationId": "GoCryptoTraderService_SetExchangeAsset",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGenericResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2073,13 +3783,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/setexchangepair": {
       "post": {
-        "operationId": "GoCryptoTrader_SetExchangePair",
+        "operationId": "GoCryptoTraderService_SetExchangePair",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2090,7 +3800,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2105,13 +3815,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/setexchangetradeprocessing": {
       "get": {
-        "operationId": "GoCryptoTrader_SetExchangeTradeProcessing",
+        "operationId": "GoCryptoTraderService_SetExchangeTradeProcessing",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2122,7 +3832,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2141,13 +3851,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/setloggerdetails": {
       "post": {
-        "operationId": "GoCryptoTrader_SetLoggerDetails",
+        "operationId": "GoCryptoTraderService_SetLoggerDetails",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2158,7 +3868,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2173,13 +3883,35 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/shutdown": {
+      "get": {
+        "operationId": "GoCryptoTraderService_Shutdown",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcShutdownResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/simulateorder": {
       "post": {
-        "operationId": "GoCryptoTrader_SimulateOrder",
+        "operationId": "GoCryptoTraderService_SimulateOrder",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2190,7 +3922,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2205,13 +3937,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/submitorder": {
       "post": {
-        "operationId": "GoCryptoTrader_SubmitOrder",
+        "operationId": "GoCryptoTraderService_SubmitOrder",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2222,7 +3954,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2237,24 +3969,24 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/updateaccountinfo": {
+    "/v1/updateaccountbalances": {
       "get": {
-        "operationId": "GoCryptoTrader_UpdateAccountInfo",
+        "operationId": "GoCryptoTraderService_UpdateAccountBalances",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/gctrpcGetAccountInfoResponse"
+              "$ref": "#/definitions/gctrpcGetAccountBalancesResponse"
             }
           },
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2266,20 +3998,20 @@
             "type": "string"
           },
           {
-            "name": "asset_type",
+            "name": "assetType",
             "in": "query",
             "required": false,
             "type": "string"
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/updateexchangesupportedpairs": {
-      "get": {
-        "operationId": "GoCryptoTrader_UpdateExchangeSupportedPairs",
+    "/v1/updatedatahistoryjobprerequisite": {
+      "post": {
+        "operationId": "GoCryptoTraderService_UpdateDataHistoryJobPrerequisite",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2290,7 +4022,39 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcUpdateDataHistoryJobPrerequisiteRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/updateexchangesupportedpairs": {
+      "get": {
+        "operationId": "GoCryptoTraderService_UpdateExchangeSupportedPairs",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcGenericResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2303,13 +4067,45 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/upsertdatahistoryjob": {
+      "post": {
+        "operationId": "GoCryptoTraderService_UpsertDataHistoryJob",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcUpsertDataHistoryJobResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcUpsertDataHistoryJobRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/websocketgetinfo": {
       "get": {
-        "operationId": "GoCryptoTrader_WebsocketGetInfo",
+        "operationId": "GoCryptoTraderService_WebsocketGetInfo",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2320,7 +4116,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2333,13 +4129,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/websocketgetsubscriptions": {
       "get": {
-        "operationId": "GoCryptoTrader_WebsocketGetSubscriptions",
+        "operationId": "GoCryptoTraderService_WebsocketGetSubscriptions",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2350,7 +4146,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2363,13 +4159,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/websocketsetenabled": {
       "get": {
-        "operationId": "GoCryptoTrader_WebsocketSetEnabled",
+        "operationId": "GoCryptoTraderService_WebsocketSetEnabled",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2380,7 +4176,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2399,13 +4195,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/websocketsetproxy": {
       "get": {
-        "operationId": "GoCryptoTrader_WebsocketSetProxy",
+        "operationId": "GoCryptoTraderService_WebsocketSetProxy",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2416,7 +4212,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2435,13 +4231,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/websocketseturl": {
       "get": {
-        "operationId": "GoCryptoTrader_WebsocketSetURL",
+        "operationId": "GoCryptoTraderService_WebsocketSetURL",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2452,7 +4248,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2471,13 +4267,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/whalebomb": {
       "post": {
-        "operationId": "GoCryptoTrader_WhaleBomb",
+        "operationId": "GoCryptoTraderService_WhaleBomb",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2488,7 +4284,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2503,13 +4299,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/withdrawaleventbydate": {
       "post": {
-        "operationId": "GoCryptoTrader_WithdrawalEventsByDate",
+        "operationId": "GoCryptoTraderService_WithdrawalEventsByDate",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2520,7 +4316,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2535,13 +4331,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
-    "/v1/withdrawaleventbyid": {
+    "/v1/withdrawaleventbyexchange": {
       "post": {
-        "operationId": "GoCryptoTrader_WithdrawalEventsByExchange",
+        "operationId": "GoCryptoTraderService_WithdrawalEventsByExchange",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2552,7 +4348,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2567,13 +4363,45 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
+        ]
+      }
+    },
+    "/v1/withdrawaleventbyid": {
+      "post": {
+        "operationId": "GoCryptoTraderService_WithdrawalEventByID",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/gctrpcWithdrawalEventByIDResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/gctrpcWithdrawalEventByIDRequest"
+            }
+          }
+        ],
+        "tags": [
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/withdrawfiatfunds": {
       "post": {
-        "operationId": "GoCryptoTrader_WithdrawFiatFunds",
+        "operationId": "GoCryptoTraderService_WithdrawFiatFunds",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2584,7 +4412,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2599,13 +4427,13 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     },
     "/v1/withdrawithdrawcryptofundswfiatfunds": {
       "post": {
-        "operationId": "GoCryptoTrader_WithdrawCryptocurrencyFunds",
+        "operationId": "GoCryptoTraderService_WithdrawCryptocurrencyFunds",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -2616,7 +4444,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -2631,7 +4459,7 @@
           }
         ],
         "tags": [
-          "GoCryptoTrader"
+          "GoCryptoTraderService"
         ]
       }
     }
@@ -2646,6 +4474,7 @@
         "currencies": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcAccountCurrencyInfo"
           }
         }
@@ -2657,13 +4486,29 @@
         "currency": {
           "type": "string"
         },
-        "total_value": {
+        "totalValue": {
           "type": "number",
           "format": "double"
         },
         "hold": {
           "type": "number",
           "format": "double"
+        },
+        "free": {
+          "type": "number",
+          "format": "double"
+        },
+        "freeWithoutBorrow": {
+          "type": "number",
+          "format": "double"
+        },
+        "borrowed": {
+          "type": "number",
+          "format": "double"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
         }
       }
     },
@@ -2676,13 +4521,13 @@
         "item": {
           "type": "string"
         },
-        "condition_params": {
+        "conditionParams": {
           "$ref": "#/definitions/gctrpcConditionParams"
         },
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "asset_type": {
+        "assetType": {
           "type": "string"
         },
         "action": {
@@ -2705,7 +4550,7 @@
         "address": {
           "type": "string"
         },
-        "coin_type": {
+        "coinType": {
           "type": "string"
         },
         "description": {
@@ -2715,10 +4560,10 @@
           "type": "number",
           "format": "double"
         },
-        "supported_exchanges": {
+        "supportedExchanges": {
           "type": "string"
         },
-        "cold_storage": {
+        "coldStorage": {
           "type": "boolean"
         }
       }
@@ -2740,6 +4585,17 @@
         }
       }
     },
+    "gctrpcBorrowCost": {
+      "type": "object",
+      "properties": {
+        "cost": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        }
+      }
+    },
     "gctrpcCancelAllOrdersRequest": {
       "type": "object",
       "properties": {
@@ -2754,26 +4610,13 @@
         "orders": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/gctrpcCancelAllOrdersResponseOrders"
+            "type": "object",
+            "$ref": "#/definitions/gctrpcOrders"
           }
         },
         "count": {
           "type": "string",
           "format": "int64"
-        }
-      }
-    },
-    "gctrpcCancelAllOrdersResponseOrders": {
-      "type": "object",
-      "properties": {
-        "exchange": {
-          "type": "string"
-        },
-        "order_status": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
         }
       }
     },
@@ -2783,19 +4626,16 @@
         "exchange": {
           "type": "string"
         },
-        "account_id": {
+        "accountId": {
           "type": "string"
         },
-        "orders_id": {
+        "ordersId": {
           "type": "string"
         },
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "asset_type": {
-          "type": "string"
-        },
-        "wallet_address": {
+        "assetType": {
           "type": "string"
         },
         "side": {
@@ -2809,18 +4649,8 @@
         "orders": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/gctrpcCancelBatchOrdersResponseOrders"
-          }
-        }
-      }
-    },
-    "gctrpcCancelBatchOrdersResponseOrders": {
-      "type": "object",
-      "properties": {
-        "order_status": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
+            "type": "object",
+            "$ref": "#/definitions/gctrpcOrders"
           }
         }
       }
@@ -2831,19 +4661,16 @@
         "exchange": {
           "type": "string"
         },
-        "account_id": {
+        "accountId": {
           "type": "string"
         },
-        "order_id": {
+        "orderId": {
           "type": "string"
         },
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "asset_type": {
-          "type": "string"
-        },
-        "wallet_address": {
+        "assetType": {
           "type": "string"
         },
         "side": {
@@ -2876,6 +4703,61 @@
         "volume": {
           "type": "number",
           "format": "double"
+        },
+        "isPartial": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gctrpcChangePositionMarginRequest": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "marginType": {
+          "type": "string"
+        },
+        "originalAllocatedMargin": {
+          "type": "number",
+          "format": "double"
+        },
+        "newAllocatedMargin": {
+          "type": "number",
+          "format": "double"
+        },
+        "marginSide": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcChangePositionMarginResponse": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "marginType": {
+          "type": "string"
+        },
+        "newAllocatedMargin": {
+          "type": "number",
+          "format": "double"
+        },
+        "marginSide": {
+          "type": "string"
         }
       }
     },
@@ -2895,6 +4777,105 @@
         "percentage": {
           "type": "number",
           "format": "double"
+        }
+      }
+    },
+    "gctrpcCollateralByPosition": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        },
+        "openOrderSize": {
+          "type": "string"
+        },
+        "positionSize": {
+          "type": "string"
+        },
+        "markPrice": {
+          "type": "string"
+        },
+        "requiredMargin": {
+          "type": "string"
+        },
+        "totalCollateralUsed": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcCollateralForCurrency": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string"
+        },
+        "excludedFromCollateral": {
+          "type": "boolean"
+        },
+        "totalFunds": {
+          "type": "string"
+        },
+        "availableForUseAsCollateral": {
+          "type": "string"
+        },
+        "approxFairMarketValue": {
+          "type": "string"
+        },
+        "weighting": {
+          "type": "string"
+        },
+        "collateralContribution": {
+          "type": "string"
+        },
+        "scaledToCurrency": {
+          "type": "string"
+        },
+        "unrealisedPnl": {
+          "type": "string"
+        },
+        "fundsInUse": {
+          "type": "string"
+        },
+        "additionalCollateralUsed": {
+          "type": "string"
+        },
+        "usedBreakdown": {
+          "$ref": "#/definitions/gctrpcCollateralUsedBreakdown"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcCollateralUsedBreakdown": {
+      "type": "object",
+      "properties": {
+        "lockedInStakes": {
+          "type": "string"
+        },
+        "lockedInNftBids": {
+          "type": "string"
+        },
+        "lockedInFeeVoucher": {
+          "type": "string"
+        },
+        "lockedInSpotMarginFundingOffers": {
+          "type": "string"
+        },
+        "lockedInSpotOrders": {
+          "type": "string"
+        },
+        "lockedAsCollateral": {
+          "type": "string"
+        },
+        "usedInFutures": {
+          "type": "string"
+        },
+        "usedInSpotMargin": {
+          "type": "string"
         }
       }
     },
@@ -2919,13 +4900,13 @@
           "type": "number",
           "format": "double"
         },
-        "check_bids": {
+        "checkBids": {
           "type": "boolean"
         },
-        "check_bids_and_asks": {
+        "checkAsks": {
           "type": "boolean"
         },
-        "orderbook_amount": {
+        "orderbookAmount": {
           "type": "number",
           "format": "double"
         }
@@ -2937,14 +4918,14 @@
         "address": {
           "type": "string"
         },
-        "address_tag": {
+        "addressTag": {
           "type": "string"
         },
         "fee": {
           "type": "number",
           "format": "double"
         },
-        "tx_id": {
+        "txId": {
           "type": "string"
         }
       }
@@ -2963,16 +4944,191 @@
         }
       }
     },
+    "gctrpcCurrencyState": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "withdrawEnabled": {
+          "type": "boolean"
+        },
+        "depositEnabled": {
+          "type": "boolean"
+        },
+        "tradingEnabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gctrpcCurrencyStateResponse": {
+      "type": "object",
+      "properties": {
+        "currencyStates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcCurrencyState"
+          }
+        }
+      }
+    },
+    "gctrpcDataHistoryJob": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "nickname": {
+          "type": "string"
+        },
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "startDate": {
+          "type": "string"
+        },
+        "endDate": {
+          "type": "string"
+        },
+        "interval": {
+          "type": "string",
+          "format": "int64"
+        },
+        "requestSizeLimit": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "maxRetryAttempts": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "batchSize": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "status": {
+          "type": "string"
+        },
+        "dataType": {
+          "type": "string"
+        },
+        "conversionInterval": {
+          "type": "string",
+          "format": "int64"
+        },
+        "overwriteExistingData": {
+          "type": "boolean"
+        },
+        "prerequisiteJobNickname": {
+          "type": "string"
+        },
+        "decimalPlaceComparison": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "secondaryExchangeName": {
+          "type": "string"
+        },
+        "issueTolerancePercentage": {
+          "type": "number",
+          "format": "double"
+        },
+        "replaceOnIssue": {
+          "type": "boolean"
+        },
+        "jobResults": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcDataHistoryJobResult"
+          }
+        },
+        "resultSummaries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "gctrpcDataHistoryJobResult": {
+      "type": "object",
+      "properties": {
+        "startDate": {
+          "type": "string"
+        },
+        "endDate": {
+          "type": "string"
+        },
+        "hasData": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "runDate": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcDataHistoryJobs": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcDataHistoryJob"
+          }
+        }
+      }
+    },
+    "gctrpcDepositAddress": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "chain": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcDepositAddresses": {
+      "type": "object",
+      "properties": {
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcDepositAddress"
+          }
+        }
+      }
+    },
     "gctrpcFiatWithdrawalEvent": {
       "type": "object",
       "properties": {
-        "bank_name": {
+        "bankName": {
           "type": "string"
         },
-        "account_name": {
+        "accountName": {
           "type": "string"
         },
-        "account_number": {
+        "accountNumber": {
           "type": "string"
         },
         "bsb": {
@@ -2989,16 +5145,16 @@
     "gctrpcFindMissingIntervalsResponse": {
       "type": "object",
       "properties": {
-        "exchange_name": {
+        "exchangeName": {
           "type": "string"
         },
-        "asset_type": {
+        "assetType": {
           "type": "string"
         },
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "missing_periods": {
+        "missingPeriods": {
           "type": "array",
           "items": {
             "type": "string"
@@ -3021,17 +5177,17 @@
         "verbose": {
           "type": "boolean"
         },
-        "rest_polling_delay": {
+        "restPollingDelay": {
           "type": "string"
         },
-        "api_key": {
+        "apiKey": {
           "type": "string"
         },
-        "api_key_level": {
+        "apiKeyLevel": {
           "type": "string",
           "format": "int64"
         },
-        "primary_provider": {
+        "primaryProvider": {
           "type": "boolean"
         }
       }
@@ -3049,108 +5205,221 @@
           "type": "number",
           "format": "double"
         },
-        "inverse_rate": {
+        "inverseRate": {
           "type": "number",
           "format": "double"
         }
       }
     },
-    "gctrpcGCTScript": {
+    "gctrpcFundingData": {
       "type": "object",
       "properties": {
-        "UUID": {
+        "exchange": {
           "type": "string"
         },
-        "name": {
+        "asset": {
           "type": "string"
         },
-        "path": {
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "paymentCurrency": {
           "type": "string"
         },
-        "next_run": {
-          "type": "string"
-        }
-      }
-    },
-    "gctrpcGCTScriptAutoLoadRequest": {
-      "type": "object",
-      "properties": {
-        "script": {
+        "startDate": {
           "type": "string"
         },
-        "status": {
-          "type": "boolean"
-        }
-      }
-    },
-    "gctrpcGCTScriptListAllRequest": {
-      "type": "object"
-    },
-    "gctrpcGCTScriptQueryResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
+        "endDate": {
           "type": "string"
         },
-        "script": {
-          "$ref": "#/definitions/gctrpcGCTScript"
-        },
-        "data": {
-          "type": "string"
-        }
-      }
-    },
-    "gctrpcGCTScriptReadScriptRequest": {
-      "type": "object",
-      "properties": {
-        "script": {
-          "$ref": "#/definitions/gctrpcGCTScript"
-        }
-      }
-    },
-    "gctrpcGCTScriptStatusResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "type": "string"
-        },
-        "scripts": {
+        "rates": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/gctrpcGCTScript"
+            "type": "object",
+            "$ref": "#/definitions/gctrpcFundingRate"
           }
+        },
+        "latestRate": {
+          "$ref": "#/definitions/gctrpcFundingRate"
+        },
+        "upcomingRate": {
+          "$ref": "#/definitions/gctrpcFundingRate"
+        },
+        "paymentSum": {
+          "type": "string"
+        },
+        "paymentMessage": {
+          "type": "string"
+        },
+        "timeOfNextRate": {
+          "type": "string"
         }
       }
     },
-    "gctrpcGCTScriptStopAllRequest": {
-      "type": "object"
-    },
-    "gctrpcGCTScriptStopRequest": {
+    "gctrpcFundingRate": {
       "type": "object",
       "properties": {
-        "script": {
-          "$ref": "#/definitions/gctrpcGCTScript"
+        "date": {
+          "type": "string"
+        },
+        "rate": {
+          "type": "string"
+        },
+        "payment": {
+          "type": "string"
         }
       }
     },
-    "gctrpcGCTScriptUploadRequest": {
+    "gctrpcFuturePosition": {
       "type": "object",
       "properties": {
-        "script_name": {
+        "exchange": {
           "type": "string"
         },
-        "script_data": {
+        "asset": {
           "type": "string"
         },
-        "data": {
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "status": {
+          "type": "string"
+        },
+        "openingDate": {
+          "type": "string"
+        },
+        "openingDirection": {
+          "type": "string"
+        },
+        "openingPrice": {
+          "type": "string"
+        },
+        "openingSize": {
+          "type": "string"
+        },
+        "currentDirection": {
+          "type": "string"
+        },
+        "currentPrice": {
+          "type": "string"
+        },
+        "currentSize": {
+          "type": "string"
+        },
+        "unrealisedPnl": {
+          "type": "string"
+        },
+        "realisedPnl": {
+          "type": "string"
+        },
+        "closingDate": {
+          "type": "string"
+        },
+        "orderCount": {
           "type": "string",
-          "format": "byte"
+          "format": "int64"
         },
-        "archived": {
-          "type": "boolean"
+        "contractSettlementType": {
+          "type": "string"
         },
-        "overwrite": {
-          "type": "boolean"
+        "orders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcOrderDetails"
+          }
+        },
+        "positionStats": {
+          "$ref": "#/definitions/gctrpcFuturesPositionStats"
+        },
+        "fundingData": {
+          "$ref": "#/definitions/gctrpcFundingData"
+        }
+      }
+    },
+    "gctrpcFuturesPositionStats": {
+      "type": "object",
+      "properties": {
+        "maintenanceMarginRequirement": {
+          "type": "string"
+        },
+        "initialMarginRequirement": {
+          "type": "string"
+        },
+        "estimatedLiquidationPrice": {
+          "type": "string"
+        },
+        "collateralUsed": {
+          "type": "string"
+        },
+        "markPrice": {
+          "type": "string"
+        },
+        "currentSize": {
+          "type": "string"
+        },
+        "contractSize": {
+          "type": "string"
+        },
+        "contractMultiplier": {
+          "type": "string"
+        },
+        "contractSettlementType": {
+          "type": "string"
+        },
+        "breakEvenPrice": {
+          "type": "string"
+        },
+        "averageOpenPrice": {
+          "type": "string"
+        },
+        "recentPnl": {
+          "type": "string"
+        },
+        "marginFraction": {
+          "type": "string"
+        },
+        "freeCollateral": {
+          "type": "string"
+        },
+        "totalCollateral": {
+          "type": "string"
+        },
+        "frozenBalance": {
+          "type": "string"
+        },
+        "equityOfCurrency": {
+          "type": "string"
+        },
+        "availableEquity": {
+          "type": "string"
+        },
+        "cashBalance": {
+          "type": "string"
+        },
+        "discountEquity": {
+          "type": "string"
+        },
+        "equityUsd": {
+          "type": "string"
+        },
+        "isolatedEquity": {
+          "type": "string"
+        },
+        "isolatedLiabilities": {
+          "type": "string"
+        },
+        "isolatedUpl": {
+          "type": "string"
+        },
+        "notionalLeverage": {
+          "type": "string"
+        },
+        "totalEquity": {
+          "type": "string"
+        },
+        "strategyEquity": {
+          "type": "string"
         }
       }
     },
@@ -3173,7 +5442,7 @@
         }
       }
     },
-    "gctrpcGetAccountInfoResponse": {
+    "gctrpcGetAccountBalancesResponse": {
       "type": "object",
       "properties": {
         "exchange": {
@@ -3182,6 +5451,7 @@
         "accounts": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcAccount"
           }
         }
@@ -3193,7 +5463,90 @@
         "events": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcAuditEvent"
+          }
+        }
+      }
+    },
+    "gctrpcGetAvailableTransferChainsRequest": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "cryptocurrency": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcGetAvailableTransferChainsResponse": {
+      "type": "object",
+      "properties": {
+        "chains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "gctrpcGetCollateralModeResponse": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "collateralMode": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcGetCollateralResponse": {
+      "type": "object",
+      "properties": {
+        "subAccount": {
+          "type": "string"
+        },
+        "collateralCurrency": {
+          "type": "string"
+        },
+        "totalValueOfPositiveSpotBalances": {
+          "type": "string"
+        },
+        "collateralContributedByPositiveSpotBalances": {
+          "type": "string"
+        },
+        "usedCollateral": {
+          "type": "string"
+        },
+        "usedBreakdown": {
+          "$ref": "#/definitions/gctrpcCollateralUsedBreakdown"
+        },
+        "availableCollateral": {
+          "type": "string"
+        },
+        "maintenanceCollateral": {
+          "type": "string"
+        },
+        "unrealisedPnl": {
+          "type": "string"
+        },
+        "currencyBreakdown": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcCollateralForCurrency"
+          }
+        },
+        "positionBreakdown": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcCollateralByPosition"
           }
         }
       }
@@ -3201,7 +5554,7 @@
     "gctrpcGetCommunicationRelayersResponse": {
       "type": "object",
       "properties": {
-        "communication_relayers": {
+        "communicationRelayers": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/gctrpcCommunicationRelayer"
@@ -3226,6 +5579,12 @@
         },
         "cryptocurrency": {
           "type": "string"
+        },
+        "chain": {
+          "type": "string"
+        },
+        "bypass": {
+          "type": "boolean"
         }
       }
     },
@@ -3233,6 +5592,9 @@
       "type": "object",
       "properties": {
         "address": {
+          "type": "string"
+        },
+        "tag": {
           "type": "string"
         }
       }
@@ -3251,8 +5613,16 @@
         "addresses": {
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/definitions/gctrpcDepositAddresses"
           }
+        }
+      }
+    },
+    "gctrpcGetCurrencyTradeURLResponse": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
         }
       }
     },
@@ -3269,7 +5639,7 @@
         "item": {
           "type": "string"
         },
-        "condition_params": {
+        "conditionParams": {
           "$ref": "#/definitions/gctrpcConditionParams"
         },
         "pair": {
@@ -3303,36 +5673,36 @@
         "verbose": {
           "type": "boolean"
         },
-        "using_sandbox": {
+        "usingSandbox": {
           "type": "boolean"
         },
-        "http_timeout": {
+        "httpTimeout": {
           "type": "string"
         },
-        "http_useragent": {
+        "httpUseragent": {
           "type": "string"
         },
-        "http_proxy": {
+        "httpProxy": {
           "type": "string"
         },
-        "base_currencies": {
+        "baseCurrencies": {
           "type": "string"
         },
-        "supported_assets": {
+        "supportedAssets": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/gctrpcPairsSupported"
           }
         },
-        "authenticated_api": {
+        "authenticatedApi": {
           "type": "boolean"
         }
       }
     },
-    "gctrpcGetExchangeOTPReponse": {
+    "gctrpcGetExchangeOTPResponse": {
       "type": "object",
       "properties": {
-        "otp_code": {
+        "otpCode": {
           "type": "string"
         }
       }
@@ -3340,7 +5710,7 @@
     "gctrpcGetExchangeOTPsResponse": {
       "type": "object",
       "properties": {
-        "otp_codes": {
+        "otpCodes": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
@@ -3362,7 +5732,7 @@
     "gctrpcGetExchangePairsResponse": {
       "type": "object",
       "properties": {
-        "supported_assets": {
+        "supportedAssets": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/gctrpcPairsSupported"
@@ -3381,9 +5751,10 @@
     "gctrpcGetForexProvidersResponse": {
       "type": "object",
       "properties": {
-        "forex_providers": {
+        "forexProviders": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcForexProvider"
           }
         }
@@ -3392,11 +5763,49 @@
     "gctrpcGetForexRatesResponse": {
       "type": "object",
       "properties": {
-        "forex_rates": {
+        "forexRates": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcForexRatesConversion"
           }
+        }
+      }
+    },
+    "gctrpcGetFundingRatesResponse": {
+      "type": "object",
+      "properties": {
+        "rates": {
+          "$ref": "#/definitions/gctrpcFundingData"
+        }
+      }
+    },
+    "gctrpcGetFuturesPositionsOrdersResponse": {
+      "type": "object",
+      "properties": {
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcFuturePosition"
+          }
+        }
+      }
+    },
+    "gctrpcGetFuturesPositionsSummaryResponse": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "positionStats": {
+          "$ref": "#/definitions/gctrpcFuturesPositionStats"
         }
       }
     },
@@ -3421,6 +5830,7 @@
         "candle": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcCandle"
           }
         }
@@ -3432,31 +5842,66 @@
         "uptime": {
           "type": "string"
         },
-        "available_exchanges": {
+        "availableExchanges": {
           "type": "string",
           "format": "int64"
         },
-        "enabled_exchanges": {
+        "enabledExchanges": {
           "type": "string",
           "format": "int64"
         },
-        "default_forex_provider": {
+        "defaultForexProvider": {
           "type": "string"
         },
-        "default_fiat_currency": {
+        "defaultFiatCurrency": {
           "type": "string"
         },
-        "subsystem_status": {
+        "subsystemStatus": {
           "type": "object",
           "additionalProperties": {
             "type": "boolean"
           }
         },
-        "rpc_endpoints": {
+        "rpcEndpoints": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/gctrpcRPCEndpoint"
           }
+        }
+      }
+    },
+    "gctrpcGetLatestFundingRateResponse": {
+      "type": "object",
+      "properties": {
+        "rate": {
+          "$ref": "#/definitions/gctrpcFundingData"
+        }
+      }
+    },
+    "gctrpcGetLeverageResponse": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "underlyingPair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "marginType": {
+          "type": "string"
+        },
+        "leverage": {
+          "type": "number",
+          "format": "double"
+        },
+        "orderSide": {
+          "type": "string"
         }
       }
     },
@@ -3477,13 +5922,74 @@
         }
       }
     },
+    "gctrpcGetManagedPositionsResponse": {
+      "type": "object",
+      "properties": {
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcFuturePosition"
+          }
+        }
+      }
+    },
+    "gctrpcGetMarginRatesHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "rates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcMarginRate"
+          }
+        },
+        "totalRates": {
+          "type": "string",
+          "format": "int64"
+        },
+        "sumBorrowCosts": {
+          "type": "string"
+        },
+        "avgBorrowSize": {
+          "type": "string"
+        },
+        "sumLendingPayments": {
+          "type": "string"
+        },
+        "avgLendingSize": {
+          "type": "string"
+        },
+        "latestRate": {
+          "$ref": "#/definitions/gctrpcMarginRate"
+        },
+        "predictedRate": {
+          "$ref": "#/definitions/gctrpcMarginRate"
+        },
+        "takerFeeRate": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcGetOpenInterestResponse": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/gctrpcOpenInterestDataResponse"
+          }
+        }
+      }
+    },
     "gctrpcGetOrderRequest": {
       "type": "object",
       "properties": {
         "exchange": {
           "type": "string"
         },
-        "order_id": {
+        "orderId": {
           "type": "string"
         },
         "pair": {
@@ -3491,6 +5997,149 @@
         },
         "asset": {
           "type": "string"
+        }
+      }
+    },
+    "gctrpcGetOrderbookAmountByImpactResponse": {
+      "type": "object",
+      "properties": {
+        "amountRequired": {
+          "type": "number",
+          "format": "double"
+        },
+        "currencySelling": {
+          "type": "string"
+        },
+        "amountReceived": {
+          "type": "number",
+          "format": "double"
+        },
+        "currencyBuying": {
+          "type": "string"
+        },
+        "startPrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "endPrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "averageOrderCost": {
+          "type": "number",
+          "format": "double"
+        },
+        "sideAffected": {
+          "type": "string"
+        },
+        "approximateImpactSlippagePercentage": {
+          "type": "number",
+          "format": "double"
+        },
+        "updateProtocol": {
+          "type": "string"
+        },
+        "fullOrderbookSideConsumed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gctrpcGetOrderbookAmountByNominalResponse": {
+      "type": "object",
+      "properties": {
+        "amountRequired": {
+          "type": "number",
+          "format": "double"
+        },
+        "currencySelling": {
+          "type": "string"
+        },
+        "amountReceived": {
+          "type": "number",
+          "format": "double"
+        },
+        "currencyBuying": {
+          "type": "string"
+        },
+        "startPrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "endPrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "averageOrderCost": {
+          "type": "number",
+          "format": "double"
+        },
+        "sideAffected": {
+          "type": "string"
+        },
+        "approximateNominalSlippagePercentage": {
+          "type": "number",
+          "format": "double"
+        },
+        "updateProtocol": {
+          "type": "string"
+        },
+        "fullOrderbookSideConsumed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gctrpcGetOrderbookMovementResponse": {
+      "type": "object",
+      "properties": {
+        "nominalPercentage": {
+          "type": "number",
+          "format": "double"
+        },
+        "impactPercentage": {
+          "type": "number",
+          "format": "double"
+        },
+        "slippageCost": {
+          "type": "number",
+          "format": "double"
+        },
+        "currencyBought": {
+          "type": "string"
+        },
+        "bought": {
+          "type": "number",
+          "format": "double"
+        },
+        "currencySold": {
+          "type": "string"
+        },
+        "sold": {
+          "type": "number",
+          "format": "double"
+        },
+        "sideAffected": {
+          "type": "string"
+        },
+        "updateProtocol": {
+          "type": "string"
+        },
+        "fullOrderbookSideConsumed": {
+          "type": "boolean"
+        },
+        "startPrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "endPrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "noSlippageOccurred": {
+          "type": "boolean"
+        },
+        "averageOrderCost": {
+          "type": "number",
+          "format": "double"
         }
       }
     },
@@ -3503,7 +6152,7 @@
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "asset_type": {
+        "assetType": {
           "type": "string"
         }
       }
@@ -3514,6 +6163,7 @@
         "orderbooks": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcOrderbooks"
           }
         }
@@ -3525,16 +6175,16 @@
         "exchange": {
           "type": "string"
         },
-        "asset_type": {
+        "assetType": {
           "type": "string"
         },
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "start_date": {
+        "startDate": {
           "type": "string"
         },
-        "end_date": {
+        "endDate": {
           "type": "string"
         }
       }
@@ -3545,6 +6195,7 @@
         "orders": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcOrderDetails"
           }
         }
@@ -3556,6 +6207,7 @@
         "portfolio": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcPortfolioAddress"
           }
         }
@@ -3564,31 +6216,34 @@
     "gctrpcGetPortfolioSummaryResponse": {
       "type": "object",
       "properties": {
-        "coin_totals": {
+        "coinTotals": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcCoin"
           }
         },
-        "coins_offline": {
+        "coinsOffline": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcCoin"
           }
         },
-        "coins_offline_summary": {
+        "coinsOfflineSummary": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/gctrpcOfflineCoins"
           }
         },
-        "coins_online": {
+        "coinsOnline": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcCoin"
           }
         },
-        "coins_online_summary": {
+        "coinsOnlineSummary": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/gctrpcOnlineCoins"
@@ -3607,13 +6262,24 @@
         }
       }
     },
-    "gctrpcGetSusbsytemsResponse": {
+    "gctrpcGetSubsystemsResponse": {
       "type": "object",
       "properties": {
-        "subsystems_status": {
+        "subsystemsStatus": {
           "type": "object",
           "additionalProperties": {
             "type": "boolean"
+          }
+        }
+      }
+    },
+    "gctrpcGetTechnicalAnalysisResponse": {
+      "type": "object",
+      "properties": {
+        "signals": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/gctrpcListOfSignals"
           }
         }
       }
@@ -3627,7 +6293,7 @@
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "asset_type": {
+        "assetType": {
           "type": "string"
         }
       }
@@ -3638,8 +6304,69 @@
         "tickers": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcTickers"
           }
+        }
+      }
+    },
+    "gctrpcLendingPayment": {
+      "type": "object",
+      "properties": {
+        "payment": {
+          "type": "string"
+        },
+        "size": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcListOfSignals": {
+      "type": "object",
+      "properties": {
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      }
+    },
+    "gctrpcMarginRate": {
+      "type": "object",
+      "properties": {
+        "time": {
+          "type": "string"
+        },
+        "marketBorrowSize": {
+          "type": "string"
+        },
+        "hourlyRate": {
+          "type": "string"
+        },
+        "yearlyRate": {
+          "type": "string"
+        },
+        "hourlyBorrowRate": {
+          "type": "string"
+        },
+        "yearlyBorrowRate": {
+          "type": "string"
+        },
+        "lendingPayment": {
+          "$ref": "#/definitions/gctrpcLendingPayment"
+        },
+        "borrowCost": {
+          "$ref": "#/definitions/gctrpcBorrowCost"
+        }
+      }
+    },
+    "gctrpcModifyOrderResponse": {
+      "type": "object",
+      "properties": {
+        "modifiedOrderId": {
+          "type": "string"
         }
       }
     },
@@ -3665,6 +6392,7 @@
         "addresses": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcOfflineCoinSummary"
           }
         }
@@ -3694,6 +6422,35 @@
         }
       }
     },
+    "gctrpcOpenInterestDataRequest": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        }
+      }
+    },
+    "gctrpcOpenInterestDataResponse": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "openInterest": {
+          "type": "number",
+          "format": "double"
+        }
+      }
+    },
     "gctrpcOrderDetails": {
       "type": "object",
       "properties": {
@@ -3703,31 +6460,29 @@
         "id": {
           "type": "string"
         },
-        "client_order_id": {
+        "clientOrderId": {
           "type": "string"
         },
-        "base_currency": {
+        "baseCurrency": {
           "type": "string"
         },
-        "quote_currency": {
+        "quoteCurrency": {
           "type": "string"
         },
-        "asset_type": {
+        "assetType": {
           "type": "string"
         },
-        "order_side": {
+        "orderSide": {
           "type": "string"
         },
-        "order_type": {
+        "orderType": {
           "type": "string"
         },
-        "creation_time": {
-          "type": "string",
-          "format": "int64"
+        "creationTime": {
+          "type": "string"
         },
-        "update_time": {
-          "type": "string",
-          "format": "int64"
+        "updateTime": {
+          "type": "string"
         },
         "status": {
           "type": "string"
@@ -3740,7 +6495,7 @@
           "type": "number",
           "format": "double"
         },
-        "open_volume": {
+        "openVolume": {
           "type": "number",
           "format": "double"
         },
@@ -3755,8 +6510,16 @@
         "trades": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcTradeHistory"
           }
+        },
+        "contractAmount": {
+          "type": "number",
+          "format": "double"
+        },
+        "feeCurrency": {
+          "type": "string"
         }
       }
     },
@@ -3774,6 +6537,12 @@
         "id": {
           "type": "string",
           "format": "int64"
+        },
+        "strAmount": {
+          "type": "string"
+        },
+        "strPrice": {
+          "type": "string"
         }
       }
     },
@@ -3783,26 +6552,31 @@
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "currency_pair": {
+        "currencyPair": {
           "type": "string"
         },
         "bids": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcOrderbookItem"
           }
         },
         "asks": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcOrderbookItem"
           }
         },
-        "last_updated": {
+        "lastUpdated": {
           "type": "string",
           "format": "int64"
         },
-        "asset_type": {
+        "assetType": {
+          "type": "string"
+        },
+        "error": {
           "type": "string"
         }
       }
@@ -3816,7 +6590,22 @@
         "orderbooks": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcOrderbookResponse"
+          }
+        }
+      }
+    },
+    "gctrpcOrders": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "orderStatus": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
           }
         }
       }
@@ -3824,10 +6613,10 @@
     "gctrpcPairsSupported": {
       "type": "object",
       "properties": {
-        "available_pairs": {
+        "availablePairs": {
           "type": "string"
         },
-        "enabled_pairs": {
+        "enabledPairs": {
           "type": "string"
         }
       }
@@ -3838,7 +6627,7 @@
         "address": {
           "type": "string"
         },
-        "coin_type": {
+        "coinType": {
           "type": "string"
         },
         "description": {
@@ -3856,7 +6645,7 @@
         "started": {
           "type": "boolean"
         },
-        "listen_address": {
+        "listenAddress": {
           "type": "string"
         }
       }
@@ -3876,7 +6665,7 @@
         "address": {
           "type": "string"
         },
-        "coin_type": {
+        "coinType": {
           "type": "string"
         },
         "description": {
@@ -3901,7 +6690,7 @@
         "timestamp": {
           "type": "string"
         },
-        "trade_id": {
+        "tradeId": {
           "type": "string"
         }
       }
@@ -3909,7 +6698,7 @@
     "gctrpcSavedTradesResponse": {
       "type": "object",
       "properties": {
-        "exchange_name": {
+        "exchangeName": {
           "type": "string"
         },
         "asset": {
@@ -3921,8 +6710,52 @@
         "trades": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcSavedTrades"
           }
+        }
+      }
+    },
+    "gctrpcSetCollateralModeRequest": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "collateralMode": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcSetCollateralModeResponse": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gctrpcSetDataHistoryJobStatusRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "nickname": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "format": "int64"
         }
       }
     },
@@ -3932,16 +6765,70 @@
         "exchange": {
           "type": "string"
         },
-        "asset_type": {
+        "assetType": {
           "type": "string"
         },
         "pairs": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcCurrencyPair"
           }
         },
         "enable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gctrpcSetLeverageRequest": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "underlyingPair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "marginType": {
+          "type": "string"
+        },
+        "leverage": {
+          "type": "number",
+          "format": "double"
+        },
+        "orderSide": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcSetLeverageResponse": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "underlyingPair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "marginType": {
+          "type": "string"
+        },
+        "orderSide": {
+          "type": "string"
+        },
+        "success": {
           "type": "boolean"
         }
       }
@@ -3956,6 +6843,43 @@
           "type": "string"
         }
       }
+    },
+    "gctrpcSetMarginTypeRequest": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "marginType": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcSetMarginTypeResponse": {
+      "type": "object",
+      "properties": {
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gctrpcShutdownResponse": {
+      "type": "object"
     },
     "gctrpcSimulateOrderRequest": {
       "type": "object",
@@ -3972,6 +6896,9 @@
         },
         "side": {
           "type": "string"
+        },
+        "marginType": {
+          "type": "string"
         }
       }
     },
@@ -3981,6 +6908,7 @@
         "orders": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcOrderbookItem"
           }
         },
@@ -3988,15 +6916,15 @@
           "type": "number",
           "format": "double"
         },
-        "minimum_price": {
+        "minimumPrice": {
           "type": "number",
           "format": "double"
         },
-        "maximum_price": {
+        "maximumPrice": {
           "type": "number",
           "format": "double"
         },
-        "percentage_gain_loss": {
+        "percentageGainLoss": {
           "type": "number",
           "format": "double"
         },
@@ -4017,7 +6945,7 @@
         "side": {
           "type": "string"
         },
-        "order_type": {
+        "orderType": {
           "type": "string"
         },
         "amount": {
@@ -4028,10 +6956,13 @@
           "type": "number",
           "format": "double"
         },
-        "client_id": {
+        "clientId": {
           "type": "string"
         },
-        "asset_type": {
+        "assetType": {
+          "type": "string"
+        },
+        "marginType": {
           "type": "string"
         }
       }
@@ -4039,15 +6970,16 @@
     "gctrpcSubmitOrderResponse": {
       "type": "object",
       "properties": {
-        "order_placed": {
+        "orderPlaced": {
           "type": "boolean"
         },
-        "order_id": {
+        "orderId": {
           "type": "string"
         },
         "trades": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcTrades"
           }
         }
@@ -4059,11 +6991,11 @@
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "last_updated": {
+        "lastUpdated": {
           "type": "string",
           "format": "int64"
         },
-        "currency_pair": {
+        "currencyPair": {
           "type": "string"
         },
         "last": {
@@ -4090,7 +7022,81 @@
           "type": "number",
           "format": "double"
         },
-        "price_ath": {
+        "lastSize": {
+          "type": "number",
+          "format": "double"
+        },
+        "volumeWeightedAveragePrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "bidSize": {
+          "type": "number",
+          "format": "double"
+        },
+        "askSize": {
+          "type": "number",
+          "format": "double"
+        },
+        "baseVolume": {
+          "type": "number",
+          "format": "double"
+        },
+        "quoteVolume": {
+          "type": "number",
+          "format": "double"
+        },
+        "open": {
+          "type": "number",
+          "format": "double"
+        },
+        "open24Hour": {
+          "type": "number",
+          "format": "double"
+        },
+        "percentChange24Hour": {
+          "type": "number",
+          "format": "double"
+        },
+        "close": {
+          "type": "number",
+          "format": "double"
+        },
+        "openInterest": {
+          "type": "number",
+          "format": "double"
+        },
+        "openInterestValue": {
+          "type": "number",
+          "format": "double"
+        },
+        "markPrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "indexPrice": {
+          "type": "number",
+          "format": "double"
+        },
+        "exchangeName": {
+          "type": "string"
+        },
+        "assetType": {
+          "type": "string"
+        },
+        "flashReturnRate": {
+          "type": "number",
+          "format": "double"
+        },
+        "bidPeriod": {
+          "type": "number",
+          "format": "double"
+        },
+        "askPeriod": {
+          "type": "number",
+          "format": "double"
+        },
+        "flashReturnRateAmount": {
           "type": "number",
           "format": "double"
         }
@@ -4105,6 +7111,7 @@
         "tickers": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcTickerResponse"
           }
         }
@@ -4113,7 +7120,7 @@
     "gctrpcTradeHistory": {
       "type": "object",
       "properties": {
-        "creation_time": {
+        "creationTime": {
           "type": "string",
           "format": "int64"
         },
@@ -4131,10 +7138,10 @@
         "exchange": {
           "type": "string"
         },
-        "asset_type": {
+        "assetType": {
           "type": "string"
         },
-        "order_side": {
+        "orderSide": {
           "type": "string"
         },
         "fee": {
@@ -4162,7 +7169,99 @@
           "type": "number",
           "format": "double"
         },
-        "fee_asset": {
+        "feeAsset": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcUpdateDataHistoryJobPrerequisiteRequest": {
+      "type": "object",
+      "properties": {
+        "nickname": {
+          "type": "string"
+        },
+        "prerequisiteJobNickname": {
+          "type": "string"
+        }
+      }
+    },
+    "gctrpcUpsertDataHistoryJobRequest": {
+      "type": "object",
+      "properties": {
+        "nickname": {
+          "type": "string"
+        },
+        "exchange": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "pair": {
+          "$ref": "#/definitions/gctrpcCurrencyPair"
+        },
+        "startDate": {
+          "type": "string"
+        },
+        "endDate": {
+          "type": "string"
+        },
+        "interval": {
+          "type": "string",
+          "format": "int64"
+        },
+        "requestSizeLimit": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "dataType": {
+          "type": "string",
+          "format": "int64"
+        },
+        "maxRetryAttempts": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "batchSize": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "insertOnly": {
+          "type": "boolean"
+        },
+        "conversionInterval": {
+          "type": "string",
+          "format": "int64"
+        },
+        "overwriteExistingData": {
+          "type": "boolean"
+        },
+        "prerequisiteJobNickname": {
+          "type": "string"
+        },
+        "decimalPlaceComparison": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "secondaryExchangeName": {
+          "type": "string"
+        },
+        "issueTolerancePercentage": {
+          "type": "number",
+          "format": "double"
+        },
+        "replaceOnIssue": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gctrpcUpsertDataHistoryJobResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "jobId": {
           "type": "string"
         }
       }
@@ -4179,16 +7278,16 @@
         "enabled": {
           "type": "boolean"
         },
-        "authenticated_supported": {
+        "authenticatedSupported": {
           "type": "boolean"
         },
         "authenticated": {
           "type": "boolean"
         },
-        "running_url": {
+        "runningUrl": {
           "type": "string"
         },
-        "proxy_address": {
+        "proxyAddress": {
           "type": "string"
         }
       }
@@ -4202,6 +7301,7 @@
         "subscriptions": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcWebsocketSubscription"
           }
         }
@@ -4213,7 +7313,7 @@
         "channel": {
           "type": "string"
         },
-        "currency": {
+        "pairs": {
           "type": "string"
         },
         "asset": {
@@ -4233,11 +7333,14 @@
         "pair": {
           "$ref": "#/definitions/gctrpcCurrencyPair"
         },
-        "price_target": {
+        "priceTarget": {
           "type": "number",
           "format": "double"
         },
         "side": {
+          "type": "string"
+        },
+        "assetType": {
           "type": "string"
         }
       }
@@ -4251,7 +7354,7 @@
         "address": {
           "type": "string"
         },
-        "address_tag": {
+        "addressTag": {
           "type": "string"
         },
         "currency": {
@@ -4266,6 +7369,9 @@
           "format": "double"
         },
         "description": {
+          "type": "string"
+        },
+        "chain": {
           "type": "string"
         }
       }
@@ -4286,7 +7392,7 @@
         "description": {
           "type": "string"
         },
-        "bank_account_id": {
+        "bankAccountId": {
           "type": "string"
         }
       }
@@ -4325,16 +7431,16 @@
           "type": "string"
         },
         "exchange": {
-          "$ref": "#/definitions/gctrpcWithdrawlExchangeEvent"
+          "$ref": "#/definitions/gctrpcWithdrawalExchangeEvent"
         },
         "request": {
           "$ref": "#/definitions/gctrpcWithdrawalRequestEvent"
         },
-        "created_at": {
+        "createdAt": {
           "type": "string",
           "format": "date-time"
         },
-        "updated_at": {
+        "updatedAt": {
           "type": "string",
           "format": "date-time"
         }
@@ -4373,6 +7479,9 @@
         },
         "currency": {
           "type": "string"
+        },
+        "assetType": {
+          "type": "string"
         }
       }
     },
@@ -4382,8 +7491,23 @@
         "event": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/gctrpcWithdrawalEventResponse"
           }
+        }
+      }
+    },
+    "gctrpcWithdrawalExchangeEvent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
         }
       }
     },
@@ -4401,8 +7525,8 @@
           "format": "double"
         },
         "type": {
-          "type": "integer",
-          "format": "int32"
+          "type": "string",
+          "format": "int64"
         },
         "fiat": {
           "$ref": "#/definitions/gctrpcFiatWithdrawalEvent"
@@ -4412,38 +7536,18 @@
         }
       }
     },
-    "gctrpcWithdrawlExchangeEvent": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "id": {
-          "type": "string"
-        },
-        "status": {
-          "type": "string"
-        }
-      }
-    },
     "protobufAny": {
       "type": "object",
       "properties": {
-        "type_url": {
+        "@type": {
           "type": "string"
-        },
-        "value": {
-          "type": "string",
-          "format": "byte"
         }
-      }
+      },
+      "additionalProperties": true
     },
-    "runtimeError": {
+    "rpcStatus": {
       "type": "object",
       "properties": {
-        "error": {
-          "type": "string"
-        },
         "code": {
           "type": "integer",
           "format": "int32"
@@ -4454,31 +7558,7 @@
         "details": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/protobufAny"
-          }
-        }
-      }
-    },
-    "runtimeStreamError": {
-      "type": "object",
-      "properties": {
-        "grpc_code": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "http_code": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "message": {
-          "type": "string"
-        },
-        "http_status": {
-          "type": "string"
-        },
-        "details": {
-          "type": "array",
-          "items": {
+            "type": "object",
             "$ref": "#/definitions/protobufAny"
           }
         }

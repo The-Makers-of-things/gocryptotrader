@@ -1,0 +1,40 @@
+{{define "test"}}
+package {{.Name}}
+
+import (
+	"log"
+	"os"
+	"testing"
+
+	"github.com/thrasher-corp/gocryptotrader/exchange/accounts"
+	testexch "github.com/thrasher-corp/gocryptotrader/internal/testing/exchange"
+)
+
+// Please supply your own credentials here to do authenticated endpoint testing.
+var apiCredentials = &accounts.Credentials{
+	Key:    "",
+	Secret: "",
+}
+
+const canManipulateRealOrders = false
+
+var e *Exchange
+
+func TestMain(m *testing.M) {
+	e = new(Exchange)
+	if err := testexch.Setup(e); err != nil {
+		log.Fatalf("{{.CapitalName}} Setup error: %s", err)
+	}
+
+	if apiCredentials.Key != "" && apiCredentials.Secret != "" {
+		e.API.AuthenticatedSupport = true
+		{{if .WS}}e.API.AuthenticatedWebsocketSupport = true
+		e.Websocket.SetCanUseAuthenticatedEndpoints(true){{end}}
+		e.SetCredentials(apiCredentials)
+	}
+
+	os.Exit(m.Run())
+}
+
+// Implement tests for API endpoints below
+{{end}}

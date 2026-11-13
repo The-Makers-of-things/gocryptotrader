@@ -1,8 +1,10 @@
 package order
 
 import (
+	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/signal"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
 // IsOrder returns whether the event is an order event
@@ -21,22 +23,22 @@ func (o *Order) GetDirection() order.Side {
 }
 
 // SetAmount sets the amount
-func (o *Order) SetAmount(i float64) {
+func (o *Order) SetAmount(i decimal.Decimal) {
 	o.Amount = i
 }
 
 // GetAmount returns the amount
-func (o *Order) GetAmount() float64 {
+func (o *Order) GetAmount() decimal.Decimal {
 	return o.Amount
 }
 
 // GetBuyLimit returns the buy limit
-func (o *Order) GetBuyLimit() float64 {
+func (o *Order) GetBuyLimit() decimal.Decimal {
 	return o.BuyLimit
 }
 
 // GetSellLimit returns the sell limit
-func (o *Order) GetSellLimit() float64 {
+func (o *Order) GetSellLimit() decimal.Decimal {
 	return o.SellLimit
 }
 
@@ -62,21 +64,42 @@ func (o *Order) GetID() string {
 
 // IsLeveraged returns if it is leveraged
 func (o *Order) IsLeveraged() bool {
-	return o.Leverage > 1.0
+	return o.Leverage.GreaterThan(decimal.MustFromFloat(1))
 }
 
 // GetLeverage returns leverage rate
-func (o *Order) GetLeverage() float64 {
+func (o *Order) GetLeverage() decimal.Decimal {
 	return o.Leverage
 }
 
 // SetLeverage sets leverage
-func (o *Order) SetLeverage(l float64) {
+func (o *Order) SetLeverage(l decimal.Decimal) {
 	o.Leverage = l
 }
 
-// GetFunds returns the amount of funds the portfolio manager
+// GetAllocatedFunds returns the amount of funds the portfolio manager
 // has allocated to this potential position
-func (o *Order) GetFunds() float64 {
-	return o.Funds
+func (o *Order) GetAllocatedFunds() decimal.Decimal {
+	return o.AllocatedFunds
+}
+
+// GetFillDependentEvent returns the fill dependent event
+// so it can be added the event queue
+func (o *Order) GetFillDependentEvent() signal.Event {
+	return o.FillDependentEvent
+}
+
+// IsClosingPosition returns whether position is being closed
+func (o *Order) IsClosingPosition() bool {
+	return o.ClosingPosition
+}
+
+// IsLiquidating returns whether position is being liquidated
+func (o *Order) IsLiquidating() bool {
+	return o.LiquidatingPosition
+}
+
+// GetClosePrice returns the close price
+func (o *Order) GetClosePrice() decimal.Decimal {
+	return o.ClosePrice
 }

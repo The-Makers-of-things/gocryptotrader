@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
-	"golang.org/x/time/rate"
 )
 
 const (
@@ -27,48 +26,17 @@ const (
 	huobiFuturesUnAuth
 	huobiFuturesTransfer
 	huobiSwapAuth
-	huobiSwapUnauth
+	huobiSwapUnAuth
 )
 
-// RateLimit implements the request.Limiter interface
-type RateLimit struct {
-	Spot          *rate.Limiter
-	FuturesAuth   *rate.Limiter
-	FuturesUnauth *rate.Limiter
-	SwapAuth      *rate.Limiter
-	SwapUnauth    *rate.Limiter
-	FuturesXfer   *rate.Limiter
-}
-
-// Limit limits outbound requests
-func (r *RateLimit) Limit(f request.EndpointLimit) error {
-	switch f {
-	// TODO: Add futures and swap functionality
-	case huobiFuturesAuth:
-		time.Sleep(r.FuturesAuth.Reserve().Delay())
-	case huobiFuturesUnAuth:
-		time.Sleep(r.FuturesUnauth.Reserve().Delay())
-	case huobiFuturesTransfer:
-		time.Sleep(r.FuturesXfer.Reserve().Delay())
-	case huobiSwapAuth:
-		time.Sleep(r.SwapAuth.Reserve().Delay())
-	case huobiSwapUnauth:
-		time.Sleep(r.SwapUnauth.Reserve().Delay())
-	default:
-		// Spot calls
-		time.Sleep(r.Spot.Reserve().Delay())
-	}
-	return nil
-}
-
-// SetRateLimit returns the rate limit for the exchange
-func SetRateLimit() *RateLimit {
-	return &RateLimit{
-		Spot:          request.NewRateLimit(huobiSpotRateInterval, huobiSpotRequestRate),
-		FuturesAuth:   request.NewRateLimit(huobiFuturesRateInterval, huobiFuturesAuthRequestRate),
-		FuturesUnauth: request.NewRateLimit(huobiFuturesRateInterval, huobiFuturesUnAuthRequestRate),
-		SwapAuth:      request.NewRateLimit(huobiSwapRateInterval, huobiSwapAuthRequestRate),
-		SwapUnauth:    request.NewRateLimit(huobiSwapRateInterval, huobiSwapUnauthRequestRate),
-		FuturesXfer:   request.NewRateLimit(huobiFuturesTransferRateInterval, huobiFuturesTransferReqRate),
+// GetRateLimit returns the rate limit for the exchange
+func GetRateLimit() request.RateLimitDefinitions {
+	return request.RateLimitDefinitions{
+		request.Unset:        request.NewRateLimitWithWeight(huobiSpotRateInterval, huobiSpotRequestRate, 1),
+		huobiFuturesAuth:     request.NewRateLimitWithWeight(huobiFuturesRateInterval, huobiFuturesAuthRequestRate, 1),
+		huobiFuturesUnAuth:   request.NewRateLimitWithWeight(huobiFuturesRateInterval, huobiFuturesUnAuthRequestRate, 1),
+		huobiSwapAuth:        request.NewRateLimitWithWeight(huobiSwapRateInterval, huobiSwapAuthRequestRate, 1),
+		huobiSwapUnAuth:      request.NewRateLimitWithWeight(huobiSwapRateInterval, huobiSwapUnauthRequestRate, 1),
+		huobiFuturesTransfer: request.NewRateLimitWithWeight(huobiFuturesTransferRateInterval, huobiFuturesTransferReqRate, 1),
 	}
 }

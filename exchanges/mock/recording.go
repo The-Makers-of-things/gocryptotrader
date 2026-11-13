@@ -1,20 +1,32 @@
 package mock
 
 import (
-	"encoding/json"
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
-	"github.com/thrasher-corp/gocryptotrader/common/crypto"
+	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/common/file"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
+)
+
+// defaultDataSliceLimit the mock slice data size limit to a default of 5
+const defaultDataSliceLimit = 5
+
+var (
+	errMismatchedJSONBodyShape  = errors.New("mismatched JSON body shape")
+	errUnsupportedJSONBodyShape = errors.New("unsupported JSON body shape")
+	errUnexpectedTrailingJSON   = errors.New("unexpected trailing JSON content")
 )
 
 // HTTPResponse defines expected response from the end point including request
@@ -28,7 +40,8 @@ type HTTPResponse struct {
 
 // HTTPRecord will record the request and response to a default JSON file for
 // mocking purposes
-func HTTPRecord(res *http.Response, service string, respContents []byte) error {
+// mockDataSliceLimit defaults to 5
+func HTTPRecord(res *http.Response, service string, respContents []byte, mockDataSliceLimit int) error {
 	if res == nil {
 		return errors.New("http.Response cannot be nil")
 	}
@@ -45,17 +58,30 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 		return errors.New("service not supplied cannot access correct mock file")
 	}
 	service = strings.ToLower(service)
+	if mockDataSliceLimit == 0 {
+		mockDataSliceLimit = defaultDataSliceLimit
+	}
+	outputFilePath := filepath.Join(DefaultDirectory, service, service+".json")
+	_, err := os.Stat(outputFilePath)
+	if err != nil {
+		if os.IsExist(err) {
+			return err
+		}
+		// check alternative path to add compatibility with /internal/testing/exchange/exchange.go MockHTTPInstance
+		outputFilePath = filepath.Join("..", service, "testdata", "http.json")
+		_, err = os.Stat(outputFilePath)
+		if err != nil {
+			return err
+		}
+	}
 
-	fileout := filepath.Join(DefaultDirectory, service, service+".json")
-
-	contents, err := ioutil.ReadFile(fileout)
+	contents, err := os.ReadFile(outputFilePath)
 	if err != nil {
 		return err
 	}
 
 	var m VCRMock
-	err = json.Unmarshal(contents, &m)
-	if err != nil {
+	if err := json.Unmarshal(contents, &m); err != nil {
 		return err
 	}
 
@@ -63,14 +89,18 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 		m.Routes = make(map[string]map[string][]HTTPResponse)
 	}
 
-	var httpResponse HTTPResponse
-	cleanedContents, err := CheckResponsePayload(respContents)
+	items, err := getExcludedItems()
 	if err != nil {
 		return err
 	}
 
-	err = json.Unmarshal(cleanedContents, &httpResponse.Data)
+	var httpResponse HTTPResponse
+	cleanedContents, err := CheckResponsePayload(respContents, items, mockDataSliceLimit)
 	if err != nil {
+		return err
+	}
+
+	if err := json.Unmarshal(cleanedContents, &httpResponse.Data); err != nil {
 		return err
 	}
 
@@ -80,7 +110,7 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 		if bodyErr != nil {
 			return bodyErr
 		}
-		payload, bodyErr := ioutil.ReadAll(bodycopy)
+		payload, bodyErr := io.ReadAll(bodycopy)
 		if bodyErr != nil {
 			return bodyErr
 		}
@@ -94,14 +124,10 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 			return urlErr
 		}
 
-		httpResponse.BodyParams, urlErr = GetFilteredURLVals(vals)
-		if urlErr != nil {
-			return urlErr
-		}
-
+		httpResponse.BodyParams = GetFilteredURLVals(vals, items)
 	case textPlain:
 		payload := res.Request.Header.Get("X-Gemini-Payload")
-		j, dErr := crypto.Base64Decode(payload)
+		j, dErr := base64.StdEncoding.DecodeString(payload)
 		if dErr != nil {
 			return dErr
 		}
@@ -112,15 +138,8 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 		httpResponse.BodyParams = body
 	}
 
-	httpResponse.Headers, err = GetFilteredHeader(res)
-	if err != nil {
-		return err
-	}
-
-	httpResponse.QueryString, err = GetFilteredURLVals(res.Request.URL.Query())
-	if err != nil {
-		return err
-	}
+	httpResponse.Headers = GetFilteredHeader(res, items)
+	httpResponse.QueryString = GetFilteredURLVals(res.Request.URL.Query(), items)
 
 	_, ok := m.Routes[res.Request.URL.Path]
 	if !ok {
@@ -140,12 +159,11 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 					}
 
 					if MatchURLVals(mockQuery, res.Request.URL.Query()) {
-						mockResponses = append(mockResponses[:i], mockResponses[i+1:]...) // Delete Old
+						mockResponses = slices.Delete(mockResponses, i, i+1)
 						break
 					}
 				}
-
-			case http.MethodPost:
+			case http.MethodPost, http.MethodDelete, http.MethodPut:
 				for i := range mockResponses {
 					cType, ok := mockResponses[i].Headers[contentType]
 
@@ -163,29 +181,53 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 							return urlErr
 						}
 
-						if MatchURLVals(respQueryVals, mockRespVals) {
+						if found = MatchURLVals(respQueryVals, mockRespVals); found {
 							// if found will delete instance and overwrite with new
 							// data
-							mockResponses = append(mockResponses[:i], mockResponses[i+1:]...)
-							found = true
+							mockResponses = slices.Delete(mockResponses, i, i+1)
 						}
 
 					case applicationJSON, textPlain:
-						reqVals, jErr := DeriveURLValsFromJSONMap([]byte(body))
-						if jErr != nil {
-							return jErr
-						}
+						trimmedStoredBody := strings.TrimSpace(mockResponses[i].BodyParams)
+						trimmedRequestBody := strings.TrimSpace(body)
+						storedShape := getJSONBodyShape(trimmedStoredBody)
+						requestShape := getJSONBodyShape(trimmedRequestBody)
+						switch {
+						case storedShape == jsonBodyArray && requestShape == jsonBodyArray:
+							reqVals, jErr := DeriveURLValsFromJSONArray([]byte(body))
+							if jErr != nil {
+								return jErr
+							}
 
-						mockVals, jErr := DeriveURLValsFromJSONMap([]byte(mockResponses[i].BodyParams))
-						if jErr != nil {
-							return jErr
-						}
+							mockVals, jErr := DeriveURLValsFromJSONArray([]byte(mockResponses[i].BodyParams))
+							if jErr != nil {
+								return jErr
+							}
 
-						if MatchURLVals(reqVals, mockVals) {
-							// if found will delete instance and overwrite with new
-							// data
-							mockResponses = append(mockResponses[:i], mockResponses[i+1:]...)
-							found = true
+							if found = slices.EqualFunc(reqVals, mockVals, MatchURLVals); found {
+								// if found will delete instance and overwrite with new
+								// data
+								mockResponses = slices.Delete(mockResponses, i, i+1)
+							}
+						case storedShape == jsonBodyObject && requestShape == jsonBodyObject:
+							reqVals, jErr := DeriveURLValsFromJSONMap([]byte(body))
+							if jErr != nil {
+								return jErr
+							}
+
+							mockVals, jErr := DeriveURLValsFromJSONMap([]byte(mockResponses[i].BodyParams))
+							if jErr != nil {
+								return jErr
+							}
+
+							if found = MatchURLVals(reqVals, mockVals); found {
+								// if the incoming query matches an existing, we will delete the existing mock record and overwrite with new data
+								mockResponses = slices.Delete(mockResponses, i, i+1)
+							}
+						case storedShape != requestShape:
+							return fmt.Errorf("%w request=%s stored=%s", errMismatchedJSONBodyShape, requestShape, storedShape)
+						default:
+							return fmt.Errorf("%w request=%s stored=%s", errUnsupportedJSONBodyShape, requestShape, storedShape)
 						}
 					case "":
 						if !ok {
@@ -195,15 +237,12 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 								return urlErr
 							}
 
-							if MatchURLVals(mockQuery, res.Request.URL.Query()) {
-								// if found will delete instance and overwrite with new data
-								mockResponses = append(mockResponses[:i], mockResponses[i+1:]...)
-								found = true
+							if found = MatchURLVals(mockQuery, res.Request.URL.Query()); found {
+								// if the incoming query matches an existing, we will delete the existing mock record and overwrite with new data
+								mockResponses = slices.Delete(mockResponses, i, i+1)
 							}
-
 							break
 						}
-
 						fallthrough
 					default:
 						return fmt.Errorf("unhandled content type %s", jCType)
@@ -226,59 +265,61 @@ func HTTPRecord(res *http.Response, service string, respContents []byte) error {
 		return err
 	}
 
-	return file.Write(fileout, payload)
+	return file.Write(outputFilePath, payload)
+}
+
+type jsonBodyShape string
+
+const (
+	jsonBodyUnknown jsonBodyShape = "unknown"
+	jsonBodyArray   jsonBodyShape = "array"
+	jsonBodyObject  jsonBodyShape = "object"
+)
+
+func getJSONBodyShape(body string) jsonBodyShape {
+	switch {
+	case strings.HasPrefix(body, "["):
+		return jsonBodyArray
+	case strings.HasPrefix(body, "{"):
+		return jsonBodyObject
+	default:
+		return jsonBodyUnknown
+	}
 }
 
 // GetFilteredHeader filters excluded http headers for insertion into a mock
 // test file
-func GetFilteredHeader(res *http.Response) (http.Header, error) {
-	items, err := GetExcludedItems()
-	if err != nil {
-		return res.Header, err
-	}
-
+func GetFilteredHeader(res *http.Response, items Exclusion) http.Header {
 	for i := range items.Headers {
 		if res.Request.Header.Get(items.Headers[i]) != "" {
 			res.Request.Header.Set(items.Headers[i], "")
 		}
 	}
-
-	return res.Request.Header, nil
+	return res.Request.Header
 }
 
 // GetFilteredURLVals filters excluded url value variables for insertion into a
 // mock test file
-func GetFilteredURLVals(vals url.Values) (string, error) {
-	items, err := GetExcludedItems()
-	if err != nil {
-		return "", err
-	}
-
-	for key, val := range vals {
+func GetFilteredURLVals(vals url.Values, items Exclusion) string {
+	for key := range vals {
 		for i := range items.Variables {
-			if strings.EqualFold(items.Variables[i], val[0]) {
+			if strings.EqualFold(items.Variables[i], key) {
 				vals.Set(key, "")
 			}
 		}
 	}
-	return vals.Encode(), nil
+	return vals.Encode()
 }
 
 // CheckResponsePayload checks to see if there are any response body variables
 // that should not be there.
-func CheckResponsePayload(data []byte) ([]byte, error) {
-	items, err := GetExcludedItems()
-	if err != nil {
+func CheckResponsePayload(data []byte, items Exclusion, mockDataSliceLimit int) ([]byte, error) {
+	var intermediary any
+	if err := decodeLeadingJSONValue(data, &intermediary); err != nil {
 		return nil, err
 	}
 
-	var intermediary interface{}
-	err = json.Unmarshal(data, &intermediary)
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := CheckJSON(intermediary, &items)
+	payload, err := CheckJSON(intermediary, &items, mockDataSliceLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +329,6 @@ func CheckResponsePayload(data []byte) ([]byte, error) {
 
 // Reflection consts
 const (
-	Int64   = "int64"
 	Float64 = "float64"
 	Slice   = "slice"
 	String  = "string"
@@ -296,24 +336,49 @@ const (
 	Invalid = "invalid"
 )
 
+func decodeLeadingJSONValue(data []byte, target any) error {
+	reader := bytes.NewReader(data)
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+
+	bufferedRemainder, err := io.ReadAll(decoder.Buffered())
+	if err != nil {
+		return fmt.Errorf("could not read buffered trailing JSON data: %w", err)
+	}
+
+	readerRemainder, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("could not read trailing JSON data: %w", err)
+	}
+
+	remainder := bytes.TrimSpace(append(bufferedRemainder, readerRemainder...))
+	if len(remainder) == 0 || bytes.Equal(remainder, []byte(`""`)) {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %q", errUnexpectedTrailingJSON, remainder)
+}
+
 // CheckJSON recursively parses json data to retract keywords, quite intensive.
-func CheckJSON(data interface{}, excluded *Exclusion) (interface{}, error) {
-	var context map[string]interface{}
-	if reflect.TypeOf(data).String() == "[]interface {}" {
-		var sData []interface{}
-		for i := range data.([]interface{}) {
-			v := data.([]interface{})[i]
-			switch v.(type) {
-			case map[string]interface{}, []interface{}:
-				checkedData, err := CheckJSON(v, excluded)
+func CheckJSON(data any, excluded *Exclusion, limit int) (any, error) {
+	if value, ok := data.([]any); ok {
+		sData := []any{}
+		for i := range value {
+			switch subvalue := value[i].(type) {
+			case []any, map[string]any:
+				checkedData, err := CheckJSON(subvalue, excluded, limit)
 				if err != nil {
 					return nil, err
 				}
-
 				sData = append(sData, checkedData)
+				if limit > 0 && len(sData) >= limit {
+					return sData, nil
+				}
 			default:
 				// Primitive value doesn't need exclusions applied, e.g. float64 or string
-				sData = append(sData, v)
+				sData = append(sData, subvalue)
 			}
 		}
 		return sData, nil
@@ -324,63 +389,54 @@ func CheckJSON(data interface{}, excluded *Exclusion) (interface{}, error) {
 		return nil, err
 	}
 
-	err = json.Unmarshal(conv, &context)
-	if err != nil {
+	var contextValue map[string]any
+	if err := json.Unmarshal(conv, &contextValue); err != nil {
 		return nil, err
 	}
 
-	if len(context) == 0 {
+	if len(contextValue) == 0 {
 		// Nil for some reason, should error out before in json.Unmarshal
-		return nil, nil
+		return map[string]any{}, nil
 	}
 
-	for key, val := range context {
+	for key, val := range contextValue {
 		switch reflect.ValueOf(val).Kind().String() {
 		case String:
 			if IsExcluded(key, excluded.Variables) {
-				context[key] = "" // Zero val string
-			}
-		case Int64:
-			if IsExcluded(key, excluded.Variables) {
-				context[key] = 0 // Zero val int
+				contextValue[key] = "" // Zero val string
 			}
 		case Float64:
 			if IsExcluded(key, excluded.Variables) {
-				context[key] = 0.0 // Zero val float
+				contextValue[key] = 0.0 // Zero val float
 			}
 		case Slice:
-			slice := val.([]interface{})
-			if len(slice) < 1 {
+			slice, ok := val.([]any)
+			if !ok {
+				return nil, common.GetTypeAssertError("[]any", val)
+			}
+			switch {
+			case len(slice) == 0:
 				// Empty slice found
-				context[key] = slice
-			} else {
-				if _, ok := slice[0].(map[string]interface{}); ok {
-					var cleanSlice []interface{}
-					for i := range slice {
-						cleanMap, sErr := CheckJSON(slice[i], excluded)
-						if sErr != nil {
-							return nil, sErr
-						}
-						cleanSlice = append(cleanSlice, cleanMap)
-					}
-					context[key] = cleanSlice
-				} else if IsExcluded(key, excluded.Variables) {
-					context[key] = nil // Zero val slice
+				contextValue[key] = slice
+			case IsExcluded(key, excluded.Variables):
+				contextValue[key] = nil // Zero val slice
+			default:
+				contextValue[key], err = CheckJSON(slice, excluded, limit)
+				if err != nil {
+					return nil, err
 				}
 			}
-
 		case Bool, Invalid: // Skip these bad boys for now
 		default:
 			// Recursively check map data
-			contextValue, err := CheckJSON(val, excluded)
+			contextValue[key], err = CheckJSON(val, excluded, limit)
 			if err != nil {
 				return nil, err
 			}
-			context[key] = contextValue
 		}
 	}
 
-	return context, nil
+	return contextValue, nil
 }
 
 // IsExcluded cross references the key with the excluded variables
@@ -393,22 +449,31 @@ func IsExcluded(key string, excludedVars []string) bool {
 	return false
 }
 
-var excludedList Exclusion
-var m sync.Mutex
-var set bool
-var exclusionFile = DefaultDirectory + "exclusion.json"
+var (
+	excludedList  Exclusion
+	m             sync.Mutex
+	set           bool
+	exclusionFile = DefaultDirectory + "exclusion.json"
+)
 
-var defaultExcludedHeaders = []string{"Key",
+var defaultExcludedHeaders = []string{
+	"Key",
 	"X-Mbx-Apikey",
 	"Rest-Key",
-	"Apiauth-Key"}
-var defaultExcludedVariables = []string{"bsb",
+	"Apiauth-Key",
+	"X-Bapi-Api-Key",
+}
+
+var defaultExcludedVariables = []string{
+	"bsb",
 	"user",
 	"name",
 	"real_name",
 	"receiver_name",
 	"account_number",
-	"username"}
+	"username",
+	"apiKey",
+}
 
 // Exclusion defines a list of items to be excluded from the main mock output
 // this attempts a catch all approach and needs to be updated per exchange basis
@@ -417,13 +482,13 @@ type Exclusion struct {
 	Variables []string `json:"variables"`
 }
 
-// GetExcludedItems checks to see if the variable is in the exclusion list as to
+// getExcludedItems checks to see if the variable is in the exclusion list as to
 // not display secure items in mock file generator output
-func GetExcludedItems() (Exclusion, error) {
+func getExcludedItems() (Exclusion, error) {
 	m.Lock()
 	defer m.Unlock()
 	if !set {
-		file, err := ioutil.ReadFile(exclusionFile)
+		f, err := os.ReadFile(exclusionFile)
 		if err != nil {
 			if !strings.Contains(err.Error(), "no such file or directory") {
 				return excludedList, err
@@ -437,12 +502,12 @@ func GetExcludedItems() (Exclusion, error) {
 				return excludedList, mErr
 			}
 
-			mErr = ioutil.WriteFile(exclusionFile, data, os.ModePerm)
+			mErr = os.WriteFile(exclusionFile, data, os.ModePerm)
 			if mErr != nil {
 				return excludedList, mErr
 			}
 		} else {
-			err = json.Unmarshal(file, &excludedList)
+			err = json.Unmarshal(f, &excludedList)
 			if err != nil {
 				return excludedList, err
 			}

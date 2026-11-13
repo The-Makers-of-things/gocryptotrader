@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -26,21 +25,21 @@ var (
 	args           string
 )
 
-func openDBConnection(driver string) (err error) {
-	if driver == database.DBPostgreSQL {
-		dbConn, err = dbPSQL.Connect()
-		if err != nil {
-			return fmt.Errorf("database failed to connect: %v, some features that utilise a database will be unavailable", err)
-		}
-		return nil
-	} else if driver == database.DBSQLite || driver == database.DBSQLite3 {
-		dbConn, err = dbsqlite3.Connect()
-		if err != nil {
-			return fmt.Errorf("database failed to connect: %v, some features that utilise a database will be unavailable", err)
-		}
-		return nil
+func openDBConnection(cfg *database.Config) (err error) {
+	switch cfg.Driver {
+	case database.DBPostgreSQL:
+		dbConn, err = dbPSQL.Connect(cfg)
+	case database.DBSQLite, database.DBSQLite3:
+		dbConn, err = dbsqlite3.Connect(cfg.Database)
+	default:
+		return fmt.Errorf("unsupported database driver: %q", cfg.Driver)
 	}
-	return errors.New("no connection established")
+
+	if err != nil {
+		return fmt.Errorf("database failed to connect: %w, some features that utilise a database will be unavailable", err)
+	}
+
+	return nil
 }
 
 func main() {
@@ -68,14 +67,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = openDBConnection(conf.Database.Driver)
+	err = openDBConnection(&conf.Database)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 
 	drv := repository.GetSQLDialect()
-
 	if drv == database.DBSQLite || drv == database.DBSQLite3 {
 		fmt.Printf("Database file: %s\n", conf.Database.Database)
 	} else {

@@ -1,309 +1,422 @@
 package dispatch
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"sync"
+	"runtime"
 	"testing"
+	"time"
+	"uuid"
 
-	"github.com/gofrs/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/thrasher-corp/gocryptotrader/common"
 )
 
-var mux *Mux
+var nonEmptyUUID = uuid.UUID{108, 105, 99, 107, 77, 121, 72, 97, 105, 114, 121, 66, 97, 108, 108, 115}
 
-func TestMain(m *testing.M) {
-	err := Start(DefaultMaxWorkers, 0)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	cpyDispatch = dispatcher
-	mux = GetNewMux()
-	cpyMux = mux
-	os.Exit(m.Run())
-}
-
-var cpyDispatch *Dispatcher
-var cpyMux *Mux
-
-func TestDispatcher(t *testing.T) {
-	dispatcher = nil
-	err := Stop()
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	err = Start(10, 0)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-	if IsRunning() {
-		t.Error("should be false")
-	}
-
-	err = DropWorker()
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	err = SpawnWorker()
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	dispatcher = cpyDispatch
-
-	if !IsRunning() {
-		t.Error("should be true")
-	}
-
-	err = Start(10, 0)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	err = DropWorker()
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = DropWorker()
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = SpawnWorker()
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = SpawnWorker()
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = SpawnWorker()
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
+func TestGlobalDispatcher(t *testing.T) {
+	err := Start(0, 0)
+	require.NoError(t, err, "Start must not error")
+	assert.True(t, IsRunning(), "IsRunning should return true")
 
 	err = Stop()
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err, "Stop must not error")
+	assert.False(t, IsRunning(), "IsRunning should return false")
 
-	err = Stop()
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
+	err = EnsureRunning(0, 0)
+	require.NoError(t, err, "EnsureRunning must not error when starting")
+	assert.True(t, IsRunning(), "IsRunning should return true after EnsureRunning")
 
-	err = Start(0, 20)
-	if err != nil {
-		t.Error(err)
-	}
-	if cap(dispatcher.jobs) != 20 {
-		t.Errorf("Expected jobs limit to be %v, is %v", 20, cap(dispatcher.jobs))
-	}
-	payload := "something"
+	err = EnsureRunning(0, 0)
+	require.NoError(t, err, "EnsureRunning must not error when called twice")
 
-	err = dispatcher.publish(uuid.UUID{}, &payload)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	err = dispatcher.publish(uuid.UUID{}, nil)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	id, err := dispatcher.getNewID()
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = dispatcher.publish(id, &payload)
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = dispatcher.stop()
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = dispatcher.publish(id, &payload)
-	if err != nil {
-		t.Error(err)
-	}
-
-	_, err = dispatcher.subscribe(id)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	err = dispatcher.start(10, -1)
-	if err != nil {
-		t.Error(err)
-	}
-	if cap(dispatcher.jobs) != DefaultJobsLimit {
-		t.Errorf("Expected jobs limit to be %v, is %v", DefaultJobsLimit, cap(dispatcher.jobs))
-	}
-	someID, err := uuid.NewV4()
-	if err != nil {
-		t.Error(err)
-	}
-
-	_, err = dispatcher.subscribe(someID)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	randomChan := make(chan interface{})
-	err = dispatcher.unsubscribe(someID, randomChan)
-	if err == nil {
-		t.Error("Expected error")
-	}
-
-	err = dispatcher.unsubscribe(id, randomChan)
-	if err == nil {
-		t.Error("Expected error")
-	}
-
-	close(randomChan)
-	err = dispatcher.unsubscribe(id, randomChan)
-	if err == nil {
-		t.Error("Expected error")
-	}
+	assert.NoError(t, Stop(), "Stop should not error")
 }
 
-func TestMux(t *testing.T) {
-	mux = nil
-	_, err := mux.Subscribe(uuid.UUID{})
-	if err == nil {
-		t.Error("error cannot be nil")
+func TestStartStop(t *testing.T) {
+	t.Parallel()
+	var d *Dispatcher
+
+	assert.False(t, d.isRunning(), "IsRunning should return false")
+
+	err := d.stop()
+	assert.ErrorIs(t, err, common.ErrNilPointer, "stop should error correctly")
+
+	err = d.start(10, 0)
+	assert.ErrorIs(t, err, common.ErrNilPointer, "start should error correctly")
+
+	d = NewDispatcher()
+
+	err = d.stop()
+	assert.ErrorIs(t, err, ErrNotRunning, "stop should error correctly")
+	assert.False(t, d.isRunning(), "IsRunning should return false")
+
+	err = d.start(1, 100)
+	assert.NoError(t, err, "start should not error")
+	assert.True(t, d.isRunning(), "IsRunning should return true")
+
+	err = d.start(0, 0)
+	assert.ErrorIs(t, err, ErrDispatcherAlreadyRunning, "start should error correctly")
+
+	// Add route option
+	id, err := d.getNewID(uuid.NewV4)
+	assert.NoError(t, err, "getNewID should not error")
+
+	// Add pipe
+	_, err = d.subscribe(id)
+	assert.NoError(t, err, "subscribe should not error")
+
+	// Max out jobs channel
+	for range 99 {
+		err = d.publish(id, "woah-nelly")
+		assert.NoError(t, err, "publish should not error")
 	}
 
-	err = mux.Unsubscribe(uuid.UUID{}, nil)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	err = mux.Publish(nil, nil)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	_, err = mux.GetID()
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-	mux = cpyMux
-
-	err = mux.Publish(nil, nil)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	payload := "string"
-	id, err := uuid.NewV4()
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = mux.Publish([]uuid.UUID{id}, &payload)
-	if err != nil {
-		t.Error(err)
-	}
-
-	_, err = mux.Subscribe(uuid.UUID{})
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	_, err = mux.Subscribe(id)
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
+	err = d.stop()
+	assert.NoError(t, err, "stop should not error")
+	assert.False(t, d.isRunning(), "IsRunning should return false")
 }
 
 func TestSubscribe(t *testing.T) {
-	itemID, err := mux.GetID()
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	var d *Dispatcher
+	_, err := d.subscribe(uuid.Nil())
+	assert.ErrorIs(t, err, common.ErrNilPointer, "subscribe should error correctly")
 
-	var pipes []Pipe
-	for i := 0; i < 1000; i++ {
-		newPipe, err := mux.Subscribe(itemID)
-		if err != nil {
-			t.Error(err)
+	d = NewDispatcher()
+
+	_, err = d.subscribe(uuid.Nil())
+	assert.ErrorIs(t, err, errIDNotSet, "subscribe should error correctly")
+
+	_, err = d.subscribe(nonEmptyUUID)
+	assert.ErrorIs(t, err, ErrNotRunning, "subscribe should error correctly")
+
+	err = d.start(0, 0)
+	require.NoError(t, err, "start must not error")
+
+	id, err := d.getNewID(uuid.NewV4)
+	require.NoError(t, err, "getNewID must not error")
+
+	_, err = d.subscribe(nonEmptyUUID)
+	assert.ErrorIs(t, err, errDispatcherUUIDNotFoundInRouteList, "subscribe should error correctly")
+
+	d.outbound.New = func() any { return "omg" }
+	_, err = d.subscribe(id)
+	assert.ErrorIs(t, err, errTypeAssertionFailure, "subscribe should error correctly")
+
+	d.outbound.New = func() any { return make(chan any) }
+	ch, err := d.subscribe(id)
+	assert.NoError(t, err, "subscribe should not error")
+	assert.NotNil(t, ch, "Channel should not be nil")
+}
+
+func TestUnsubscribe(t *testing.T) {
+	t.Parallel()
+	var d *Dispatcher
+
+	err := d.unsubscribe(uuid.Nil(), nil)
+	assert.ErrorIs(t, err, common.ErrNilPointer, "unsubscribe should error correctly")
+
+	d = NewDispatcher()
+
+	err = d.unsubscribe(uuid.Nil(), nil)
+	assert.ErrorIs(t, err, errIDNotSet, "unsubscribe should error correctly")
+
+	err = d.unsubscribe(nonEmptyUUID, nil)
+	assert.ErrorIs(t, err, errChannelIsNil, "unsubscribe should error correctly")
+
+	// will return nil if not running
+	err = d.unsubscribe(nonEmptyUUID, make(chan any))
+	assert.NoError(t, err, "unsubscribe should not error")
+
+	err = d.start(0, 0)
+	require.NoError(t, err, "start must not error")
+
+	err = d.unsubscribe(nonEmptyUUID, make(chan any))
+	assert.ErrorIs(t, err, errDispatcherUUIDNotFoundInRouteList, "unsubscribe should error correctly")
+
+	id, err := d.getNewID(uuid.NewV4)
+	require.NoError(t, err, "getNewID must not error")
+
+	err = d.unsubscribe(id, make(chan any))
+	assert.ErrorIs(t, err, errChannelNotFoundInUUIDRef, "unsubscribe should error correctly")
+
+	ch, err := d.subscribe(id)
+	require.NoError(t, err, "subscribe must not error")
+
+	err = d.unsubscribe(id, ch)
+	assert.NoError(t, err, "unsubscribe should not error")
+
+	ch2, err := d.subscribe(id)
+	require.NoError(t, err, "subscribe must not error")
+
+	err = d.unsubscribe(id, ch2)
+	assert.NoError(t, err, "unsubscribe should not error")
+}
+
+func TestPublish(t *testing.T) {
+	t.Parallel()
+	var d *Dispatcher
+
+	err := d.publish(uuid.Nil(), nil)
+	assert.ErrorIs(t, err, common.ErrNilPointer, "publish should error correctly")
+
+	d = NewDispatcher()
+
+	err = d.publish(nonEmptyUUID, "test")
+	assert.NoError(t, err, "publish should not error")
+
+	err = d.start(2, 10)
+	require.NoError(t, err, "start must not error")
+
+	err = d.publish(uuid.Nil(), "test")
+	assert.ErrorIs(t, err, errIDNotSet, "publish should error correctly")
+
+	err = d.publish(nonEmptyUUID, nil)
+	assert.ErrorIs(t, err, common.ErrNilPointer, "publish should error correctly")
+
+	// demonstrate job limit error
+	d.routes[nonEmptyUUID] = []chan any{
+		make(chan any),
+	}
+	for range 200 {
+		if err = d.publish(nonEmptyUUID, "test"); err != nil {
+			break
 		}
-		pipes = append(pipes, newPipe)
+	}
+	assert.ErrorIs(t, err, errDispatcherJobsAtLimit, "publish should eventually error at limit")
+}
+
+func TestPublishReceive(t *testing.T) {
+	t.Parallel()
+	d := NewDispatcher()
+	err := d.start(0, 0)
+	require.NoError(t, err, "start must not error")
+
+	id, err := d.getNewID(uuid.NewV4)
+	require.NoError(t, err, "getNewID must not error")
+
+	incoming, err := d.subscribe(id)
+	require.NoError(t, err, "subscribe must not error")
+
+	publishResult := make(chan error, 1)
+	go func(d *Dispatcher, id uuid.UUID) {
+		for range 10 {
+			if err := d.publish(id, "WOW"); err != nil {
+				publishResult <- err
+				return
+			}
+		}
+		publishResult <- nil
+	}(d, id)
+
+	assert.NoError(t, <-publishResult, "publish should not error")
+	data, ok := (<-incoming).(string)
+	assert.True(t, ok, "Should get a string type from the pipe")
+	assert.Equal(t, "WOW", data, "Should get correct value from the pipe")
+}
+
+func TestGetNewID(t *testing.T) {
+	t.Parallel()
+	var d *Dispatcher
+
+	_, err := d.getNewID(uuid.NewV4)
+	assert.ErrorIs(t, err, common.ErrNilPointer, "getNewID should error correctly")
+
+	d = NewDispatcher()
+
+	err = d.start(0, 0)
+	require.NoError(t, err, "start must not error")
+
+	_, err = d.getNewID(nil)
+	assert.ErrorIs(t, err, errUUIDGeneratorFunctionIsNil, "getNewID should error correctly")
+
+	_, err = d.getNewID(func() uuid.UUID { return uuid.UUID{254} })
+	assert.NoError(t, err, "getNewID should not error")
+
+	_, err = d.getNewID(func() uuid.UUID { return uuid.UUID{254} })
+	assert.ErrorIs(t, err, errUUIDCollision, "getNewID should error correctly")
+}
+
+func TestMux(t *testing.T) {
+	t.Parallel()
+	var mux *Mux
+	_, err := mux.Subscribe(uuid.Nil())
+	assert.ErrorIs(t, err, common.ErrNilPointer, "Subscribe should error correctly")
+
+	err = mux.Unsubscribe(uuid.Nil(), nil)
+	assert.ErrorIs(t, err, common.ErrNilPointer, "Unsubscribe should error correctly")
+
+	err = mux.Publish(nil)
+	assert.ErrorIs(t, err, common.ErrNilPointer, "Publish should error correctly")
+
+	_, err = mux.GetID()
+	assert.ErrorIs(t, err, common.ErrNilPointer, "GetID should error correctly")
+
+	d := NewDispatcher()
+	err = d.start(0, 0)
+	require.NoError(t, err, "start must not error")
+
+	mux = GetNewMux(d)
+
+	err = mux.Publish(nil)
+	assert.ErrorIs(t, err, common.ErrNilPointer, "Publish should error correctly")
+
+	err = mux.Publish("lol")
+	assert.ErrorIs(t, err, errNoIDs, "Publish should error correctly")
+
+	id, err := mux.GetID()
+	require.NoError(t, err, "GetID must not error")
+
+	_, err = mux.Subscribe(uuid.Nil())
+	assert.ErrorIs(t, err, errIDNotSet, "Subscribe should error correctly")
+
+	pipe, err := mux.Subscribe(id)
+	require.NoError(t, err, "Subscribe must not error")
+
+	ready := make(chan bool)
+
+	payload := "string"
+
+	readErr := make(chan error, 1)
+	go func() {
+		close(ready)
+		response, ok := (<-pipe.c).(string)
+		if !ok {
+			readErr <- errors.New("Should get a string type value from Publish")
+			return
+		}
+		if response != payload {
+			readErr <- fmt.Errorf("Should get correct value from Publish: expected %q got %q", payload, response)
+			return
+		}
+		readErr <- nil
+	}()
+
+	<-ready
+
+	err = mux.Publish(payload, id)
+	assert.NoError(t, err, "Publish should not error")
+	assert.NoError(t, <-readErr, "pipe read should not error")
+
+	err = pipe.Release()
+	assert.NoError(t, err, "Release should not error")
+}
+
+func TestMuxSubscribe(t *testing.T) {
+	t.Parallel()
+	d := NewDispatcher()
+	err := d.start(0, 0)
+	require.NoError(t, err, "start must not error")
+	mux := GetNewMux(d)
+	itemID, err := mux.GetID()
+	require.NoError(t, err, "GetID must not error")
+
+	pipes := make([]Pipe, 1000)
+	for x := range 1000 {
+		newPipe, err := mux.Subscribe(itemID)
+		assert.NoError(t, err, "Subscribe should not error")
+		pipes[x] = newPipe
 	}
 
 	for i := range pipes {
 		err := pipes[i].Release()
-		if err != nil {
-			t.Error(err)
-		}
+		assert.NoError(t, err, "Release should not error")
 	}
 }
 
-func TestPublish(t *testing.T) {
+func TestMuxPublish(t *testing.T) {
+	t.Parallel()
+	d := NewDispatcher()
+	err := d.start(0, 0)
+	require.NoError(t, err, "start must not error")
+
+	mux := GetNewMux(d)
 	itemID, err := mux.GetID()
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err, "GetID must not error")
+
+	overloadCeiling := DefaultMaxWorkers * DefaultJobsLimit * 2
+
+	for range overloadCeiling {
+		err = mux.Publish("test", itemID)
+		if !assert.NoError(t, err, "Publish should not error when over limit but no listeners") {
+			break
+		}
 	}
 
+	ready := make(chan any)
+	demux := make(chan any, 1)
 	pipe, err := mux.Subscribe(itemID)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err, "Subscribe must not error")
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func(wg *sync.WaitGroup) {
-		wg.Done()
-		for {
-			_, ok := <-pipe.C
-			if !ok {
-				pErr := pipe.Release()
-				if pErr != nil {
-					t.Error(pErr)
-				}
-				wg.Done()
+	// Subscribers must be actively selecting in order to receive anything
+	go func() {
+		close(ready)
+		i := <-pipe.c
+		demux <- i
+		close(demux)
+	}()
+
+	publishWithinLimitsErr := make(chan error, 1)
+	go func() {
+		<-ready // Ensure listener is ready before starting
+		for i := range 100 {
+			if errMux := mux.Publish(i, itemID); errMux != nil {
+				publishWithinLimitsErr <- errMux
 				return
 			}
 		}
-	}(&wg)
-	wg.Wait()
-	wg.Add(1)
-	mainPayload := "PAYLOAD"
-	for i := 0; i < 100; i++ {
-		errMux := mux.Publish([]uuid.UUID{itemID}, &mainPayload)
-		if errMux != nil {
-			t.Error(errMux)
+		publishWithinLimitsErr <- nil
+	}()
+
+	assert.Eventually(t, func() bool { return len(demux) >= 1 }, time.Second, time.Millisecond*10, "Subscriber should eventually get at least one message")
+	assert.NoError(t, <-publishWithinLimitsErr, "Publish should not error within limits")
+
+	// demonstrate that jobs can be limited when subscribed
+	// Published data gets consumed from .jobs to the worker channels, so we're looking to push more than it's consumed and prevent the select reading them too quickly
+	runtime.LockOSThread()
+	for range overloadCeiling {
+		if err = mux.Publish("test", itemID); err != nil {
+			break
 		}
 	}
+	assert.ErrorIs(t, err, errDispatcherJobsAtLimit, "Publish should error when more published than expected")
+	runtime.UnlockOSThread()
+
+	err = mux.Unsubscribe(itemID, pipe.c)
+	assert.NoError(t, err, "Unsubscribe should not error")
+
+	for range overloadCeiling {
+		if err = mux.Publish("test", itemID); err != nil {
+			break
+		}
+	}
+	assert.NoError(t, err, "Publish should not error after Unsubscribe when over limit")
 
 	// Shut down dispatch system
-	err = Stop()
-	if err != nil {
-		t.Fatal(err)
-	}
-	wg.Wait()
+	err = d.stop()
+	assert.NoError(t, err, "stop should not error")
 }
 
 func BenchmarkSubscribe(b *testing.B) {
+	d := NewDispatcher()
+	err := d.start(DefaultMaxWorkers, DefaultJobsLimit)
+	require.NoError(b, err, "start must not error")
+	// Each sample starts more relayers, which would otherwise stay blocked for the run
+	b.Cleanup(func() { assert.NoError(b, d.stop(), "stop should not error") })
+	mux := GetNewMux(d)
 	newID, err := mux.GetID()
-	if err != nil {
-		b.Error(err)
-	}
+	require.NoError(b, err, "GetID must not error")
 
-	for n := 0; n < b.N; n++ {
-		_, err := mux.Subscribe(newID)
+	// Unsubscribing keeps the subscriber slice a steady length, as its growth moves B/op between runs
+	for b.Loop() {
+		pipe, err := mux.Subscribe(newID)
 		if err != nil {
+			b.Error(err)
+			continue
+		}
+		if err := pipe.Release(); err != nil {
 			b.Error(err)
 		}
 	}

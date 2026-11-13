@@ -1,13 +1,15 @@
 package config
 
 import (
+	"errors"
 	"sync"
 	"time"
 
+	"github.com/thrasher-corp/gocryptotrader/communications/base"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/database"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/protocol"
-	gctscript "github.com/thrasher-corp/gocryptotrader/gctscript/vm"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/subscription"
 	"github.com/thrasher-corp/gocryptotrader/log"
 	"github.com/thrasher-corp/gocryptotrader/portfolio"
 	"github.com/thrasher-corp/gocryptotrader/portfolio/banking"
@@ -15,92 +17,157 @@ import (
 
 // Constants declared here are filename strings and test strings
 const (
-	FXProviderFixer                      = "fixer"
-	EncryptedFile                        = "config.dat"
-	File                                 = "config.json"
-	TestFile                             = "../testdata/configtest.json"
-	fileEncryptionPrompt                 = 0
-	fileEncryptionEnabled                = 1
-	fileEncryptionDisabled               = -1
-	pairsLastUpdatedWarningThreshold     = 30 // 30 days
-	defaultHTTPTimeout                   = time.Second * 15
-	defaultWebsocketResponseCheckTimeout = time.Millisecond * 30
-	defaultWebsocketResponseMaxLimit     = time.Second * 7
-	defaultWebsocketOrderbookBufferLimit = 5
-	defaultWebsocketTrafficTimeout       = time.Second * 30
-	maxAuthFailures                      = 3
-	defaultNTPAllowedDifference          = 50000000
-	defaultNTPAllowedNegativeDifference  = 50000000
-	DefaultAPIKey                        = "Key"
-	DefaultAPISecret                     = "Secret"
-	DefaultAPIClientID                   = "ClientID"
+	FXProviderFixer                     = "fixer"
+	EncryptedFile                       = "config.dat"
+	File                                = "config.json"
+	TestFile                            = "../testdata/configtest.json"
+	TestFileV0                          = "../testdata/configtestv0.json"
+	fileEncryptionPrompt                = 0
+	fileEncryptionEnabled               = 1
+	fileEncryptionDisabled              = -1
+	pairsLastUpdatedWarningThreshold    = 30 // 30 days
+	defaultHTTPTimeout                  = time.Second * 15
+	DefaultConnectionMonitorDelay       = time.Second * 2
+	maxAuthFailures                     = 3
+	defaultNTPAllowedDifference         = 50000000
+	defaultNTPAllowedNegativeDifference = 50000000
+	DefaultAPIKey                       = "Key"
+	DefaultAPISecret                    = "Secret"
+	DefaultAPIClientID                  = "ClientID"
+	defaultDataHistoryMonitorCheckTimer = time.Minute
+	defaultCurrencyStateManagerDelay    = time.Minute
+	defaultMaxJobsPerCycle              = 5
+	// DefaultSyncerWorkers limits the number of sync workers
+	DefaultSyncerWorkers = 15
+	// DefaultSyncerTimeoutREST the default time to switch from REST to websocket protocols without a response
+	DefaultSyncerTimeoutREST = time.Second * 15
+	// DefaultSyncerTimeoutWebsocket the default time to switch from websocket to REST protocols without a response
+	DefaultSyncerTimeoutWebsocket = time.Minute
+	// DefaultWebsocketResponseCheckTimeout is the default timeout for
+	// websocket responses.
+	DefaultWebsocketResponseCheckTimeout = time.Millisecond * 30
+	// DefaultWebsocketResponseMaxLimit is the default maximum time for
+	// websocket responses.
+	DefaultWebsocketResponseMaxLimit = time.Second * 7
+	// DefaultWebsocketTrafficTimeout is the default timeout for websocket
+	// traffic.
+	DefaultWebsocketTrafficTimeout = time.Second * 30
 )
 
 // Constants here hold some messages
 const (
-	ErrExchangeNameEmpty                       = "exchange #%d name is empty"
-	ErrExchangeAvailablePairsEmpty             = "exchange %s available pairs is empty"
-	ErrExchangeEnabledPairsEmpty               = "exchange %s enabled pairs is empty"
-	ErrExchangeBaseCurrenciesEmpty             = "exchange %s base currencies is empty"
-	ErrExchangeNotFound                        = "exchange %s not found"
-	ErrNoEnabledExchanges                      = "no exchanges enabled"
-	ErrCryptocurrenciesEmpty                   = "cryptocurrencies variable is empty"
-	ErrFailureOpeningConfig                    = "fatal error opening %s file. Error: %s"
-	ErrCheckingConfigValues                    = "fatal error checking config values. Error: %s"
-	ErrSavingConfigBytesMismatch               = "config file %q bytes comparison doesn't match, read %s expected %s"
-	WarningWebserverCredentialValuesEmpty      = "webserver support disabled due to empty Username/Password values"
-	WarningWebserverListenAddressInvalid       = "webserver support disabled due to invalid listen address"
-	WarningExchangeAuthAPIDefaultOrEmptyValues = "exchange %s authenticated API support disabled due to default/empty APIKey/Secret/ClientID values"
-	WarningPairsLastUpdatedThresholdExceeded   = "exchange %s last manual update of available currency pairs has exceeded %d days. Manual update required!"
+	warningExchangeAuthAPIDefaultOrEmptyValues = "exchange %s authenticated API support disabled due to default/empty APIKey/Secret/ClientID values"
+	warningPairsLastUpdatedThresholdExceeded   = "exchange %s last manual update of available currency pairs has exceeded %d days. Manual update required!"
 )
 
 // Constants here define unset default values displayed in the config.json
 // file
 const (
-	APIURLNonDefaultMessage              = "NON_DEFAULT_HTTP_LINK_TO_EXCHANGE_API"
-	WebsocketURLNonDefaultMessage        = "NON_DEFAULT_HTTP_LINK_TO_WEBSOCKET_EXCHANGE_API"
-	DefaultUnsetAPIKey                   = "Key"
-	DefaultUnsetAPISecret                = "Secret"
-	DefaultUnsetAccountPlan              = "accountPlan"
-	DefaultForexProviderExchangeRatesAPI = "ExchangeRateHost"
+	APIURLNonDefaultMessage       = "NON_DEFAULT_HTTP_LINK_TO_EXCHANGE_API"
+	WebsocketURLNonDefaultMessage = "NON_DEFAULT_HTTP_LINK_TO_WEBSOCKET_EXCHANGE_API"
+	DefaultUnsetAPIKey            = "Key"
+	DefaultUnsetAPISecret         = "Secret"
+	DefaultAccountPlan            = "basic"
+	DefaultUnsetAccountPlan       = "accountPlan" // Deprecated: use DefaultAccountPlan.
+	DefaultGRPCUsername           = "admin"
+	DefaultGRPCPassword           = "Password"
 )
 
-// Variables here are used for configuration
+// Public errors exported by this package
 var (
-	Cfg Config
+	ErrExchangeNotFound     = errors.New("exchange not found")
+	ErrFailureOpeningConfig = errors.New("fatal error opening file")
+)
+
+var (
+	cfg Config
 	m   sync.Mutex
+
+	errNoEnabledExchanges   = errors.New("no exchanges enabled")
+	errCheckingConfigValues = errors.New("fatal error checking config values")
 )
 
 // Config is the overarching object that holds all the information for
-// prestart management of Portfolio, Communications, Webserver and Enabled
-// Exchanges
+// prestart management of Portfolio, Communications, Webserver and Enabled Exchanges
 type Config struct {
-	Name              string                  `json:"name"`
-	DataDirectory     string                  `json:"dataDirectory"`
-	EncryptConfig     int                     `json:"encryptConfig"`
-	GlobalHTTPTimeout time.Duration           `json:"globalHTTPTimeout"`
-	Database          database.Config         `json:"database"`
-	Logging           log.Config              `json:"logging"`
-	ConnectionMonitor ConnectionMonitorConfig `json:"connectionMonitor"`
-	Profiler          Profiler                `json:"profiler"`
-	NTPClient         NTPClientConfig         `json:"ntpclient"`
-	GCTScript         gctscript.Config        `json:"gctscript"`
-	Currency          CurrencyConfig          `json:"currencyConfig"`
-	Communications    CommunicationsConfig    `json:"communications"`
-	RemoteControl     RemoteControlConfig     `json:"remoteControl"`
-	Portfolio         portfolio.Base          `json:"portfolioAddresses"`
-	Exchanges         []ExchangeConfig        `json:"exchanges"`
-	BankAccounts      []banking.Account       `json:"bankAccounts"`
+	Name                 string                    `json:"name"`
+	Version              int                       `json:"version"`
+	DataDirectory        string                    `json:"dataDirectory"`
+	EncryptConfig        int                       `json:"encryptConfig"`
+	GlobalHTTPTimeout    time.Duration             `json:"globalHTTPTimeout"`
+	Database             database.Config           `json:"database"`
+	Logging              log.Config                `json:"logging"`
+	SyncManagerConfig    SyncManagerConfig         `json:"syncManager"`
+	ConnectionMonitor    ConnectionMonitorConfig   `json:"connectionMonitor"`
+	OrderManager         OrderManager              `json:"orderManager"`
+	DataHistoryManager   DataHistoryManager        `json:"dataHistoryManager"`
+	CurrencyStateManager CurrencyStateManager      `json:"currencyStateManager"`
+	Profiler             Profiler                  `json:"profiler"`
+	NTPClient            NTPClientConfig           `json:"ntpclient"`
+	Currency             currency.Config           `json:"currencyConfig"`
+	Communications       base.CommunicationsConfig `json:"communications"`
+	RemoteControl        RemoteControlConfig       `json:"remoteControl"`
+	Portfolio            *portfolio.Base           `json:"portfolioAddresses"`
+	Exchanges            []Exchange                `json:"exchanges"`
+	BankAccounts         []banking.Account         `json:"bankAccounts"`
 
 	// Deprecated config settings, will be removed at a future date
-	Webserver           *WebserverConfig          `json:"webserver,omitempty"`
-	CurrencyPairFormat  *CurrencyPairFormatConfig `json:"currencyPairFormat,omitempty"`
-	FiatDisplayCurrency *currency.Code            `json:"fiatDispayCurrency,omitempty"`
-	Cryptocurrencies    *currency.Currencies      `json:"cryptocurrencies,omitempty"`
-	SMS                 *SMSGlobalConfig          `json:"smsGlobal,omitempty"`
+	CurrencyPairFormat  *currency.PairFormat  `json:"currencyPairFormat,omitempty"`
+	FiatDisplayCurrency *currency.Code        `json:"fiatDispayCurrency,omitempty"`
+	Cryptocurrencies    *currency.Currencies  `json:"cryptocurrencies,omitempty"`
+	SMS                 *base.SMSGlobalConfig `json:"smsGlobal,omitempty"`
 	// encryption session values
-	storedSalt []byte
-	sessionDK  []byte
+	storedSalt            []byte
+	sessionDK             []byte
+	EncryptionKeyProvider EncryptionKeyProvider `json:"-"`
+}
+
+// EncryptionKeyProvider is a function config can use to prompt the user for an encryption key
+type EncryptionKeyProvider func(confirmKey bool) ([]byte, error)
+
+// OrderManager holds settings used for the order manager
+type OrderManager struct {
+	Enabled                       bool          `json:"enabled"`
+	Verbose                       bool          `json:"verbose"`
+	ActivelyTrackFuturesPositions bool          `json:"activelyTrackFuturesPositions"`
+	FuturesTrackingSeekDuration   time.Duration `json:"futuresTrackingSeekDuration"`
+	RespectOrderHistoryLimits     bool          `json:"respectOrderHistoryLimits"`
+	CancelOrdersOnShutdown        bool          `json:"cancelOrdersOnShutdown"`
+}
+
+// DataHistoryManager holds all information required for the data history manager
+type DataHistoryManager struct {
+	Enabled             bool          `json:"enabled"`
+	CheckInterval       time.Duration `json:"checkInterval"`
+	MaxJobsPerCycle     int64         `json:"maxJobsPerCycle"`
+	MaxResultInsertions int64         `json:"maxResultInsertions"`
+	Verbose             bool          `json:"verbose"`
+}
+
+// CurrencyStateManager defines a set of configuration options for the currency
+// state manager
+type CurrencyStateManager struct {
+	Enabled *bool         `json:"enabled"`
+	Delay   time.Duration `json:"delay"`
+}
+
+// SyncManagerConfig stores the currency pair synchronization manager config
+type SyncManagerConfig struct {
+	Enabled                 bool                 `json:"enabled"`
+	SynchronizeTicker       bool                 `json:"synchronizeTicker"`
+	SynchronizeOrderbook    bool                 `json:"synchronizeOrderbook"`
+	SynchronizeTrades       bool                 `json:"synchronizeTrades"`
+	SynchronizeContinuously bool                 `json:"synchronizeContinuously"`
+	TimeoutREST             time.Duration        `json:"timeoutREST"`
+	TimeoutWebsocket        time.Duration        `json:"timeoutWebsocket"`
+	NumWorkers              int                  `json:"numWorkers"`
+	FiatDisplayCurrency     currency.Code        `json:"fiatDisplayCurrency"`
+	PairFormatDisplay       *currency.PairFormat `json:"pairFormatDisplay,omitempty"`
+	// log events
+	Verbose                 bool `json:"verbose"`
+	LogSyncUpdateEvents     bool `json:"logSyncUpdateEvents"`
+	LogSwitchProtocolEvents bool `json:"logSwitchProtocolEvents"`
+	LogInitialSyncEvents    bool `json:"logInitialSyncEvents"`
 }
 
 // ConnectionMonitorConfig defines the connection monitor variables to ensure
@@ -111,8 +178,8 @@ type ConnectionMonitorConfig struct {
 	CheckInterval    time.Duration `json:"checkInterval"`
 }
 
-// ExchangeConfig holds all the information needed for each enabled Exchange.
-type ExchangeConfig struct {
+// Exchange holds all the information needed for each enabled Exchange.
+type Exchange struct {
 	Name                          string                 `json:"name"`
 	Enabled                       bool                   `json:"enabled"`
 	Verbose                       bool                   `json:"verbose"`
@@ -123,39 +190,36 @@ type ExchangeConfig struct {
 	WebsocketResponseCheckTimeout time.Duration          `json:"websocketResponseCheckTimeout"`
 	WebsocketResponseMaxLimit     time.Duration          `json:"websocketResponseMaxLimit"`
 	WebsocketTrafficTimeout       time.Duration          `json:"websocketTrafficTimeout"`
+	ConnectionMonitorDelay        time.Duration          `json:"connectionMonitorDelay"`
 	ProxyAddress                  string                 `json:"proxyAddress,omitempty"`
 	BaseCurrencies                currency.Currencies    `json:"baseCurrencies"`
 	CurrencyPairs                 *currency.PairsManager `json:"currencyPairs"`
 	API                           APIConfig              `json:"api"`
 	Features                      *FeaturesConfig        `json:"features"`
 	BankAccounts                  []banking.Account      `json:"bankAccounts,omitempty"`
-	OrderbookConfig               `json:"orderbook"`
+	Orderbook                     Orderbook              `json:"orderbook"`
 
 	// Deprecated settings which will be removed in a future update
-	AvailablePairs                   *currency.Pairs      `json:"availablePairs,omitempty"`
-	EnabledPairs                     *currency.Pairs      `json:"enabledPairs,omitempty"`
-	AssetTypes                       *string              `json:"assetTypes,omitempty"`
-	PairsLastUpdated                 *int64               `json:"pairsLastUpdated,omitempty"`
-	ConfigCurrencyPairFormat         *currency.PairFormat `json:"configCurrencyPairFormat,omitempty"`
-	RequestCurrencyPairFormat        *currency.PairFormat `json:"requestCurrencyPairFormat,omitempty"`
-	AuthenticatedAPISupport          *bool                `json:"authenticatedApiSupport,omitempty"`
-	AuthenticatedWebsocketAPISupport *bool                `json:"authenticatedWebsocketApiSupport,omitempty"`
-	APIKey                           *string              `json:"apiKey,omitempty"`
-	APISecret                        *string              `json:"apiSecret,omitempty"`
-	APIAuthPEMKeySupport             *bool                `json:"apiAuthPemKeySupport,omitempty"`
-	APIAuthPEMKey                    *string              `json:"apiAuthPemKey,omitempty"`
-	APIURL                           *string              `json:"apiUrl,omitempty"`
-	APIURLSecondary                  *string              `json:"apiUrlSecondary,omitempty"`
-	ClientID                         *string              `json:"clientId,omitempty"`
-	SupportsAutoPairUpdates          *bool                `json:"supportsAutoPairUpdates,omitempty"`
-	Websocket                        *bool                `json:"websocket,omitempty"`
-	WebsocketURL                     *string              `json:"websocketUrl,omitempty"`
+	AuthenticatedAPISupport          *bool   `json:"authenticatedApiSupport,omitempty"`
+	AuthenticatedWebsocketAPISupport *bool   `json:"authenticatedWebsocketApiSupport,omitempty"`
+	APIKey                           *string `json:"apiKey,omitempty"`
+	APISecret                        *string `json:"apiSecret,omitempty"`
+	APIAuthPEMKeySupport             *bool   `json:"apiAuthPemKeySupport,omitempty"`
+	APIAuthPEMKey                    *string `json:"apiAuthPemKey,omitempty"`
+	APIURL                           *string `json:"apiUrl,omitempty"`
+	APIURLSecondary                  *string `json:"apiUrlSecondary,omitempty"`
+	ClientID                         *string `json:"clientId,omitempty"`
+	SupportsAutoPairUpdates          *bool   `json:"supportsAutoPairUpdates,omitempty"`
+	Websocket                        *bool   `json:"websocket,omitempty"`
+	WebsocketURL                     *string `json:"websocketUrl,omitempty"`
 }
 
 // Profiler defines the profiler configuration to enable pprof
 type Profiler struct {
-	Enabled              bool `json:"enabled"`
-	MutexProfileFraction int  `json:"mutex_profile_fraction"`
+	Enabled              bool   `json:"enabled"`
+	MutexProfileFraction int    `json:"mutex_profile_fraction"`
+	ListenAddress        string `json:"listen_address"`
+	BlockProfileRate     int    `json:"block_profile_rate"`
 }
 
 // NTPClientConfig defines a network time protocol configuration to allow for
@@ -173,42 +237,15 @@ type GRPCConfig struct {
 	ListenAddress          string `json:"listenAddress"`
 	GRPCProxyEnabled       bool   `json:"grpcProxyEnabled"`
 	GRPCProxyListenAddress string `json:"grpcProxyListenAddress"`
-}
-
-// DepcrecatedRPCConfig stores the deprecatedRPCConfig settings
-type DepcrecatedRPCConfig struct {
-	Enabled       bool   `json:"enabled"`
-	ListenAddress string `json:"listenAddress"`
-}
-
-// WebsocketRPCConfig stores the websocket config info
-type WebsocketRPCConfig struct {
-	Enabled             bool   `json:"enabled"`
-	ListenAddress       string `json:"listenAddress"`
-	ConnectionLimit     int    `json:"connectionLimit"`
-	MaxAuthFailures     int    `json:"maxAuthFailures"`
-	AllowInsecureOrigin bool   `json:"allowInsecureOrigin"`
+	GRPCAllowBotShutdown   bool   `json:"grpcAllowBotShutdown"`
+	TimeInNanoSeconds      bool   `json:"timeInNanoSeconds"`
 }
 
 // RemoteControlConfig stores the RPC services config
 type RemoteControlConfig struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-
-	GRPC          GRPCConfig           `json:"gRPC"`
-	DeprecatedRPC DepcrecatedRPCConfig `json:"deprecatedRPC"`
-	WebsocketRPC  WebsocketRPCConfig   `json:"websocketRPC"`
-}
-
-// WebserverConfig stores the old webserver config
-type WebserverConfig struct {
-	Enabled                      bool   `json:"enabled"`
-	AdminUsername                string `json:"adminUsername"`
-	AdminPassword                string `json:"adminPassword"`
-	ListenAddress                string `json:"listenAddress"`
-	WebsocketConnectionLimit     int    `json:"websocketConnectionLimit"`
-	WebsocketMaxAuthFailures     int    `json:"websocketMaxAuthFailures"`
-	WebsocketAllowInsecureOrigin bool   `json:"websocketAllowInsecureOrigin"`
+	Username string     `json:"username"`
+	Password string     `json:"password"`
+	GRPC     GRPCConfig `json:"gRPC"`
 }
 
 // Post holds the bot configuration data
@@ -231,102 +268,12 @@ type BankTransaction struct {
 	PaymentInstructions string `json:"paymentInstructions"`
 }
 
-// CurrencyConfig holds all the information needed for currency related manipulation
-type CurrencyConfig struct {
-	ForexProviders                []currency.FXSettings     `json:"forexProviders"`
-	CryptocurrencyProvider        CryptocurrencyProvider    `json:"cryptocurrencyProvider"`
-	Cryptocurrencies              currency.Currencies       `json:"cryptocurrencies"`
-	CurrencyPairFormat            *CurrencyPairFormatConfig `json:"currencyPairFormat"`
-	FiatDisplayCurrency           currency.Code             `json:"fiatDisplayCurrency"`
-	CurrencyFileUpdateDuration    time.Duration             `json:"currencyFileUpdateDuration"`
-	ForeignExchangeUpdateDuration time.Duration             `json:"foreignExchangeUpdateDuration"`
-}
-
-// CryptocurrencyProvider defines coinmarketcap tools
-type CryptocurrencyProvider struct {
-	Name        string `json:"name"`
-	Enabled     bool   `json:"enabled"`
-	Verbose     bool   `json:"verbose"`
-	APIkey      string `json:"apiKey"`
-	AccountPlan string `json:"accountPlan"`
-}
-
-// CommunicationsConfig holds all the information needed for each
-// enabled communication package
-type CommunicationsConfig struct {
-	SlackConfig     SlackConfig     `json:"slack"`
-	SMSGlobalConfig SMSGlobalConfig `json:"smsGlobal"`
-	SMTPConfig      SMTPConfig      `json:"smtp"`
-	TelegramConfig  TelegramConfig  `json:"telegram"`
-}
-
-// IsAnyEnabled returns whether or any any comms relayers
-// are enabled
-func (c *CommunicationsConfig) IsAnyEnabled() bool {
-	if c.SMSGlobalConfig.Enabled ||
-		c.SMTPConfig.Enabled ||
-		c.SlackConfig.Enabled ||
-		c.TelegramConfig.Enabled {
-		return true
-	}
-	return false
-}
-
-// SlackConfig holds all variables to start and run the Slack package
-type SlackConfig struct {
-	Name              string `json:"name"`
-	Enabled           bool   `json:"enabled"`
-	Verbose           bool   `json:"verbose"`
-	TargetChannel     string `json:"targetChannel"`
-	VerificationToken string `json:"verificationToken"`
-}
-
-// SMSContact stores the SMS contact info
-type SMSContact struct {
-	Name    string `json:"name"`
-	Number  string `json:"number"`
-	Enabled bool   `json:"enabled"`
-}
-
-// SMSGlobalConfig structure holds all the variables you need for instant
-// messaging and broadcast used by SMSGlobal
-type SMSGlobalConfig struct {
-	Name     string       `json:"name"`
-	From     string       `json:"from"`
-	Enabled  bool         `json:"enabled"`
-	Verbose  bool         `json:"verbose"`
-	Username string       `json:"username"`
-	Password string       `json:"password"`
-	Contacts []SMSContact `json:"contacts"`
-}
-
-// SMTPConfig holds all variables to start and run the SMTP package
-type SMTPConfig struct {
-	Name            string `json:"name"`
-	Enabled         bool   `json:"enabled"`
-	Verbose         bool   `json:"verbose"`
-	Host            string `json:"host"`
-	Port            string `json:"port"`
-	AccountName     string `json:"accountName"`
-	AccountPassword string `json:"accountPassword"`
-	From            string `json:"from"`
-	RecipientList   string `json:"recipientList"`
-}
-
-// TelegramConfig holds all variables to start and run the Telegram package
-type TelegramConfig struct {
-	Name              string `json:"name"`
-	Enabled           bool   `json:"enabled"`
-	Verbose           bool   `json:"verbose"`
-	VerificationToken string `json:"verificationToken"`
-}
-
 // FeaturesSupportedConfig stores the exchanges supported features
 type FeaturesSupportedConfig struct {
 	REST                  bool              `json:"restAPI"`
-	RESTCapabilities      protocol.Features `json:"restCapabilities,omitempty"`
+	RESTCapabilities      protocol.Features `json:"restCapabilities,omitzero"`
 	Websocket             bool              `json:"websocketAPI"`
-	WebsocketCapabilities protocol.Features `json:"websocketCapabilities,omitempty"`
+	WebsocketCapabilities protocol.Features `json:"websocketCapabilities,omitzero"`
 }
 
 // FeaturesEnabledConfig stores the exchanges enabled features
@@ -334,12 +281,15 @@ type FeaturesEnabledConfig struct {
 	AutoPairUpdates bool `json:"autoPairUpdates"`
 	Websocket       bool `json:"websocketAPI"`
 	SaveTradeData   bool `json:"saveTradeData"`
+	TradeFeed       bool `json:"tradeFeed"`
+	FillsFeed       bool `json:"fillsFeed"`
 }
 
 // FeaturesConfig stores the exchanges supported and enabled features
 type FeaturesConfig struct {
-	Supports FeaturesSupportedConfig `json:"supports"`
-	Enabled  FeaturesEnabledConfig   `json:"enabled"`
+	Supports      FeaturesSupportedConfig `json:"supports"`
+	Enabled       FeaturesEnabledConfig   `json:"enabled"`
+	Subscriptions subscription.List       `json:"subscriptions,omitempty"`
 }
 
 // APIEndpointsConfig stores the API endpoint addresses
@@ -351,11 +301,14 @@ type APIEndpointsConfig struct {
 
 // APICredentialsConfig stores the API credentials
 type APICredentialsConfig struct {
-	Key       string `json:"key,omitempty"`
-	Secret    string `json:"secret,omitempty"`
-	ClientID  string `json:"clientID,omitempty"`
-	PEMKey    string `json:"pemKey,omitempty"`
-	OTPSecret string `json:"otpSecret,omitempty"`
+	Key           string `json:"key,omitempty"`
+	Secret        string `json:"secret,omitempty"`
+	ClientID      string `json:"clientID,omitempty"`
+	Subaccount    string `json:"subaccount,omitempty"`
+	PEMKey        string `json:"pemKey,omitempty"`
+	OTPSecret     string `json:"otpSecret,omitempty"`
+	TradePassword string `json:"tradePassword,omitempty"`
+	PIN           string `json:"pin,omitempty"`
 }
 
 // APICredentialsValidatorConfig stores the API credentials validator settings
@@ -381,9 +334,7 @@ type APIConfig struct {
 	Endpoints            map[string]string              `json:"urlEndpoints"`
 }
 
-// OrderbookConfig stores the orderbook configuration variables
-type OrderbookConfig struct {
-	VerificationBypass     bool `json:"verificationBypass"`
-	WebsocketBufferLimit   int  `json:"websocketBufferLimit"`
-	WebsocketBufferEnabled bool `json:"websocketBufferEnabled"`
+// Orderbook stores the orderbook configuration variables
+type Orderbook struct {
+	VerificationBypass bool `json:"verificationBypass"`
 }

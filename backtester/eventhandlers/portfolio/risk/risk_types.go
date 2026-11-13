@@ -6,8 +6,8 @@ import (
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventhandlers/portfolio/compliance"
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventhandlers/portfolio/holdings"
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/order"
-	"github.com/thrasher-corp/gocryptotrader/currency"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/common/key"
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
 var (
@@ -23,14 +23,14 @@ type Handler interface {
 
 // Risk contains all currency settings in order to evaluate potential orders
 type Risk struct {
-	CurrencySettings map[string]map[asset.Item]map[currency.Pair]*CurrencySettings
+	CurrencySettings map[key.ExchangeAssetPair]*CurrencySettings
 	CanUseLeverage   bool
-	MaximumLeverage  float64
+	MaximumLeverage  decimal.Decimal
 }
 
 // CurrencySettings contains relevant limits to assess risk
 type CurrencySettings struct {
-	MaximumOrdersWithLeverageRatio float64
-	MaxLeverageRate                float64
-	MaximumHoldingRatio            float64
+	MaximumOrdersWithLeverageRatio decimal.Decimal
+	MaxLeverageRate                decimal.Decimal
+	MaximumHoldingRatio            decimal.Decimal
 }

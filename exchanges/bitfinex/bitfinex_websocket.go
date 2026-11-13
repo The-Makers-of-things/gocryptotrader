@@ -1,945 +1,1481 @@
 package bitfinex
 
 import (
-	"encoding/json"
+	"bytes"
+	"cmp"
+	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/Masterminds/sprig/v3"
+	"github.com/buger/jsonparser"
+	gws "github.com/gorilla/websocket"
 	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/common/crypto"
 	"github.com/thrasher-corp/gocryptotrader/currency"
-	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
+	"github.com/thrasher-corp/gocryptotrader/exchange/websocket"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/kline"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/stream"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/stream/buffer"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/subscription"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/ticker"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/trade"
 	"github.com/thrasher-corp/gocryptotrader/log"
+	"github.com/thrasher-corp/gocryptotrader/types"
 )
 
-var comms = make(chan stream.Response)
+const (
+	authenticatedBitfinexWebsocketEndpoint = "wss://api.bitfinex.com/ws/2"
+	publicBitfinexWebsocketEndpoint        = "wss://api-pub.bitfinex.com/ws/2"
+	pong                                   = "pong"
+	wsHeartbeat                            = "hb"
+	wsChecksum                             = "cs"
+	wsPositionSnapshot                     = "ps"
+	wsPositionNew                          = "pn"
+	wsPositionUpdate                       = "pu"
+	wsPositionClose                        = "pc"
+	wsWalletSnapshot                       = "ws"
+	wsWalletUpdate                         = "wu"
+	wsTradeUpdated                         = "tu"
+	wsTradeExecuted                        = "te"
+	wsFundingCreditSnapshot                = "fcs"
+	wsFundingCreditNew                     = "fcn"
+	wsFundingCreditUpdate                  = "fcu"
+	wsFundingCreditCancel                  = "fcc"
+	wsFundingLoanSnapshot                  = "fls"
+	wsFundingLoanNew                       = "fln"
+	wsFundingLoanUpdate                    = "flu"
+	wsFundingLoanCancel                    = "flc"
+	wsFundingTradeExecuted                 = "fte"
+	wsFundingTradeUpdated                  = "ftu"
+	wsFundingInfoUpdate                    = "fiu"
+	wsBalanceUpdate                        = "bu"
+	wsMarginInfoUpdate                     = "miu"
+	wsNotification                         = "n"
+	wsOrderSnapshot                        = "os"
+	wsOrderNew                             = "on"
+	wsOrderUpdate                          = "ou"
+	wsOrderCancel                          = "oc"
+	wsRequest                              = "-req"
+	wsOrderNewRequest                      = wsOrderNew + wsRequest
+	wsOrderUpdateRequest                   = wsOrderUpdate + wsRequest
+	wsOrderCancelRequest                   = wsOrderCancel + wsRequest
+	wsFundingOfferSnapshot                 = "fos"
+	wsFundingOfferNew                      = "fon"
+	wsFundingOfferUpdate                   = "fou"
+	wsFundingOfferCancel                   = "foc"
+	wsFundingOfferNewRequest               = wsFundingOfferNew + wsRequest
+	wsFundingOfferUpdateRequest            = wsFundingOfferUpdate + wsRequest
+	wsFundingOfferCancelRequest            = wsFundingOfferCancel + wsRequest
+	wsCancelMultipleOrders                 = "oc_multi"
+	wsBookChannel                          = "book"
+	wsCandlesChannel                       = "candles"
+	wsTickerChannel                        = "ticker"
+	wsTradesChannel                        = "trades"
+	wsError                                = "error"
+	wsEventSubscribed                      = "subscribed"
+	wsEventUnsubscribed                    = "unsubscribed"
+	wsEventAuth                            = "auth"
+	wsEventError                           = "error"
+	wsEventConf                            = "conf"
+	wsEventInfo                            = "info"
+)
+
+var defaultSubscriptions = subscription.List{
+	{Enabled: true, Channel: subscription.TickerChannel, Asset: asset.All},
+	{Enabled: true, Channel: subscription.AllTradesChannel, Asset: asset.All},
+	{Enabled: true, Channel: subscription.CandlesChannel, Asset: asset.Spot, Interval: kline.OneMin},
+	{Enabled: true, Channel: subscription.CandlesChannel, Asset: asset.Margin, Interval: kline.OneMin},
+	{Enabled: true, Channel: subscription.CandlesChannel, Asset: asset.MarginFunding, Interval: kline.OneMin, Params: map[string]any{CandlesPeriodKey: "p30"}},
+	{Enabled: true, Channel: subscription.OrderbookChannel, Asset: asset.All, Levels: 100, Params: map[string]any{"prec": "R0"}},
+}
 
 type checksum struct {
-	Token    int
+	Token    uint32
 	Sequence int64
 }
 
 // checksumStore quick global for now
-var checksumStore = make(map[int]*checksum)
-var cMtx sync.Mutex
+var (
+	checksumStore = make(map[int]*checksum)
+	cMtx          sync.Mutex
+)
+
+var subscriptionNames = map[string]string{
+	subscription.TickerChannel:    wsTickerChannel,
+	subscription.OrderbookChannel: wsBookChannel,
+	subscription.CandlesChannel:   wsCandlesChannel,
+	subscription.AllTradesChannel: wsTradesChannel,
+}
 
 // WsConnect starts a new websocket connection
-func (b *Bitfinex) WsConnect() error {
-	if !b.Websocket.IsEnabled() || !b.IsEnabled() {
-		return errors.New(stream.WebsocketNotEnabled)
+func (e *Exchange) WsConnect() error {
+	ctx := context.TODO()
+	if !e.Websocket.IsEnabled() || !e.IsEnabled() {
+		return websocket.ErrWebsocketNotEnabled
 	}
-
-	var dialer websocket.Dialer
-	err := b.Websocket.Conn.Dial(&dialer, http.Header{})
+	var dialer gws.Dialer
+	err := e.Websocket.Conn.Dial(ctx, &dialer, http.Header{}, nil)
 	if err != nil {
 		return fmt.Errorf("%v unable to connect to Websocket. Error: %s",
-			b.Name,
+			e.Name,
 			err)
 	}
 
-	go b.wsReadData(b.Websocket.Conn)
-
-	if b.Websocket.CanUseAuthenticatedEndpoints() {
-		err = b.Websocket.AuthConn.Dial(&dialer, http.Header{})
+	e.Websocket.Wg.Add(1)
+	go e.wsReadData(ctx, e.Websocket.Conn)
+	if e.Websocket.CanUseAuthenticatedEndpoints() {
+		err = e.Websocket.AuthConn.Dial(ctx, &dialer, http.Header{}, nil)
 		if err != nil {
 			log.Errorf(log.ExchangeSys,
 				"%v unable to connect to authenticated Websocket. Error: %s",
-				b.Name,
+				e.Name,
 				err)
-			b.Websocket.SetCanUseAuthenticatedEndpoints(false)
-		}
-		go b.wsReadData(b.Websocket.AuthConn)
-		err = b.WsSendAuth()
-		if err != nil {
-			log.Errorf(log.ExchangeSys,
-				"%v - authentication failed: %v\n",
-				b.Name,
-				err)
-			b.Websocket.SetCanUseAuthenticatedEndpoints(false)
+			e.Websocket.SetCanUseAuthenticatedEndpoints(false)
+		} else {
+			e.Websocket.Wg.Add(1)
+			go e.wsReadData(ctx, e.Websocket.AuthConn)
+			err = e.WsSendAuth(ctx)
+			if err != nil {
+				log.Errorf(log.ExchangeSys, "%v - authentication failed: %v", e.Name, err)
+				e.Websocket.SetCanUseAuthenticatedEndpoints(false)
+			}
 		}
 	}
 
-	go b.WsDataHandler()
-	return nil
+	return e.ConfigureWS(ctx)
 }
 
 // wsReadData receives and passes on websocket messages for processing
-func (b *Bitfinex) wsReadData(ws stream.Connection) {
-	b.Websocket.Wg.Add(1)
-	defer b.Websocket.Wg.Done()
+func (e *Exchange) wsReadData(ctx context.Context, ws websocket.Connection) {
+	defer e.Websocket.Wg.Done()
 	for {
 		resp := ws.ReadMessage()
 		if resp.Raw == nil {
 			return
 		}
-		comms <- resp
-	}
-}
-
-// WsDataHandler handles data from wsReadData
-func (b *Bitfinex) WsDataHandler() {
-	b.Websocket.Wg.Add(1)
-	defer b.Websocket.Wg.Done()
-	for {
-		select {
-		case resp := <-comms:
-			if resp.Type == websocket.TextMessage {
-				err := b.wsHandleData(resp.Raw)
-				if err != nil {
-					b.Websocket.DataHandler <- err
-				}
+		if err := e.wsHandleData(ctx, resp.Raw); err != nil {
+			if errSend := e.Websocket.DataHandler.Send(ctx, err); errSend != nil {
+				log.Errorf(log.WebsocketMgr, "%s %s: %s %s", e.Name, e.Websocket.Conn.GetURL(), errSend, err)
 			}
-		case <-b.Websocket.ShutdownC:
-			return
 		}
 	}
 }
 
-func (b *Bitfinex) wsHandleData(respRaw []byte) error {
-	var result interface{}
-	err := json.Unmarshal(respRaw, &result)
-	if err != nil {
+func (e *Exchange) wsHandleData(ctx context.Context, respRaw []byte) error {
+	var result any
+	if err := json.Unmarshal(respRaw, &result); err != nil {
 		return err
 	}
 	switch d := result.(type) {
-	case map[string]interface{}:
-		event := d["event"]
-		switch event {
-		case "subscribed":
-			if symbol, ok := d["symbol"].(string); ok {
-				b.WsAddSubscriptionChannel(int(d["chanId"].(float64)),
-					d["channel"].(string),
-					symbol,
-				)
-			} else if key, ok := d["key"].(string); ok {
-				// Capture trading subscriptions
-				contents := strings.Split(d["key"].(string), ":")
-				if len(contents) > 3 {
-					// Edge case to parse margin strings.
-					// map[chanId:139136 channel:candles event:subscribed key:trade:1m:tXAUTF0:USTF0]
-					if contents[2][0] == 't' {
-						key = contents[2] + ":" + contents[3]
-					}
-				}
-				b.WsAddSubscriptionChannel(int(d["chanId"].(float64)),
-					d["channel"].(string),
-					key,
-				)
-			}
-		case "auth":
-			status := d["status"].(string)
-			if status == "OK" {
-				b.Websocket.DataHandler <- d
-				b.WsAddSubscriptionChannel(0, "account", "N/A")
-			} else if status == "fail" {
-				return fmt.Errorf("bitfinex.go error - Websocket unable to AUTH. Error code: %s",
-					d["code"].(string))
-			}
-		}
-	case []interface{}:
-		chanF, ok := d[0].(float64)
+	case map[string]any:
+		return e.handleWSEvent(ctx, respRaw)
+	case []any:
+		chanIDFloat, ok := d[0].(float64)
 		if !ok {
-			return errors.New("channel ID type assertion failure")
+			return common.GetTypeAssertError("float64", d[0], "chanID")
 		}
+		chanID := int(chanIDFloat)
 
-		chanID := int(chanF)
-		var datum string
-		if datum, ok = d[1].(string); ok {
-			// Capturing heart beat
-			if datum == "hb" {
-				return nil
+		eventType, hasEventType := d[1].(string)
+
+		if chanID != 0 {
+			if s := e.Websocket.GetSubscription(chanID); s != nil {
+				return e.handleWSChannelUpdate(ctx, s, respRaw, eventType, d)
 			}
-
-			// Capturing checksum and storing value
-			if datum == "cs" {
-				var tokenF float64
-				tokenF, ok = d[2].(float64)
-				if !ok {
-					return errors.New("checksum token type assertion failure")
-				}
-				var seqNoF float64
-				seqNoF, ok = d[3].(float64)
-				if !ok {
-					return errors.New("sequence number type assertion failure")
-				}
-
-				cMtx.Lock()
-				checksumStore[chanID] = &checksum{
-					Token:    int(tokenF),
-					Sequence: int64(seqNoF),
-				}
-				cMtx.Unlock()
-				return nil
+			if e.Verbose {
+				log.Warnf(log.ExchangeSys, "%s %s; dropped WS message: %s", e.Name, subscription.ErrNotFound, respRaw)
 			}
-		}
-
-		chanInfo, ok := b.WebsocketSubdChannels[chanID]
-		if !ok && chanID != 0 {
-			return fmt.Errorf("bitfinex.go error - Unable to locate chanID: %d",
-				chanID)
-		}
-
-		var chanAsset = asset.Spot
-		var pair currency.Pair
-		pairInfo := strings.Split(chanInfo.Pair, ":")
-		switch {
-		case len(pairInfo) >= 3:
-			newPair := pairInfo[2]
-			if newPair[0] == 'f' {
-				chanAsset = asset.MarginFunding
-			}
-
-			pair, err = currency.NewPairFromString(newPair[1:])
-			if err != nil {
-				return err
-			}
-		case len(pairInfo) == 1:
-			newPair := pairInfo[0]
-			if newPair[0] == 'f' {
-				chanAsset = asset.MarginFunding
-			}
-
-			pair, err = currency.NewPairFromString(newPair[1:])
-			if err != nil {
-				return err
-			}
-		case chanInfo.Pair != "":
-			if strings.Contains(chanInfo.Pair, ":") {
-				chanAsset = asset.Margin
-			}
-
-			pair, err = currency.NewPairFromString(chanInfo.Pair[1:])
-			if err != nil {
-				return err
-			}
-		}
-
-		switch chanInfo.Channel {
-		case wsBook:
-			var newOrderbook []WebsocketBook
-			obSnapBundle, ok := d[1].([]interface{})
-			if !ok {
-				return errors.New("orderbook interface cast failed")
-			}
-			if len(obSnapBundle) == 0 {
-				return errors.New("no data within orderbook snapshot")
-			}
-
-			sequenceNo, ok := d[2].(float64)
-			if !ok {
-				return errors.New("type assertion failure")
-			}
-
-			var fundingRate bool
-			switch id := obSnapBundle[0].(type) {
-			case []interface{}:
-				for i := range obSnapBundle {
-					data := obSnapBundle[i].([]interface{})
-					id, okAssert := data[0].(float64)
-					if !okAssert {
-						return errors.New("type assertion failed for orderbook item data")
-					}
-					pricePeriod, okAssert := data[1].(float64)
-					if !okAssert {
-						return errors.New("type assertion failed for orderbook item data")
-					}
-					rateAmount, okAssert := data[2].(float64)
-					if !okAssert {
-						return errors.New("type assertion failed for orderbook item data")
-					}
-					if len(data) == 4 {
-						fundingRate = true
-						amount, okFunding := data[3].(float64)
-						if !okFunding {
-							return errors.New("type assertion failed for orderbook item data")
-						}
-						newOrderbook = append(newOrderbook, WebsocketBook{
-							ID:     int64(id),
-							Period: int64(pricePeriod),
-							Price:  rateAmount,
-							Amount: amount})
-					} else {
-						newOrderbook = append(newOrderbook, WebsocketBook{
-							ID:     int64(id),
-							Price:  pricePeriod,
-							Amount: rateAmount})
-					}
-				}
-				err := b.WsInsertSnapshot(pair, chanAsset, newOrderbook, fundingRate)
-				if err != nil {
-					return fmt.Errorf("bitfinex_websocket.go inserting snapshot error: %s",
-						err)
-				}
-			case float64:
-				pricePeriod, okSnap := obSnapBundle[1].(float64)
-				if !okSnap {
-					return errors.New("type assertion failed for orderbook snapshot data")
-				}
-				amountRate, okSnap := obSnapBundle[2].(float64)
-				if !okSnap {
-					return errors.New("type assertion failed for orderbook snapshot data")
-				}
-				if len(obSnapBundle) == 4 {
-					fundingRate = true
-					var amount float64
-					amount, okSnap = obSnapBundle[3].(float64)
-					if !okSnap {
-						return errors.New("type assertion failed for orderbook snapshot data")
-					}
-					newOrderbook = append(newOrderbook, WebsocketBook{
-						ID:     int64(id),
-						Period: int64(pricePeriod),
-						Price:  amountRate,
-						Amount: amount})
-				} else {
-					newOrderbook = append(newOrderbook, WebsocketBook{
-						ID:     int64(id),
-						Price:  pricePeriod,
-						Amount: amountRate})
-				}
-
-				err := b.WsUpdateOrderbook(pair, chanAsset, newOrderbook, chanID, int64(sequenceNo), fundingRate)
-				if err != nil {
-					return fmt.Errorf("bitfinex_websocket.go updating orderbook error: %s",
-						err)
-				}
-			}
-
+			// We didn't have a mapping for this chanID; This probably means we have unsubscribed OR
+			// received our first message before processing the sub chanID
+			// In either case it's okay. No point in erroring because there's nothing we can do about it, and it happens often
 			return nil
-		case wsCandles:
-			if candleBundle, ok := d[1].([]interface{}); ok {
-				if len(candleBundle) == 0 {
-					return nil
-				}
+		}
 
-				switch candleData := candleBundle[0].(type) {
-				case []interface{}:
-					for i := range candleBundle {
-						element := candleBundle[i].([]interface{})
-						b.Websocket.DataHandler <- stream.KlineData{
-							Timestamp:  time.Unix(0, int64(element[0].(float64))*int64(time.Millisecond)),
-							Exchange:   b.Name,
-							AssetType:  chanAsset,
-							Pair:       pair,
-							OpenPrice:  element[1].(float64),
-							ClosePrice: element[2].(float64),
-							HighPrice:  element[3].(float64),
-							LowPrice:   element[4].(float64),
-							Volume:     element[5].(float64),
+		if !hasEventType {
+			return errors.New("WS message without eventType")
+		}
+
+		switch eventType {
+		case wsHeartbeat, pong:
+			return nil
+		case wsNotification:
+			return e.handleWSNotification(ctx, d, respRaw)
+		case wsOrderSnapshot:
+			if snapBundle, ok := d[2].([]any); ok && len(snapBundle) > 0 {
+				if _, ok := snapBundle[0].([]any); ok {
+					for i := range snapBundle {
+						if positionData, ok := snapBundle[i].([]any); ok {
+							if err := e.wsHandleOrder(ctx, positionData); err != nil {
+								return err
+							}
 						}
 					}
-
-				case float64:
-					b.Websocket.DataHandler <- stream.KlineData{
-						Timestamp:  time.Unix(0, int64(candleData)*int64(time.Millisecond)),
-						Exchange:   b.Name,
-						AssetType:  chanAsset,
-						Pair:       pair,
-						OpenPrice:  candleBundle[1].(float64),
-						ClosePrice: candleBundle[2].(float64),
-						HighPrice:  candleBundle[3].(float64),
-						LowPrice:   candleBundle[4].(float64),
-						Volume:     candleBundle[5].(float64),
-					}
 				}
 			}
-			return nil
-		case wsTicker:
-			tickerData := d[1].([]interface{})
-			if len(tickerData) == 10 {
-				b.Websocket.DataHandler <- &ticker.Price{
-					ExchangeName: b.Name,
-					Bid:          tickerData[0].(float64),
-					Ask:          tickerData[2].(float64),
-					Last:         tickerData[6].(float64),
-					Volume:       tickerData[7].(float64),
-					High:         tickerData[8].(float64),
-					Low:          tickerData[9].(float64),
-					AssetType:    chanAsset,
-					Pair:         pair,
+		case wsOrderCancel, wsOrderNew, wsOrderUpdate:
+			if oData, ok := d[2].([]any); ok && len(oData) > 0 {
+				return e.wsHandleOrder(ctx, oData)
+			}
+		case wsPositionSnapshot:
+			return e.handleWSPositionSnapshot(ctx, d)
+		case wsPositionNew, wsPositionUpdate, wsPositionClose:
+			return e.handleWSPositionUpdate(ctx, d)
+		case wsTradeExecuted, wsTradeUpdated:
+			return e.handleWSMyTradeUpdate(ctx, d, eventType)
+		case wsFundingOfferSnapshot:
+			if snapBundle, ok := d[2].([]any); ok && len(snapBundle) > 0 {
+				if _, ok := snapBundle[0].([]any); ok {
+					snapshot := make([]*WsFundingOffer, len(snapBundle))
+					for i := range snapBundle {
+						data, ok := snapBundle[i].([]any)
+						if !ok {
+							return errors.New("unable to type assert wsFundingOrderSnapshot snapBundle data")
+						}
+						offer, err := wsHandleFundingOffer(data, false /* include rate real */)
+						if err != nil {
+							return err
+						}
+						snapshot[i] = offer
+					}
+					return e.Websocket.DataHandler.Send(ctx, snapshot)
 				}
+			}
+		case wsFundingOfferNew, wsFundingOfferUpdate, wsFundingOfferCancel:
+			if data, ok := d[2].([]any); ok && len(data) > 0 {
+				offer, err := wsHandleFundingOffer(data, true /* include rate real */)
+				if err != nil {
+					return err
+				}
+				return e.Websocket.DataHandler.Send(ctx, offer)
+			}
+		case wsFundingCreditSnapshot:
+			if snapBundle, ok := d[2].([]any); ok && len(snapBundle) > 0 {
+				if _, ok := snapBundle[0].([]any); ok {
+					snapshot := make([]*WsCredit, len(snapBundle))
+					for i := range snapBundle {
+						data, ok := snapBundle[i].([]any)
+						if !ok {
+							return errors.New("unable to type assert wsFundingCreditSnapshot snapBundle data")
+						}
+						fundingCredit, err := wsHandleFundingCreditLoanData(data, true /* include position pair */)
+						if err != nil {
+							return err
+						}
+						snapshot[i] = fundingCredit
+					}
+					return e.Websocket.DataHandler.Send(ctx, snapshot)
+				}
+			}
+		case wsFundingCreditNew, wsFundingCreditUpdate, wsFundingCreditCancel:
+			if data, ok := d[2].([]any); ok && len(data) > 0 {
+				fundingCredit, err := wsHandleFundingCreditLoanData(data, true /* include position pair */)
+				if err != nil {
+					return err
+				}
+				return e.Websocket.DataHandler.Send(ctx, fundingCredit)
+			}
+		case wsFundingLoanSnapshot:
+			if snapBundle, ok := d[2].([]any); ok && len(snapBundle) > 0 {
+				if _, ok := snapBundle[0].([]any); ok {
+					snapshot := make([]*WsCredit, len(snapBundle))
+					for i := range snapBundle {
+						data, ok := snapBundle[i].([]any)
+						if !ok {
+							return errors.New("unable to type assert wsFundingLoanSnapshot snapBundle data")
+						}
+						fundingLoanSnapshot, err := wsHandleFundingCreditLoanData(data, false /* include position pair */)
+						if err != nil {
+							return err
+						}
+						snapshot[i] = fundingLoanSnapshot
+					}
+					return e.Websocket.DataHandler.Send(ctx, snapshot)
+				}
+			}
+		case wsFundingLoanNew, wsFundingLoanUpdate, wsFundingLoanCancel:
+			if data, ok := d[2].([]any); ok && len(data) > 0 {
+				fundingData, err := wsHandleFundingCreditLoanData(data, false /* include position pair */)
+				if err != nil {
+					return err
+				}
+				return e.Websocket.DataHandler.Send(ctx, fundingData)
+			}
+		case wsWalletSnapshot:
+			if snapBundle, ok := d[2].([]any); ok && len(snapBundle) > 0 {
+				if _, ok := snapBundle[0].([]any); ok {
+					snapshot := make([]WsWallet, len(snapBundle))
+					for i := range snapBundle {
+						data, ok := snapBundle[i].([]any)
+						if !ok {
+							return errors.New("unable to type assert wsWalletSnapshot snapBundle data")
+						}
+						var wallet WsWallet
+						if wallet.Type, ok = data[0].(string); !ok {
+							return errors.New("unable to type assert wallet snapshot type")
+						}
+						if wallet.Currency, ok = data[1].(string); !ok {
+							return errors.New("unable to type assert wallet snapshot currency")
+						}
+						if wallet.Balance, ok = data[2].(float64); !ok {
+							return errors.New("unable to type assert wallet snapshot balance")
+						}
+						if wallet.UnsettledInterest, ok = data[3].(float64); !ok {
+							return errors.New("unable to type assert wallet snapshot unsettled interest")
+						}
+						if data[4] != nil {
+							if wallet.BalanceAvailable, ok = data[4].(float64); !ok {
+								return errors.New("unable to type assert wallet snapshot balance available")
+							}
+						}
+						snapshot[i] = wallet
+					}
+					return e.Websocket.DataHandler.Send(ctx, snapshot)
+				}
+			}
+		case wsWalletUpdate:
+			if data, ok := d[2].([]any); ok && len(data) > 0 {
+				var wallet WsWallet
+				if wallet.Type, ok = data[0].(string); !ok {
+					return errors.New("unable to type assert wallet snapshot type")
+				}
+				if wallet.Currency, ok = data[1].(string); !ok {
+					return errors.New("unable to type assert wallet snapshot currency")
+				}
+				if wallet.Balance, ok = data[2].(float64); !ok {
+					return errors.New("unable to type assert wallet snapshot balance")
+				}
+				if wallet.UnsettledInterest, ok = data[3].(float64); !ok {
+					return errors.New("unable to type assert wallet snapshot unsettled interest")
+				}
+				if data[4] != nil {
+					if wallet.BalanceAvailable, ok = data[4].(float64); !ok {
+						return errors.New("unable to type assert wallet snapshot balance available")
+					}
+				}
+				return e.Websocket.DataHandler.Send(ctx, wallet)
+			}
+		case wsBalanceUpdate:
+			if data, ok := d[2].([]any); ok && len(data) > 0 {
+				var balance WsBalanceInfo
+				if balance.TotalAssetsUnderManagement, ok = data[0].(float64); !ok {
+					return errors.New("unable to type assert balance total assets under management")
+				}
+				if balance.NetAssetsUnderManagement, ok = data[1].(float64); !ok {
+					return errors.New("unable to type assert balance net assets under management")
+				}
+				return e.Websocket.DataHandler.Send(ctx, balance)
+			}
+		case wsMarginInfoUpdate:
+			if data, ok := d[2].([]any); ok && len(data) > 0 {
+				if eventType, ok := data[0].(string); ok && eventType == "base" {
+					baseData, ok := data[1].([]any)
+					if !ok {
+						return errors.New("unable to type assert wsMarginInfoUpdate baseData")
+					}
+					var marginInfoBase WsMarginInfoBase
+					if marginInfoBase.UserProfitLoss, ok = baseData[0].(float64); !ok {
+						return errors.New("unable to type assert margin info user profit loss")
+					}
+					if marginInfoBase.UserSwaps, ok = baseData[1].(float64); !ok {
+						return errors.New("unable to type assert margin info user swaps")
+					}
+					if marginInfoBase.MarginBalance, ok = baseData[2].(float64); !ok {
+						return errors.New("unable to type assert margin info balance")
+					}
+					if marginInfoBase.MarginNet, ok = baseData[3].(float64); !ok {
+						return errors.New("unable to type assert margin info net")
+					}
+					if marginInfoBase.MarginRequired, ok = baseData[4].(float64); !ok {
+						return errors.New("unable to type assert margin info required")
+					}
+					return e.Websocket.DataHandler.Send(ctx, marginInfoBase)
+				}
+			}
+		case wsFundingInfoUpdate:
+			if data, ok := d[2].([]any); ok && len(data) > 0 {
+				if fundingType, ok := data[0].(string); ok && fundingType == "sym" {
+					symbolData, ok := data[2].([]any)
+					if !ok {
+						return errors.New("unable to type assert wsFundingInfoUpdate symbolData")
+					}
+					var fundingInfo WsFundingInfo
+					if fundingInfo.Symbol, ok = data[1].(string); !ok {
+						return errors.New("unable to type assert symbol")
+					}
+					if fundingInfo.YieldLoan, ok = symbolData[0].(float64); !ok {
+						return errors.New("unable to type assert funding info update yield loan")
+					}
+					if fundingInfo.YieldLend, ok = symbolData[1].(float64); !ok {
+						return errors.New("unable to type assert funding info update yield lend")
+					}
+					if fundingInfo.DurationLoan, ok = symbolData[2].(float64); !ok {
+						return errors.New("unable to type assert funding info update duration loan")
+					}
+					if fundingInfo.DurationLend, ok = symbolData[3].(float64); !ok {
+						return errors.New("unable to type assert funding info update duration lend")
+					}
+					return e.Websocket.DataHandler.Send(ctx, fundingInfo)
+				}
+			}
+		case wsFundingTradeExecuted, wsFundingTradeUpdated:
+			if data, ok := d[2].([]any); ok && len(data) > 0 {
+				var wsFundingTrade WsFundingTrade
+				tradeID, ok := data[0].(float64)
+				if !ok {
+					return errors.New("unable to type assert funding trade ID")
+				}
+				wsFundingTrade.ID = int64(tradeID)
+				if wsFundingTrade.Symbol, ok = data[1].(string); !ok {
+					return errors.New("unable to type assert funding trade symbol")
+				}
+				created, ok := data[2].(float64)
+				if !ok {
+					return errors.New("unable to type assert funding trade created")
+				}
+				wsFundingTrade.MTSCreated = time.UnixMilli(int64(created))
+				offerID, ok := data[3].(float64)
+				if !ok {
+					return errors.New("unable to type assert funding trade offer ID")
+				}
+				wsFundingTrade.OfferID = int64(offerID)
+				if wsFundingTrade.Amount, ok = data[4].(float64); !ok {
+					return errors.New("unable to type assert funding trade amount")
+				}
+				if wsFundingTrade.Rate, ok = data[5].(float64); !ok {
+					return errors.New("unable to type assert funding trade rate")
+				}
+				period, ok := data[6].(float64)
+				if !ok {
+					return errors.New("unable to type assert funding trade period")
+				}
+				wsFundingTrade.Period = int64(period)
+				wsFundingTrade.Maker = data[7] != nil
+				return e.Websocket.DataHandler.Send(ctx, wsFundingTrade)
+			}
+		default:
+			return e.Websocket.DataHandler.Send(ctx, websocket.UnhandledMessageWarning{
+				Message: e.Name + websocket.UnhandledMessage + string(respRaw),
+			})
+		}
+	}
+	return nil
+}
+
+func (e *Exchange) handleWSEvent(ctx context.Context, respRaw []byte) error {
+	event, err := jsonparser.GetUnsafeString(respRaw, "event")
+	if err != nil {
+		return fmt.Errorf("%w 'event': %w from message: %s", common.ErrParsingWSField, err, respRaw)
+	}
+	switch event {
+	case wsEventSubscribed:
+		return e.handleWSSubscribed(respRaw)
+	case wsEventUnsubscribed:
+		chanID, err := jsonparser.GetUnsafeString(respRaw, "chanId")
+		if err != nil {
+			return fmt.Errorf("%w 'chanId': %w from message: %s", common.ErrParsingWSField, err, respRaw)
+		}
+		err = e.Websocket.Match.RequireMatchWithData("unsubscribe:"+chanID, respRaw)
+		if err != nil {
+			return fmt.Errorf("%w: unsubscribe:%v", err, chanID)
+		}
+	case wsEventError:
+		if subID, err := jsonparser.GetUnsafeString(respRaw, "subId"); err == nil {
+			err = e.Websocket.Match.RequireMatchWithData("subscribe:"+subID, respRaw)
+			if err != nil {
+				return fmt.Errorf("%w: subscribe:%v", err, subID)
+			}
+		} else if chanID, err := jsonparser.GetUnsafeString(respRaw, "chanId"); err == nil {
+			err = e.Websocket.Match.RequireMatchWithData("unsubscribe:"+chanID, respRaw)
+			if err != nil {
+				return fmt.Errorf("%w: unsubscribe:%v", err, chanID)
+			}
+		} else {
+			return fmt.Errorf("unknown channel error; Message: %s", respRaw)
+		}
+	case wsEventAuth:
+		status, err := jsonparser.GetUnsafeString(respRaw, "status")
+		if err != nil {
+			return fmt.Errorf("%w 'status': %w from message: %s", common.ErrParsingWSField, err, respRaw)
+		}
+		if status == "OK" {
+			var glob map[string]any
+			if err := json.Unmarshal(respRaw, &glob); err != nil {
+				return fmt.Errorf("unable to Unmarshal auth resp; Error: %w Msg: %v", err, respRaw)
+			}
+			// TODO - Send a better value down the channel
+			return e.Websocket.DataHandler.Send(ctx, glob)
+		}
+		errCode, err := jsonparser.GetInt(respRaw, "code")
+		if err != nil {
+			log.Errorf(log.ExchangeSys, "%s %s 'code': %s from message: %s", e.Name, common.ErrParsingWSField, err, respRaw)
+		}
+		return fmt.Errorf("WS auth subscription error; Status: %s Error Code: %d", status, errCode)
+	case wsEventInfo:
+		// Nothing to do with info for now.
+		// version or platform.status might be useful in the future.
+	case wsEventConf:
+		status, err := jsonparser.GetUnsafeString(respRaw, "status")
+		if err != nil {
+			return fmt.Errorf("%w 'status': %w from message: %s", common.ErrParsingWSField, err, respRaw)
+		}
+		if status != "OK" {
+			return fmt.Errorf("WS configure channel error; Status: %s", status)
+		}
+	default:
+		return fmt.Errorf("unknown WS event msg: %s", respRaw)
+	}
+
+	return nil
+}
+
+// handleWSSubscribed parses a subscription response and registers the chanID key immediately, before updating subscribeToChan via IncomingWithData chan
+// wsHandleData happens sequentially, so by rekeying on chanID immediately we ensure the first message is not dropped
+func (e *Exchange) handleWSSubscribed(respRaw []byte) error {
+	subID, err := jsonparser.GetUnsafeString(respRaw, "subId")
+	if err != nil {
+		return fmt.Errorf("%w 'subId': %w from message: %s", common.ErrParsingWSField, err, respRaw)
+	}
+
+	c := e.Websocket.GetSubscription(subID)
+	if c == nil {
+		return fmt.Errorf("%w: %w subID: %s", websocket.ErrSubscriptionFailure, subscription.ErrNotFound, subID)
+	}
+
+	chanID, err := jsonparser.GetInt(respRaw, "chanId")
+	if err != nil {
+		return fmt.Errorf("%w: %w 'chanId': %w; Channel: %s Pair: %s", websocket.ErrSubscriptionFailure, common.ErrParsingWSField, err, c.Channel, c.Pairs)
+	}
+
+	// Note: chanID's int type avoids conflicts with the string type subID key because of the type difference
+	c = c.Clone()
+	c.Key = int(chanID)
+
+	// subscribeToChan removes the old subID keyed Subscription
+	err = e.Websocket.AddSuccessfulSubscriptions(e.Websocket.Conn, c)
+	if err != nil {
+		return fmt.Errorf("%w: %w subID: %s", websocket.ErrSubscriptionFailure, err, subID)
+	}
+
+	if e.Verbose {
+		log.Debugf(log.ExchangeSys, "%s Subscribed to Channel: %s Pair: %s ChannelID: %d\n", e.Name, c.Channel, c.Pairs, chanID)
+	}
+
+	return e.Websocket.Match.RequireMatchWithData("subscribe:"+subID, respRaw)
+}
+
+func (e *Exchange) handleWSChannelUpdate(ctx context.Context, s *subscription.Subscription, respRaw []byte, eventType string, d []any) error {
+	if s == nil {
+		return fmt.Errorf("%w: Subscription param", common.ErrNilPointer)
+	}
+
+	switch eventType {
+	case wsChecksum:
+		return e.handleWSChecksum(s, d)
+	case wsHeartbeat:
+		return nil
+	}
+
+	if len(s.Pairs) != 1 {
+		return subscription.ErrNotSinglePair
+	}
+
+	switch s.Channel {
+	case subscription.OrderbookChannel:
+		return e.handleWSBookUpdate(ctx, s, d)
+	case subscription.CandlesChannel:
+		return e.handleWSAllCandleUpdates(ctx, s, respRaw)
+	case subscription.TickerChannel:
+		return e.handleWSTickerUpdate(ctx, s, d)
+	case subscription.AllTradesChannel:
+		return e.handleWSAllTrades(ctx, s, respRaw)
+	}
+
+	return fmt.Errorf("%s unhandled channel update: %s", e.Name, s.Channel)
+}
+
+func (e *Exchange) handleWSChecksum(c *subscription.Subscription, d []any) error {
+	if c == nil {
+		return fmt.Errorf("%w: Subscription param", common.ErrNilPointer)
+	}
+	var token uint32
+	if f, ok := d[2].(float64); !ok {
+		return common.GetTypeAssertError("float64", d[2], "checksum")
+	} else { //nolint:revive // using lexical variable requires else statement
+		token = uint32(f)
+	}
+	if len(d) < 4 {
+		return errNoSeqNo
+	}
+	var seqNo int64
+	if f, ok := d[3].(float64); !ok {
+		return common.GetTypeAssertError("float64", d[3], "seqNo")
+	} else { //nolint:revive // using lexical variable requires else statement
+		seqNo = int64(f)
+	}
+
+	chanID, ok := c.Key.(int)
+	if !ok {
+		return common.GetTypeAssertError("int", c.Key, "ChanID") // Should be impossible
+	}
+
+	cMtx.Lock()
+	checksumStore[chanID] = &checksum{
+		Token:    token,
+		Sequence: seqNo,
+	}
+	cMtx.Unlock()
+	return nil
+}
+
+func (e *Exchange) handleWSBookUpdate(ctx context.Context, c *subscription.Subscription, d []any) error {
+	if c == nil {
+		return fmt.Errorf("%w: Subscription param", common.ErrNilPointer)
+	}
+	if len(c.Pairs) != 1 {
+		return subscription.ErrNotSinglePair
+	}
+	var newOrderbook []WebsocketBook
+	obSnapBundle, ok := d[1].([]any)
+	if !ok {
+		return errors.New("orderbook interface cast failed")
+	}
+	if len(obSnapBundle) == 0 {
+		return errors.New("no data within orderbook snapshot")
+	}
+	if len(d) < 3 {
+		return errNoSeqNo
+	}
+	sequenceNo, ok := d[2].(float64)
+	if !ok {
+		return errors.New("type assertion failure")
+	}
+	var fundingRate bool
+	switch id := obSnapBundle[0].(type) {
+	case []any:
+		for i := range obSnapBundle {
+			data, ok := obSnapBundle[i].([]any)
+			if !ok {
+				return errors.New("type assertion failed for orderbok item data")
+			}
+			id, okAssert := data[0].(float64)
+			if !okAssert {
+				return errors.New("type assertion failed for orderbook id data")
+			}
+			pricePeriod, okAssert := data[1].(float64)
+			if !okAssert {
+				return errors.New("type assertion failed for orderbook price data")
+			}
+			rateAmount, okAssert := data[2].(float64)
+			if !okAssert {
+				return errors.New("type assertion failed for orderbook rate data")
+			}
+			if len(data) == 4 {
+				fundingRate = true
+				amount, okFunding := data[3].(float64)
+				if !okFunding {
+					return errors.New("type assertion failed for orderbook funding data")
+				}
+				newOrderbook = append(newOrderbook, WebsocketBook{
+					ID:     int64(id),
+					Period: int64(pricePeriod),
+					Price:  rateAmount,
+					Amount: amount,
+				})
 			} else {
-				b.Websocket.DataHandler <- &ticker.Price{
-					ExchangeName:          b.Name,
-					FlashReturnRate:       tickerData[0].(float64),
-					Bid:                   tickerData[1].(float64),
-					BidPeriod:             tickerData[2].(float64),
-					BidSize:               tickerData[3].(float64),
-					Ask:                   tickerData[4].(float64),
-					AskPeriod:             tickerData[5].(float64),
-					AskSize:               tickerData[6].(float64),
-					Last:                  tickerData[9].(float64),
-					Volume:                tickerData[10].(float64),
-					High:                  tickerData[11].(float64),
-					Low:                   tickerData[12].(float64),
-					FlashReturnRateAmount: tickerData[15].(float64),
-					AssetType:             chanAsset,
-					Pair:                  pair,
-				}
-			}
-
-			return nil
-		case wsTrades:
-			if !b.IsSaveTradeDataEnabled() {
-				return nil
-			}
-			if chanAsset == asset.MarginFunding {
-				return nil
-			}
-			var tradeHolder []WebsocketTrade
-			switch len(d) {
-			case 2:
-				snapshot := d[1].([]interface{})
-				for i := range snapshot {
-					elem := snapshot[i].([]interface{})
-					if len(elem) == 5 {
-						tradeHolder = append(tradeHolder, WebsocketTrade{
-							ID:        int64(elem[0].(float64)),
-							Timestamp: int64(elem[1].(float64)),
-							Amount:    elem[2].(float64),
-							Rate:      elem[3].(float64),
-							Period:    int64(elem[4].(float64)),
-						})
-					} else {
-						tradeHolder = append(tradeHolder, WebsocketTrade{
-							ID:        int64(elem[0].(float64)),
-							Timestamp: int64(elem[1].(float64)),
-							Amount:    elem[2].(float64),
-							Price:     elem[3].(float64),
-						})
-					}
-				}
-			case 3:
-				if d[1].(string) != wsFundingTradeUpdate &&
-					d[1].(string) != wsTradeExecutionUpdate {
-					return nil
-				}
-				data := d[2].([]interface{})
-				if len(data) == 5 {
-					tradeHolder = append(tradeHolder, WebsocketTrade{
-						ID:        int64(data[0].(float64)),
-						Timestamp: int64(data[1].(float64)),
-						Amount:    data[2].(float64),
-						Rate:      data[3].(float64),
-						Period:    int64(data[4].(float64)),
-					})
-				} else {
-					tradeHolder = append(tradeHolder, WebsocketTrade{
-						ID:        int64(data[0].(float64)),
-						Timestamp: int64(data[1].(float64)),
-						Amount:    data[2].(float64),
-						Price:     data[3].(float64),
-					})
-				}
-			}
-			var trades []trade.Data
-			for i := range tradeHolder {
-				side := order.Buy
-				newAmount := tradeHolder[i].Amount
-				if newAmount < 0 {
-					side = order.Sell
-					newAmount *= -1
-				}
-				price := tradeHolder[i].Price
-				if price == 0 && tradeHolder[i].Rate > 0 {
-					price = tradeHolder[i].Rate
-				}
-				trades = append(trades, trade.Data{
-					TID:          strconv.FormatInt(tradeHolder[i].ID, 10),
-					CurrencyPair: pair,
-					Timestamp:    time.Unix(0, tradeHolder[i].Timestamp*int64(time.Millisecond)),
-					Price:        price,
-					Amount:       newAmount,
-					Exchange:     b.Name,
-					AssetType:    chanAsset,
-					Side:         side,
+				newOrderbook = append(newOrderbook, WebsocketBook{
+					ID:     int64(id),
+					Price:  pricePeriod,
+					Amount: rateAmount,
 				})
 			}
-
-			return b.AddTradesToBuffer(trades...)
+		}
+		if err := e.WsInsertSnapshot(ctx, c.Pairs[0], c.Asset, newOrderbook, fundingRate); err != nil {
+			return fmt.Errorf("inserting snapshot error: %s",
+				err)
+		}
+	case float64:
+		pricePeriod, okSnap := obSnapBundle[1].(float64)
+		if !okSnap {
+			return errors.New("type assertion failed for orderbook price snapshot data")
+		}
+		amountRate, okSnap := obSnapBundle[2].(float64)
+		if !okSnap {
+			return errors.New("type assertion failed for orderbook amount snapshot data")
+		}
+		if len(obSnapBundle) == 4 {
+			fundingRate = true
+			var amount float64
+			amount, okSnap = obSnapBundle[3].(float64)
+			if !okSnap {
+				return errors.New("type assertion failed for orderbook amount snapshot data")
+			}
+			newOrderbook = append(newOrderbook, WebsocketBook{
+				ID:     int64(id),
+				Period: int64(pricePeriod),
+				Price:  amountRate,
+				Amount: amount,
+			})
+		} else {
+			newOrderbook = append(newOrderbook, WebsocketBook{
+				ID:     int64(id),
+				Price:  pricePeriod,
+				Amount: amountRate,
+			})
 		}
 
-		if authResp, ok := d[1].(string); ok {
-			switch authResp {
-			case wsHeartbeat, pong:
-				return nil
-			case wsNotification:
-				notification := d[2].([]interface{})
-				if data, ok := notification[4].([]interface{}); ok {
-					channelName := notification[1].(string)
-					switch {
-					case strings.Contains(channelName, wsFundingOrderNewRequest),
-						strings.Contains(channelName, wsFundingOrderUpdateRequest),
-						strings.Contains(channelName, wsFundingOrderCancelRequest):
-						if data[0] != nil && data[0].(float64) > 0 {
-							id := int64(data[0].(float64))
-							if b.Websocket.Match.IncomingWithData(id, respRaw) {
-								return nil
-							}
-							b.wsHandleFundingOffer(data)
-						}
-					case strings.Contains(channelName, wsOrderNewRequest),
-						strings.Contains(channelName, wsOrderUpdateRequest),
-						strings.Contains(channelName, wsOrderCancelRequest):
-						if data[2] != nil && data[2].(float64) > 0 {
-							id := int64(data[2].(float64))
-							if b.Websocket.Match.IncomingWithData(id, respRaw) {
-								return nil
-							}
-							b.wsHandleOrder(data)
-						}
+		if err := e.WsUpdateOrderbook(ctx, c, c.Pairs[0], c.Asset, newOrderbook, int64(sequenceNo), fundingRate); err != nil {
+			return fmt.Errorf("updating orderbook error: %s",
+				err)
+		}
+	}
 
-					default:
-						return fmt.Errorf("%s - Unexpected data returned %s",
-							b.Name,
-							respRaw)
+	return nil
+}
+
+func (e *Exchange) handleWSAllCandleUpdates(ctx context.Context, c *subscription.Subscription, respRaw []byte) error {
+	if c == nil {
+		return fmt.Errorf("%w: Subscription param", common.ErrNilPointer)
+	}
+	if len(c.Pairs) != 1 {
+		return subscription.ErrNotSinglePair
+	}
+	v, valueType, _, err := jsonparser.Get(respRaw, "[1]")
+	if err != nil {
+		return fmt.Errorf("%w `candlesUpdate[1]`: %w", common.ErrParsingWSField, err)
+	}
+	if valueType != jsonparser.Array {
+		return fmt.Errorf("%w `candlesUpdate[1]`: %w %q", common.ErrParsingWSField, jsonparser.UnknownValueTypeError, valueType)
+	}
+	var wsCandles []Candle
+	if bytes.HasPrefix(v, []byte("[[")) {
+		if err := json.Unmarshal(v, &wsCandles); err != nil {
+			return fmt.Errorf("error unmarshalling candle snapshot: %w", err)
+		}
+	} else {
+		var wsCandle Candle
+		if err := json.Unmarshal(v, &wsCandle); err != nil {
+			return fmt.Errorf("error unmarshalling candle update: %w", err)
+		}
+		wsCandles = []Candle{wsCandle}
+	}
+
+	klines := make([]kline.Item, len(wsCandles))
+	for i := range wsCandles {
+		klines[i] = kline.Item{
+			Exchange: e.Name,
+			Asset:    c.Asset,
+			Pair:     c.Pairs[0],
+			Interval: c.Interval,
+			Candles: []kline.Candle{{
+				Time:   wsCandles[i].Timestamp.Time(),
+				Open:   wsCandles[i].Open.Float64(),
+				Close:  wsCandles[i].Close.Float64(),
+				High:   wsCandles[i].High.Float64(),
+				Low:    wsCandles[i].Low.Float64(),
+				Volume: wsCandles[i].Volume.Float64(),
+			}},
+		}
+	}
+	return e.Websocket.DataHandler.Send(ctx, klines)
+}
+
+func (e *Exchange) handleWSTickerUpdate(ctx context.Context, c *subscription.Subscription, d []any) error {
+	if c == nil {
+		return fmt.Errorf("%w: Subscription param", common.ErrNilPointer)
+	}
+	if len(c.Pairs) != 1 {
+		return subscription.ErrNotSinglePair
+	}
+	tickerData, ok := d[1].([]any)
+	if !ok {
+		return errors.New("type assertion for tickerData")
+	}
+
+	t := &ticker.Price{
+		AssetType:    c.Asset,
+		Pair:         c.Pairs[0],
+		ExchangeName: e.Name,
+	}
+
+	switch len(tickerData) {
+	case 11, 17:
+		// Bitfinex websocket tickers can append an optional trailing FIRST_TRADE
+		// timestamp. The docs note this field may be null.
+		if last := tickerData[len(tickerData)-1]; last != nil {
+			firstTradeTimestamp, firstTradeTimestampOK := last.(float64)
+			if !firstTradeTimestampOK {
+				return errTickerInvalidFirstTradeTime
+			}
+			t.LastUpdated = time.UnixMilli(int64(firstTradeTimestamp))
+		}
+		tickerData = tickerData[:len(tickerData)-1]
+	}
+
+	switch len(tickerData) {
+	case 10:
+		if t.Bid, ok = tickerData[0].(float64); !ok {
+			return errors.New("unable to type assert ticker bid")
+		}
+		if t.Ask, ok = tickerData[2].(float64); !ok {
+			return errors.New("unable to type assert ticker ask")
+		}
+		if t.Last, ok = tickerData[6].(float64); !ok {
+			return errors.New("unable to type assert ticker last")
+		}
+		if t.BaseVolume, ok = tickerData[7].(float64); !ok {
+			return errors.New("unable to type assert ticker volume")
+		}
+		if t.High, ok = tickerData[8].(float64); !ok {
+			return errors.New("unable to type assert  ticker high")
+		}
+		if t.Low, ok = tickerData[9].(float64); !ok {
+			return errors.New("unable to type assert ticker low")
+		}
+	case 16:
+		if t.FlashReturnRate, ok = tickerData[0].(float64); !ok {
+			return errors.New("unable to type assert ticker flash return rate")
+		}
+		if t.Bid, ok = tickerData[1].(float64); !ok {
+			return errors.New("unable to type assert ticker bid")
+		}
+		if t.BidPeriod, ok = tickerData[2].(float64); !ok {
+			return errors.New("unable to type assert ticker bid period")
+		}
+		if t.BidSize, ok = tickerData[3].(float64); !ok {
+			return errors.New("unable to type assert ticker bid size")
+		}
+		if t.Ask, ok = tickerData[4].(float64); !ok {
+			return errors.New("unable to type assert ticker ask")
+		}
+		if t.AskPeriod, ok = tickerData[5].(float64); !ok {
+			return errors.New("unable to type assert ticker ask period")
+		}
+		if t.AskSize, ok = tickerData[6].(float64); !ok {
+			return errors.New("unable to type assert ticker ask size")
+		}
+		if t.Last, ok = tickerData[9].(float64); !ok {
+			return errors.New("unable to type assert ticker last")
+		}
+		if t.BaseVolume, ok = tickerData[10].(float64); !ok {
+			return errors.New("unable to type assert ticker volume")
+		}
+		if t.High, ok = tickerData[11].(float64); !ok {
+			return errors.New("unable to type assert ticker high")
+		}
+		if t.Low, ok = tickerData[12].(float64); !ok {
+			return errors.New("unable to type assert ticker low")
+		}
+		if t.FlashReturnRateAmount, ok = tickerData[15].(float64); !ok {
+			return errors.New("unable to type assert ticker flash return rate amount")
+		}
+	default:
+		return fmt.Errorf("%w for websocket ticker payload: %v", errTickerInvalidFieldCount, tickerData)
+	}
+	if err := ticker.ProcessTicker(t); err != nil {
+		return err
+	}
+	return e.Websocket.DataHandler.Send(ctx, t)
+}
+
+func (e *Exchange) handleWSAllTrades(ctx context.Context, s *subscription.Subscription, respRaw []byte) error {
+	feedEnabled := e.IsTradeFeedEnabled()
+	if !feedEnabled && !e.IsSaveTradeDataEnabled() {
+		return nil
+	}
+	if s == nil {
+		return fmt.Errorf("%w: Subscription param", common.ErrNilPointer)
+	}
+	if len(s.Pairs) != 1 {
+		return subscription.ErrNotSinglePair
+	}
+	v, valueType, _, err := jsonparser.Get(respRaw, "[1]")
+	if err != nil {
+		return fmt.Errorf("%w `tradesUpdate[1]`: %w", common.ErrParsingWSField, err)
+	}
+	var wsTrades []*Trade
+	switch valueType {
+	case jsonparser.String:
+		t, err := e.handleWSPublicTradeUpdate(respRaw)
+		if err != nil {
+			return fmt.Errorf("%w `tradesUpdate[2]`: %w", common.ErrParsingWSField, err)
+		}
+		wsTrades = []*Trade{t}
+	case jsonparser.Array:
+		if wsTrades, err = e.handleWSPublicTradesSnapshot(v); err != nil {
+			return fmt.Errorf("%w `tradesSnapshot`: %w", common.ErrParsingWSField, err)
+		}
+	default:
+		return fmt.Errorf("%w `tradesUpdate[1]`: %w %q", common.ErrParsingWSField, jsonparser.UnknownValueTypeError, valueType)
+	}
+	trades := make([]trade.Data, len(wsTrades))
+	for _, w := range wsTrades {
+		t := trade.Data{
+			Exchange:     e.Name,
+			AssetType:    s.Asset,
+			CurrencyPair: s.Pairs[0],
+			TID:          strconv.FormatInt(w.TID, 10),
+			Timestamp:    w.Timestamp.Time().UTC(),
+			Side:         w.Side,
+			Amount:       w.Amount,
+			Price:        w.Price,
+		}
+		if w.Period != 0 {
+			t.AssetType = asset.MarginFunding
+			t.Price = w.Rate
+		}
+		if feedEnabled {
+			if err := e.Websocket.DataHandler.Send(ctx, t); err != nil {
+				return err
+			}
+		}
+	}
+	if e.IsSaveTradeDataEnabled() {
+		err = trade.AddTradesToBuffer(trades...)
+	}
+	return err
+}
+
+func (e *Exchange) handleWSPublicTradesSnapshot(v []byte) ([]*Trade, error) {
+	var trades []*Trade
+	return trades, json.Unmarshal(v, &trades)
+}
+
+func (e *Exchange) handleWSPublicTradeUpdate(respRaw []byte) (*Trade, error) {
+	v, _, _, err := jsonparser.Get(respRaw, "[2]")
+	if err != nil {
+		return nil, err
+	}
+	t := &Trade{}
+	return t, json.Unmarshal(v, t)
+}
+
+func (e *Exchange) handleWSNotification(ctx context.Context, d []any, respRaw []byte) error {
+	notification, ok := d[2].([]any)
+	if !ok {
+		return errors.New("unable to type assert notification data")
+	}
+	if data, ok := notification[4].([]any); ok {
+		channelName, ok := notification[1].(string)
+		if !ok {
+			return errors.New("unable to type assert channelName")
+		}
+		switch {
+		case strings.Contains(channelName, wsFundingOfferNewRequest),
+			strings.Contains(channelName, wsFundingOfferUpdateRequest),
+			strings.Contains(channelName, wsFundingOfferCancelRequest):
+			if data[0] != nil {
+				if id, ok := data[0].(float64); ok && id > 0 {
+					if e.Websocket.Match.IncomingWithData(int64(id), respRaw) {
+						return nil
 					}
+					offer, err := wsHandleFundingOffer(data, true /* include rate real */)
+					if err != nil {
+						return err
+					}
+					return e.Websocket.DataHandler.Send(ctx, offer)
 				}
-				if notification[5] != nil &&
-					strings.EqualFold(notification[5].(string), wsError) {
+			}
+		case strings.Contains(channelName, wsOrderNewRequest):
+			if data[2] != nil {
+				if cid, ok := data[2].(float64); !ok {
+					return common.GetTypeAssertError("float64", data[2], channelName+" cid")
+				} else if cid > 0 {
+					if e.Websocket.Match.IncomingWithData(int64(cid), respRaw) {
+						return nil
+					}
+					return e.wsHandleOrder(ctx, data)
+				}
+			}
+		case strings.Contains(channelName, wsOrderUpdateRequest),
+			strings.Contains(channelName, wsOrderCancelRequest):
+			if data[0] != nil {
+				if id, ok := data[0].(float64); !ok {
+					return common.GetTypeAssertError("float64", data[0], channelName+" id")
+				} else if id > 0 {
+					if e.Websocket.Match.IncomingWithData(int64(id), respRaw) {
+						return nil
+					}
+					return e.wsHandleOrder(ctx, data)
+				}
+			}
+		default:
+			return fmt.Errorf("%s - Unexpected data returned %s",
+				e.Name,
+				respRaw)
+		}
+	}
+	if notification[5] != nil {
+		if wsErr, ok := notification[5].(string); ok {
+			if strings.EqualFold(wsErr, wsError) {
+				if errMsg, ok := notification[6].(string); ok {
 					return fmt.Errorf("%s - Error %s",
-						b.Name,
-						notification[6].(string))
+						e.Name,
+						errMsg)
 				}
-			case wsOrderSnapshot:
-				if snapBundle, ok := d[2].([]interface{}); ok && len(snapBundle) > 0 {
-					if _, ok := snapBundle[0].([]interface{}); ok {
-						for i := range snapBundle {
-							positionData := snapBundle[i].([]interface{})
-							b.wsHandleOrder(positionData)
-						}
-					}
-				}
-			case wsOrderCancel, wsOrderNew, wsOrderUpdate:
-				if oData, ok := d[2].([]interface{}); ok && len(oData) > 0 {
-					b.wsHandleOrder(oData)
-				}
-			case wsPositionSnapshot:
-				var snapshot []WebsocketPosition
-				if snapBundle, ok := d[2].([]interface{}); ok && len(snapBundle) > 0 {
-					if _, ok := snapBundle[0].([]interface{}); ok {
-						for i := range snapBundle {
-							positionData := snapBundle[i].([]interface{})
-							position := WebsocketPosition{
-								Pair:              positionData[0].(string),
-								Status:            positionData[1].(string),
-								Amount:            positionData[2].(float64),
-								Price:             positionData[3].(float64),
-								MarginFunding:     positionData[4].(float64),
-								MarginFundingType: int64(positionData[5].(float64)),
-								ProfitLoss:        positionData[6].(float64),
-								ProfitLossPercent: positionData[7].(float64),
-								LiquidationPrice:  positionData[8].(float64),
-								Leverage:          positionData[9].(float64),
-							}
-							snapshot = append(snapshot, position)
-						}
-						b.Websocket.DataHandler <- snapshot
-					}
-				}
-			case wsPositionNew, wsPositionUpdate, wsPositionClose:
-				if positionData, ok := d[2].([]interface{}); ok && len(positionData) > 0 {
-					position := WebsocketPosition{
-						Pair:              positionData[0].(string),
-						Status:            positionData[1].(string),
-						Amount:            positionData[2].(float64),
-						Price:             positionData[3].(float64),
-						MarginFunding:     positionData[4].(float64),
-						MarginFundingType: int64(positionData[5].(float64)),
-						ProfitLoss:        positionData[6].(float64),
-						ProfitLossPercent: positionData[7].(float64),
-						LiquidationPrice:  positionData[8].(float64),
-						Leverage:          positionData[9].(float64),
-					}
-					b.Websocket.DataHandler <- position
-				}
-			case wsTradeExecuted, wsTradeExecutionUpdate:
-				if tradeData, ok := d[2].([]interface{}); ok && len(tradeData) > 4 {
-					b.Websocket.DataHandler <- WebsocketTradeData{
-						TradeID:        int64(tradeData[0].(float64)),
-						Pair:           tradeData[1].(string),
-						Timestamp:      int64(tradeData[2].(float64)),
-						OrderID:        int64(tradeData[3].(float64)),
-						AmountExecuted: tradeData[4].(float64),
-						PriceExecuted:  tradeData[5].(float64),
-						OrderType:      tradeData[6].(string),
-						OrderPrice:     tradeData[7].(float64),
-						Maker:          tradeData[8].(float64) == 1,
-						Fee:            tradeData[9].(float64),
-						FeeCurrency:    tradeData[10].(string),
-					}
-				}
-			case wsFundingOrderSnapshot:
-				var snapshot []WsFundingOffer
-				if snapBundle, ok := d[2].([]interface{}); ok && len(snapBundle) > 0 {
-					if _, ok := snapBundle[0].([]interface{}); ok {
-						for i := range snapBundle {
-							data := snapBundle[i].([]interface{})
-							offer := WsFundingOffer{
-								ID:             int64(data[0].(float64)),
-								Symbol:         data[1].(string),
-								Created:        int64(data[2].(float64)),
-								Updated:        int64(data[3].(float64)),
-								Amount:         data[4].(float64),
-								OriginalAmount: data[5].(float64),
-								Type:           data[6].(string),
-								Flags:          data[9].(float64),
-								Status:         data[10].(string),
-								Rate:           data[14].(float64),
-								Period:         int64(data[15].(float64)),
-								Notify:         data[16].(float64) == 1,
-								Hidden:         data[17].(float64) == 1,
-								Insure:         data[18].(float64) == 1,
-								Renew:          data[19].(float64) == 1,
-								RateReal:       data[20].(float64),
-							}
-							snapshot = append(snapshot, offer)
-						}
-						b.Websocket.DataHandler <- snapshot
-					}
-				}
-			case wsFundingOrderNew, wsFundingOrderUpdate, wsFundingOrderCancel:
-				if data, ok := d[2].([]interface{}); ok && len(data) > 0 {
-					b.wsHandleFundingOffer(data)
-				}
-			case wsFundingCreditSnapshot:
-				var snapshot []WsCredit
-				if snapBundle, ok := d[2].([]interface{}); ok && len(snapBundle) > 0 {
-					if _, ok := snapBundle[0].([]interface{}); ok {
-						for i := range snapBundle {
-							data := snapBundle[i].([]interface{})
-							credit := WsCredit{
-								ID:           int64(data[0].(float64)),
-								Symbol:       data[1].(string),
-								Side:         data[2].(string),
-								Created:      int64(data[3].(float64)),
-								Updated:      int64(data[4].(float64)),
-								Amount:       data[5].(float64),
-								Flags:        data[6].(string),
-								Status:       data[7].(string),
-								Rate:         data[11].(float64),
-								Period:       int64(data[12].(float64)),
-								Opened:       int64(data[13].(float64)),
-								LastPayout:   int64(data[14].(float64)),
-								Notify:       data[15].(float64) == 1,
-								Hidden:       data[16].(float64) == 1,
-								Insure:       data[17].(float64) == 1,
-								Renew:        data[18].(float64) == 1,
-								RateReal:     data[19].(float64),
-								NoClose:      data[20].(float64) == 1,
-								PositionPair: data[21].(string),
-							}
-							snapshot = append(snapshot, credit)
-						}
-						b.Websocket.DataHandler <- snapshot
-					}
-				}
-			case wsFundingCreditNew, wsFundingCreditUpdate, wsFundingCreditCancel:
-				if data, ok := d[2].([]interface{}); ok && len(data) > 0 {
-					b.Websocket.DataHandler <- WsCredit{
-						ID:           int64(data[0].(float64)),
-						Symbol:       data[1].(string),
-						Side:         data[2].(string),
-						Created:      int64(data[3].(float64)),
-						Updated:      int64(data[4].(float64)),
-						Amount:       data[5].(float64),
-						Flags:        data[6].(string),
-						Status:       data[7].(string),
-						Rate:         data[11].(float64),
-						Period:       int64(data[12].(float64)),
-						Opened:       int64(data[13].(float64)),
-						LastPayout:   int64(data[14].(float64)),
-						Notify:       data[15].(float64) == 1,
-						Hidden:       data[16].(float64) == 1,
-						Insure:       data[17].(float64) == 1,
-						Renew:        data[18].(float64) == 1,
-						RateReal:     data[19].(float64),
-						NoClose:      data[20].(float64) == 1,
-						PositionPair: data[21].(string),
-					}
-				}
-			case wsFundingLoanSnapshot:
-				var snapshot []WsCredit
-				if snapBundle, ok := d[2].([]interface{}); ok && len(snapBundle) > 0 {
-					if _, ok := snapBundle[0].([]interface{}); ok {
-						for i := range snapBundle {
-							data := snapBundle[i].([]interface{})
-							credit := WsCredit{
-								ID:         int64(data[0].(float64)),
-								Symbol:     data[1].(string),
-								Side:       data[2].(string),
-								Created:    int64(data[3].(float64)),
-								Updated:    int64(data[4].(float64)),
-								Amount:     data[5].(float64),
-								Flags:      data[6].(string),
-								Status:     data[7].(string),
-								Rate:       data[11].(float64),
-								Period:     int64(data[12].(float64)),
-								Opened:     int64(data[13].(float64)),
-								LastPayout: int64(data[14].(float64)),
-								Notify:     data[15].(float64) == 1,
-								Hidden:     data[16].(float64) == 1,
-								Insure:     data[17].(float64) == 1,
-								Renew:      data[18].(float64) == 1,
-								RateReal:   data[19].(float64),
-								NoClose:    data[20].(float64) == 1,
-							}
-							snapshot = append(snapshot, credit)
-						}
-						b.Websocket.DataHandler <- snapshot
-					}
-				}
-			case wsFundingLoanNew, wsFundingLoanUpdate, wsFundingLoanCancel:
-				if data, ok := d[2].([]interface{}); ok && len(data) > 0 {
-					b.Websocket.DataHandler <- WsCredit{
-						ID:         int64(data[0].(float64)),
-						Symbol:     data[1].(string),
-						Side:       data[2].(string),
-						Created:    int64(data[3].(float64)),
-						Updated:    int64(data[4].(float64)),
-						Amount:     data[5].(float64),
-						Flags:      data[6].(string),
-						Status:     data[7].(string),
-						Rate:       data[11].(float64),
-						Period:     int64(data[12].(float64)),
-						Opened:     int64(data[13].(float64)),
-						LastPayout: int64(data[14].(float64)),
-						Notify:     data[15].(float64) == 1,
-						Hidden:     data[16].(float64) == 1,
-						Insure:     data[17].(float64) == 1,
-						Renew:      data[18].(float64) == 1,
-						RateReal:   data[19].(float64),
-						NoClose:    data[20].(float64) == 1,
-					}
-				}
-			case wsWalletSnapshot:
-				var snapshot []WsWallet
-				if snapBundle, ok := d[2].([]interface{}); ok && len(snapBundle) > 0 {
-					if _, ok := snapBundle[0].([]interface{}); ok {
-						for i := range snapBundle {
-							data := snapBundle[i].([]interface{})
-							var balanceAvailable float64
-							if _, ok := data[4].(float64); ok {
-								balanceAvailable = data[4].(float64)
-							}
-							wallet := WsWallet{
-								Type:              data[0].(string),
-								Currency:          data[1].(string),
-								Balance:           data[2].(float64),
-								UnsettledInterest: data[3].(float64),
-								BalanceAvailable:  balanceAvailable,
-							}
-							snapshot = append(snapshot, wallet)
-						}
-						b.Websocket.DataHandler <- snapshot
-					}
-				}
-			case wsWalletUpdate:
-				if data, ok := d[2].([]interface{}); ok && len(data) > 0 {
-					var balanceAvailable float64
-					if _, ok := data[4].(float64); ok {
-						balanceAvailable = data[4].(float64)
-					}
-					b.Websocket.DataHandler <- WsWallet{
-						Type:              data[0].(string),
-						Currency:          data[1].(string),
-						Balance:           data[2].(float64),
-						UnsettledInterest: data[3].(float64),
-						BalanceAvailable:  balanceAvailable,
-					}
-				}
-			case wsBalanceUpdate:
-				if data, ok := d[2].([]interface{}); ok && len(data) > 0 {
-					b.Websocket.DataHandler <- WsBalanceInfo{
-						TotalAssetsUnderManagement: data[0].(float64),
-						NetAssetsUnderManagement:   data[1].(float64),
-					}
-				}
-			case wsMarginInfoUpdate:
-				if data, ok := d[2].([]interface{}); ok && len(data) > 0 {
-					if data[0].(string) == "base" {
-						if infoBase, ok := d[2].([]interface{}); ok && len(infoBase) > 0 {
-							baseData := data[1].([]interface{})
-							b.Websocket.DataHandler <- WsMarginInfoBase{
-								UserProfitLoss: baseData[0].(float64),
-								UserSwaps:      baseData[1].(float64),
-								MarginBalance:  baseData[2].(float64),
-								MarginNet:      baseData[3].(float64),
-							}
-						}
-					}
-				}
-			case wsFundingInfoUpdate:
-				if data, ok := d[2].([]interface{}); ok && len(data) > 0 {
-					if data[0].(string) == "sym" {
-						symbolData := data[1].([]interface{})
-						b.Websocket.DataHandler <- WsFundingInfo{
-							YieldLoan:    symbolData[0].(float64),
-							YieldLend:    symbolData[1].(float64),
-							DurationLoan: symbolData[2].(float64),
-							DurationLend: symbolData[3].(float64),
-						}
-					}
-				}
-			case wsFundingTradeExecuted, wsFundingTradeUpdate:
-				if data, ok := d[2].([]interface{}); ok && len(data) > 0 {
-					b.Websocket.DataHandler <- WsFundingTrade{
-						ID:         int64(data[0].(float64)),
-						Symbol:     data[1].(string),
-						MTSCreated: int64(data[2].(float64)),
-						OfferID:    int64(data[3].(float64)),
-						Amount:     data[4].(float64),
-						Rate:       data[5].(float64),
-						Period:     int64(data[6].(float64)),
-						Maker:      data[7].(float64) == 1,
-					}
-				}
-			default:
-				b.Websocket.DataHandler <- stream.UnhandledMessageWarning{
-					Message: b.Name + stream.UnhandledMessage + string(respRaw),
-				}
-				return nil
+				return fmt.Errorf("%s - unhandled error message: %v", e.Name,
+					notification[6])
 			}
 		}
 	}
 	return nil
 }
 
-func (b *Bitfinex) wsHandleFundingOffer(data []interface{}) {
-	var fo WsFundingOffer
-	if data[0] != nil {
-		fo.ID = int64(data[0].(float64))
+func (e *Exchange) handleWSPositionSnapshot(ctx context.Context, d []any) error {
+	snapBundle, ok := d[2].([]any)
+	if !ok {
+		return common.GetTypeAssertError("[]any", d[2], "positionSnapshotBundle")
 	}
-	if data[1] != nil {
-		fo.Symbol = data[1].(string)[1:]
+	if len(snapBundle) == 0 {
+		return nil
 	}
-	if data[2] != nil {
-		fo.Created = int64(data[2].(float64))
+	snapshot := make([]WebsocketPosition, len(snapBundle))
+	for i := range snapBundle {
+		positionData, ok := snapBundle[i].([]any)
+		if !ok {
+			return common.GetTypeAssertError("[]any", snapBundle[i], "positionSnapshot")
+		}
+		var position WebsocketPosition
+		if position.Pair, ok = positionData[0].(string); !ok {
+			return errors.New("unable to type assert position snapshot pair")
+		}
+		if position.Status, ok = positionData[1].(string); !ok {
+			return errors.New("unable to type assert position snapshot status")
+		}
+		if position.Amount, ok = positionData[2].(float64); !ok {
+			return errors.New("unable to type assert position snapshot amount")
+		}
+		if position.Price, ok = positionData[3].(float64); !ok {
+			return errors.New("unable to type assert position snapshot price")
+		}
+		if position.MarginFunding, ok = positionData[4].(float64); !ok {
+			return errors.New("unable to type assert position snapshot margin funding")
+		}
+		marginFundingType, ok := positionData[5].(float64)
+		if !ok {
+			return errors.New("unable to type assert position snapshot margin funding type")
+		}
+		position.MarginFundingType = int64(marginFundingType)
+		if position.ProfitLoss, ok = positionData[6].(float64); !ok {
+			return errors.New("unable to type assert position snapshot profit loss")
+		}
+		if position.ProfitLossPercent, ok = positionData[7].(float64); !ok {
+			return errors.New("unable to type assert position snapshot profit loss percent")
+		}
+		if position.LiquidationPrice, ok = positionData[8].(float64); !ok {
+			return errors.New("unable to type assert position snapshot liquidation price")
+		}
+		if position.Leverage, ok = positionData[9].(float64); !ok {
+			return errors.New("unable to type assert position snapshot leverage")
+		}
+		snapshot[i] = position
 	}
-	if data[3] != nil {
-		fo.Updated = int64(data[0].(float64))
-	}
-	if data[15] != nil {
-		fo.Period = int64(data[15].(float64))
-	}
-	if data[4] != nil {
-		fo.Amount = data[4].(float64)
-	}
-	if data[5] != nil {
-		fo.OriginalAmount = data[5].(float64)
-	}
-	if data[6] != nil {
-		fo.Type = data[6].(string)
-	}
-	if data[9] != nil {
-		fo.Flags = data[9].(float64)
-	}
-	if data[9] != nil {
-		fo.Status = data[10].(string)
-	}
-	if data[9] != nil {
-		fo.Rate = data[14].(float64)
-	}
-	if data[16] != nil {
-		fo.Notify = data[16].(float64) == 1
-	}
-	if data[17] != nil {
-		fo.Hidden = data[17].(float64) == 1
-	}
-	if data[18] != nil {
-		fo.Insure = data[18].(float64) == 1
-	}
-	if data[19] != nil {
-		fo.Renew = data[19].(float64) == 1
-	}
-	if data[20] != nil {
-		fo.RateReal = data[20].(float64)
-	}
-
-	b.Websocket.DataHandler <- fo
+	return e.Websocket.DataHandler.Send(ctx, snapshot)
 }
 
-func (b *Bitfinex) wsHandleOrder(data []interface{}) {
-	var od order.Detail
-	var err error
-	od.Exchange = b.Name
+func (e *Exchange) handleWSPositionUpdate(ctx context.Context, d []any) error {
+	positionData, ok := d[2].([]any)
+	if !ok {
+		return common.GetTypeAssertError("[]any", d[2], "positionUpdate")
+	}
+	if len(positionData) == 0 {
+		return nil
+	}
+	var position WebsocketPosition
+	if position.Pair, ok = positionData[0].(string); !ok {
+		return errors.New("unable to type assert position pair")
+	}
+	if position.Status, ok = positionData[1].(string); !ok {
+		return errors.New("unable to type assert position status")
+	}
+	if position.Amount, ok = positionData[2].(float64); !ok {
+		return errors.New("unable to type assert position amount")
+	}
+	if position.Price, ok = positionData[3].(float64); !ok {
+		return errors.New("unable to type assert position price")
+	}
+	if position.MarginFunding, ok = positionData[4].(float64); !ok {
+		return errors.New("unable to type assert margin position funding")
+	}
+	marginFundingType, ok := positionData[5].(float64)
+	if !ok {
+		return errors.New("unable to type assert position margin funding type")
+	}
+	position.MarginFundingType = int64(marginFundingType)
+	if position.ProfitLoss, ok = positionData[6].(float64); !ok {
+		return errors.New("unable to type assert position profit loss")
+	}
+	if position.ProfitLossPercent, ok = positionData[7].(float64); !ok {
+		return errors.New("unable to type assert position profit loss percent")
+	}
+	if position.LiquidationPrice, ok = positionData[8].(float64); !ok {
+		return errors.New("unable to type assert position liquidation price")
+	}
+	if position.Leverage, ok = positionData[9].(float64); !ok {
+		return errors.New("unable to type assert position leverage")
+	}
+	return e.Websocket.DataHandler.Send(ctx, position)
+}
+
+func (e *Exchange) handleWSMyTradeUpdate(ctx context.Context, d []any, eventType string) error {
+	tradeData, ok := d[2].([]any)
+	if !ok {
+		return common.GetTypeAssertError("[]any", d[2], "tradeUpdate")
+	}
+	if len(tradeData) <= 4 {
+		return nil
+	}
+	var tData WebsocketTradeData
+	var tradeID float64
+	if tradeID, ok = tradeData[0].(float64); !ok {
+		return errors.New("unable to type assert trade ID")
+	}
+	tData.TradeID = int64(tradeID)
+	if tData.Pair, ok = tradeData[1].(string); !ok {
+		return errors.New("unable to type assert trade pair")
+	}
+	var timestamp float64
+	if timestamp, ok = tradeData[2].(float64); !ok {
+		return errors.New("unable to type assert trade timestamp")
+	}
+	tData.Timestamp = types.Time(time.UnixMilli(int64(timestamp)))
+	var orderID float64
+	if orderID, ok = tradeData[3].(float64); !ok {
+		return errors.New("unable to type assert trade order ID")
+	}
+	tData.OrderID = int64(orderID)
+	if tData.AmountExecuted, ok = tradeData[4].(float64); !ok {
+		return errors.New("unable to type assert trade amount executed")
+	}
+	if tData.PriceExecuted, ok = tradeData[5].(float64); !ok {
+		return errors.New("unable to type assert trade price executed")
+	}
+	if tData.OrderType, ok = tradeData[6].(string); !ok {
+		return errors.New("unable to type assert trade order type")
+	}
+	if tData.OrderPrice, ok = tradeData[7].(float64); !ok {
+		return errors.New("unable to type assert trade order type")
+	}
+	var maker float64
+	if maker, ok = tradeData[8].(float64); !ok {
+		return errors.New("unable to type assert trade maker")
+	}
+	tData.Maker = maker == 1
+	if eventType == "tu" {
+		if tData.Fee, ok = tradeData[9].(float64); !ok {
+			return errors.New("unable to type assert trade fee")
+		}
+		if tData.FeeCurrency, ok = tradeData[10].(string); !ok {
+			return errors.New("unable to type assert trade fee currency")
+		}
+	}
+	return e.Websocket.DataHandler.Send(ctx, tData)
+}
+
+func wsHandleFundingOffer(data []any, includeRateReal bool) (*WsFundingOffer, error) {
+	var offer WsFundingOffer
+	var ok bool
 	if data[0] != nil {
-		od.ID = strconv.FormatFloat(data[0].(float64), 'f', -1, 64)
+		var offerID float64
+		if offerID, ok = data[0].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer ID")
+		}
+		offer.ID = int64(offerID)
 	}
-	if data[16] != nil {
-		od.Price = data[16].(float64)
-	}
-	if data[7] != nil {
-		od.Amount = data[7].(float64)
-	}
-	if data[6] != nil {
-		od.RemainingAmount = data[6].(float64)
-	}
-	if data[7] != nil && data[6] != nil {
-		od.ExecutedAmount = data[7].(float64) - data[6].(float64)
-	}
-	if data[4] != nil {
-		od.Date = time.Unix(int64(data[4].(float64))*1000, 0)
-	}
-	if data[5] != nil {
-		od.LastUpdated = time.Unix(int64(data[5].(float64))*1000, 0)
+	if data[1] != nil {
+		if offer.Symbol, ok = data[1].(string); !ok {
+			return nil, errors.New("unable to type assert funding offer symbol")
+		}
 	}
 	if data[2] != nil {
-		od.Pair, od.AssetType, err = b.GetRequestFormattedPairAndAssetType(data[3].(string)[1:])
-		if err != nil {
-			b.Websocket.DataHandler <- err
-			return
+		var created float64
+		if created, ok = data[2].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer created")
+		}
+		offer.Created = time.UnixMilli(int64(created))
+	}
+	if data[3] != nil {
+		var updated float64
+		if updated, ok = data[3].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer updated")
+		}
+		offer.Updated = time.UnixMilli(int64(updated))
+	}
+	if data[4] != nil {
+		if offer.Amount, ok = data[4].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer amount")
+		}
+	}
+	if data[5] != nil {
+		if offer.OriginalAmount, ok = data[5].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer original amount")
+		}
+	}
+	if data[6] != nil {
+		if offer.Type, ok = data[6].(string); !ok {
+			return nil, errors.New("unable to type assert funding offer type")
+		}
+	}
+	if data[9] != nil {
+		if offer.Flags, ok = data[9].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer flags")
+		}
+	}
+	if data[10] != nil {
+		if offer.Status, ok = data[10].(string); !ok {
+			return nil, errors.New("unable to type assert funding offer status")
+		}
+	}
+	if data[14] != nil {
+		if offer.Rate, ok = data[14].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer rate")
+		}
+	}
+	if data[15] != nil {
+		var period float64
+		if period, ok = data[15].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer period")
+		}
+		offer.Period = int64(period)
+	}
+	if data[16] != nil {
+		var notify float64
+		if notify, ok = data[16].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer notify")
+		}
+		offer.Notify = notify == 1
+	}
+	if data[17] != nil {
+		var hidden float64
+		if hidden, ok = data[17].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer hidden")
+		}
+		offer.Hidden = hidden == 1
+	}
+	if data[19] != nil {
+		var renew float64
+		if renew, ok = data[19].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer renew")
+		}
+		offer.Renew = renew == 1
+	}
+	if includeRateReal && data[20] != nil {
+		if offer.RateReal, ok = data[20].(float64); !ok {
+			return nil, errors.New("unable to type assert funding offer rate real")
+		}
+	}
+	return &offer, nil
+}
+
+func wsHandleFundingCreditLoanData(data []any, includePositionPair bool) (*WsCredit, error) {
+	var credit WsCredit
+	var ok bool
+	if data[0] != nil {
+		var id float64
+		if id, ok = data[0].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit ID")
+		}
+		credit.ID = int64(id)
+	}
+	if data[1] != nil {
+		if credit.Symbol, ok = data[1].(string); !ok {
+			return nil, errors.New("unable to type assert funding credit symbol")
+		}
+	}
+	if data[2] != nil {
+		var side float64
+		if side, ok = data[2].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit side")
+		}
+		credit.Side = int8(side)
+	}
+	if data[3] != nil {
+		var created float64
+		if created, ok = data[3].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit created")
+		}
+		credit.Created = time.UnixMilli(int64(created))
+	}
+	if data[4] != nil {
+		var updated float64
+		if updated, ok = data[4].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit updated")
+		}
+		credit.Updated = time.UnixMilli(int64(updated))
+	}
+	if data[5] != nil {
+		if credit.Amount, ok = data[5].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit amount")
+		}
+	}
+	if data[6] != nil {
+		credit.Flags = data[6]
+	}
+	if data[7] != nil {
+		if credit.Status, ok = data[7].(string); !ok {
+			return nil, errors.New("unable to type assert funding credit status")
+		}
+	}
+	if data[11] != nil {
+		if credit.Rate, ok = data[11].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit rate")
+		}
+	}
+	if data[12] != nil {
+		var period float64
+		if period, ok = data[12].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit period")
+		}
+		credit.Period = int64(period)
+	}
+	if data[13] != nil {
+		var opened float64
+		if opened, ok = data[13].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit opened")
+		}
+		credit.Opened = time.UnixMilli(int64(opened))
+	}
+	if data[14] != nil {
+		var lastPayout float64
+		if lastPayout, ok = data[14].(float64); !ok {
+			return nil, errors.New("unable to type assert last funding credit payout")
+		}
+		credit.LastPayout = time.UnixMilli(int64(lastPayout))
+	}
+	if data[15] != nil {
+		var notify float64
+		if notify, ok = data[15].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit notify")
+		}
+		credit.Notify = notify == 1
+	}
+	if data[16] != nil {
+		var hidden float64
+		if hidden, ok = data[16].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit hidden")
+		}
+		credit.Hidden = hidden == 1
+	}
+	if data[18] != nil {
+		var renew float64
+		if renew, ok = data[18].(float64); !ok {
+			return nil, errors.New("unable to type assert funding credit renew")
+		}
+		credit.Renew = renew == 1
+	}
+	if data[19] != nil {
+		if credit.RateReal, ok = data[19].(float64); !ok {
+			return nil, errors.New("unable to type assert rate funding credit real")
+		}
+	}
+	if data[20] != nil {
+		var noClose float64
+		if noClose, ok = data[20].(float64); !ok {
+			return nil, errors.New("unable to type assert no funding credit close")
+		}
+		credit.NoClose = noClose == 1
+	}
+	if includePositionPair {
+		if data[21] != nil {
+			if credit.PositionPair, ok = data[21].(string); !ok {
+				return nil, errors.New("unable to type assert funding credit position pair")
+			}
+		}
+	}
+	return &credit, nil
+}
+
+func (e *Exchange) wsHandleOrder(ctx context.Context, data []any) error {
+	var od order.Detail
+	var err error
+	od.Exchange = e.Name
+	if data[0] != nil {
+		if id, ok := data[0].(float64); ok {
+			od.OrderID = strconv.FormatFloat(id, 'f', -1, 64)
+		}
+	}
+	if data[16] != nil {
+		if price, ok := data[16].(float64); ok {
+			od.Price = price
+		}
+	}
+	if data[7] != nil {
+		if amount, ok := data[7].(float64); ok {
+			od.Amount = amount
+		}
+	}
+	if data[6] != nil {
+		if remainingAmount, ok := data[6].(float64); ok {
+			od.RemainingAmount = remainingAmount
+		}
+	}
+	if data[7] != nil && data[6] != nil {
+		if executedAmount, ok := data[7].(float64); ok {
+			od.ExecutedAmount = executedAmount - od.RemainingAmount
+		}
+	}
+	if data[4] != nil {
+		if date, ok := data[4].(float64); ok {
+			od.Date = time.Unix(int64(date)*1000, 0)
+		}
+	}
+	if data[5] != nil {
+		if lastUpdated, ok := data[5].(float64); ok {
+			od.LastUpdated = time.Unix(int64(lastUpdated)*1000, 0)
+		}
+	}
+	if data[2] != nil {
+		if p, ok := data[3].(string); ok {
+			od.Pair, od.AssetType, err = e.GetRequestFormattedPairAndAssetType(p[1:])
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if data[8] != nil {
-		oType, err := order.StringToOrderType(data[8].(string))
-		if err != nil {
-			b.Websocket.DataHandler <- order.ClassificationError{
-				Exchange: b.Name,
-				OrderID:  od.ID,
-				Err:      err,
+		if ordType, ok := data[8].(string); ok {
+			oType, err := order.StringToOrderType(ordType)
+			if err != nil {
+				return err
 			}
+			od.Type = oType
 		}
-		od.Type = oType
 	}
 	if data[13] != nil {
-		oStatus, err := order.StringToOrderStatus(data[13].(string))
-		if err != nil {
-			b.Websocket.DataHandler <- order.ClassificationError{
-				Exchange: b.Name,
-				OrderID:  od.ID,
-				Err:      err,
+		if combinedStatus, ok := data[13].(string); ok {
+			statusParts := strings.Split(combinedStatus, " @ ")
+			oStatus, err := order.StringToOrderStatus(statusParts[0])
+			if err != nil {
+				return err
 			}
+			od.Status = oStatus
 		}
-		od.Status = oStatus
 	}
-	b.Websocket.DataHandler <- &od
+	return e.Websocket.DataHandler.Send(ctx, &od)
 }
 
-// WsInsertSnapshot add the initial orderbook snapshot when subscribed to a
-// channel
-func (b *Bitfinex) WsInsertSnapshot(p currency.Pair, assetType asset.Item, books []WebsocketBook, fundingRate bool) error {
+// WsInsertSnapshot add the initial orderbook snapshot when subscribed to a channel
+func (e *Exchange) WsInsertSnapshot(ctx context.Context, p currency.Pair, assetType asset.Item, books []WebsocketBook, fundingRate bool) error {
 	if len(books) == 0 {
-		return errors.New("bitfinex.go error - no orderbooks submitted")
+		return errors.New("no orderbooks submitted")
 	}
-	var book orderbook.Base
+	var book orderbook.Book
+	book.Bids = make(orderbook.Levels, 0, len(books))
+	book.Asks = make(orderbook.Levels, 0, len(books))
 	for i := range books {
-		item := orderbook.Item{
+		item := orderbook.Level{
 			ID:     books[i].ID,
 			Amount: books[i].Amount,
 			Price:  books[i].Price,
@@ -964,20 +1500,33 @@ func (b *Bitfinex) WsInsertSnapshot(p currency.Pair, assetType asset.Item, books
 
 	book.Asset = assetType
 	book.Pair = p
-	book.Exchange = b.Name
+	book.Exchange = e.Name
 	book.PriceDuplication = true
 	book.IsFundingRate = fundingRate
-	book.VerifyOrderbook = b.CanVerifyOrderbook
-	return b.Websocket.Orderbook.LoadSnapshot(&book)
+	book.ValidateOrderbook = e.ValidateOrderbook
+	book.LastUpdated = time.Now() // Not included in snapshot
+	return e.Websocket.Orderbook.LoadSnapshot(ctx, &book)
 }
 
 // WsUpdateOrderbook updates the orderbook list, removing and adding to the
 // orderbook sides
-func (b *Bitfinex) WsUpdateOrderbook(p currency.Pair, assetType asset.Item, book []WebsocketBook, channelID int, sequenceNo int64, fundingRate bool) error {
-	orderbookUpdate := buffer.Update{Asset: assetType, Pair: p}
+func (e *Exchange) WsUpdateOrderbook(ctx context.Context, c *subscription.Subscription, p currency.Pair, assetType asset.Item, book []WebsocketBook, sequenceNo int64, fundingRate bool) error {
+	if c == nil {
+		return fmt.Errorf("%w: Subscription param", common.ErrNilPointer)
+	}
+	if len(c.Pairs) != 1 {
+		return subscription.ErrNotSinglePair
+	}
+	orderbookUpdate := orderbook.Update{
+		Asset:      assetType,
+		Pair:       p,
+		Bids:       make([]orderbook.Level, 0, len(book)),
+		Asks:       make([]orderbook.Level, 0, len(book)),
+		UpdateTime: time.Now(), // Not included in update
+	}
 
 	for i := range book {
-		item := orderbook.Item{
+		item := orderbook.Level{
 			ID:     book[i].ID,
 			Amount: book[i].Amount,
 			Price:  book[i].Price,
@@ -985,7 +1534,7 @@ func (b *Bitfinex) WsUpdateOrderbook(p currency.Pair, assetType asset.Item, book
 		}
 
 		if book[i].Price > 0 {
-			orderbookUpdate.Action = buffer.UpdateInsert
+			orderbookUpdate.Action = orderbook.UpdateOrInsertAction
 			if fundingRate {
 				if book[i].Amount < 0 {
 					item.Amount *= -1
@@ -1002,7 +1551,7 @@ func (b *Bitfinex) WsUpdateOrderbook(p currency.Pair, assetType asset.Item, book
 				}
 			}
 		} else {
-			orderbookUpdate.Action = buffer.Delete
+			orderbookUpdate.Action = orderbook.DeleteAction
 			if fundingRate {
 				if book[i].Amount == 1 {
 					// delete bid
@@ -1023,19 +1572,24 @@ func (b *Bitfinex) WsUpdateOrderbook(p currency.Pair, assetType asset.Item, book
 		}
 	}
 
+	chanID, ok := c.Key.(int)
+	if !ok {
+		return common.GetTypeAssertError("int", c.Key, "ChanID") // Should be impossible
+	}
+
 	cMtx.Lock()
-	checkme := checksumStore[channelID]
+	checkme := checksumStore[chanID]
 	if checkme == nil {
 		cMtx.Unlock()
-		return b.Websocket.Orderbook.Update(&orderbookUpdate)
+		return e.Websocket.Orderbook.Update(ctx, &orderbookUpdate)
 	}
-	checksumStore[channelID] = nil
+	checksumStore[chanID] = nil
 	cMtx.Unlock()
 
 	if checkme.Sequence+1 == sequenceNo {
 		// Sequence numbers get dropped, if checksum is not in line with
 		// sequence, do not check.
-		ob, err := b.Websocket.Orderbook.GetOrderbook(p, assetType)
+		ob, err := e.Websocket.Orderbook.GetOrderbook(p, assetType)
 		if err != nil {
 			return fmt.Errorf("cannot calculate websocket checksum: book not found for %s %s %w",
 				p,
@@ -1043,318 +1597,435 @@ func (b *Bitfinex) WsUpdateOrderbook(p currency.Pair, assetType asset.Item, book
 				err)
 		}
 
-		err = validateCRC32(ob, checkme.Token)
-		if err != nil {
+		if err = validateCRC32(ob, checkme.Token); err != nil {
+			log.Errorf(log.WebsocketMgr, "%s websocket orderbook update error, will resubscribe orderbook: %v", e.Name, err)
+			if e2 := e.resubOrderbook(ctx, c); e2 != nil {
+				log.Errorf(log.WebsocketMgr, "%s error resubscribing orderbook: %v", e.Name, e2)
+			}
 			return err
 		}
 	}
 
-	return b.Websocket.Orderbook.Update(&orderbookUpdate)
+	return e.Websocket.Orderbook.Update(ctx, &orderbookUpdate)
 }
 
-// GenerateDefaultSubscriptions Adds default subscriptions to websocket to be handled by ManageSubscriptions()
-func (b *Bitfinex) GenerateDefaultSubscriptions() ([]stream.ChannelSubscription, error) {
-	var channels = []string{
-		wsBook,
-		wsTrades,
-		wsTicker,
-		wsCandles,
+// resubOrderbook resubscribes the orderbook after a consistency error, probably a failed checksum,
+// which forces a fresh snapshot. If we don't do this the orderbook will keep erroring and drifting.
+// Flushing the orderbook happens immediately, but the ReSub itself is a go routine to avoid blocking the WS data channel
+func (e *Exchange) resubOrderbook(ctx context.Context, c *subscription.Subscription) error {
+	if c == nil {
+		return fmt.Errorf("%w: Subscription param", common.ErrNilPointer)
+	}
+	if len(c.Pairs) != 1 {
+		return subscription.ErrNotSinglePair
+	}
+	if err := e.Websocket.Orderbook.InvalidateOrderbook(c.Pairs[0], c.Asset); err != nil {
+		// Non-fatal error
+		log.Errorf(log.ExchangeSys, "%s error flushing orderbook: %v", e.Name, err)
 	}
 
-	var subscriptions []stream.ChannelSubscription
-	assets := b.GetAssetTypes()
-	for i := range assets {
-		enabledPairs, err := b.GetEnabledPairs(assets[i])
-		if err != nil {
-			return nil, err
+	// Resub will block so we have to do this in a goro
+	go func() {
+		if err := e.Websocket.ResubscribeToChannel(ctx, e.Websocket.Conn, c); err != nil {
+			log.Errorf(log.ExchangeSys, "%s error resubscribing orderbook: %v", e.Name, err)
 		}
+	}()
 
-		for j := range channels {
-			for k := range enabledPairs {
-				params := make(map[string]interface{})
-				if channels[j] == wsBook {
-					params["prec"] = "R0"
-					params["len"] = "100"
-				}
-
-				if channels[j] == wsCandles {
-					// TODO: Add ability to select timescale && funding period
-					var fundingPeriod string
-					prefix := "t"
-					if assets[i] == asset.MarginFunding {
-						prefix = "f"
-						fundingPeriod = ":p30"
-					}
-					params["key"] = "trade:1m:" + prefix + enabledPairs[k].String() + fundingPeriod
-				} else {
-					params["symbol"] = enabledPairs[k].String()
-				}
-
-				subscriptions = append(subscriptions, stream.ChannelSubscription{
-					Channel:  channels[j],
-					Currency: enabledPairs[k],
-					Params:   params,
-					Asset:    assets[i],
-				})
-			}
-		}
-	}
-
-	return subscriptions, nil
+	return nil
 }
 
-// Subscribe sends a websocket message to receive data from the channel
-func (b *Bitfinex) Subscribe(channelsToSubscribe []stream.ChannelSubscription) error {
-	var errs common.Errors
-	checksum := make(map[string]interface{})
-	checksum["event"] = "conf"
-	checksum["flags"] = bitfinexChecksumFlag + bitfinexWsSequenceFlag
-	err := b.Websocket.Conn.SendJSONMessage(checksum)
+// generateSubscriptions returns a list of subscriptions from the configured subscriptions feature
+func (e *Exchange) generateSubscriptions() (subscription.List, error) {
+	return e.Features.Subscriptions.ExpandTemplates(e)
+}
+
+// GetSubscriptionTemplate returns a subscription channel template
+func (e *Exchange) GetSubscriptionTemplate(_ *subscription.Subscription) (*template.Template, error) {
+	return template.New("master.tmpl").Funcs(sprig.FuncMap()).Funcs(template.FuncMap{
+		"subToMap": subToMap,
+		"removeSpotFromMargin": func(ap map[asset.Item]currency.Pairs) string {
+			spotPairs, _ := e.GetEnabledPairs(asset.Spot)
+			return removeSpotFromMargin(ap, spotPairs)
+		},
+	}).Parse(subTplText)
+}
+
+// ConfigureWS to send checksums and sequence numbers
+func (e *Exchange) ConfigureWS(ctx context.Context) error {
+	return e.Websocket.Conn.SendJSONMessage(ctx, request.Unset, map[string]any{
+		"event": "conf",
+		"flags": bitfinexChecksumFlag + bitfinexWsSequenceFlag,
+	})
+}
+
+// Subscribe sends a websocket message to receive data from channels
+func (e *Exchange) Subscribe(subs subscription.List) error {
+	ctx := context.TODO()
+	var err error
+	if subs, err = subs.ExpandTemplates(e); err != nil {
+		return err
+	}
+	return e.ParallelChanOp(ctx, subs, e.subscribeToChan, 1)
+}
+
+// Unsubscribe sends a websocket message to stop receiving data from channels
+func (e *Exchange) Unsubscribe(subs subscription.List) error {
+	ctx := context.TODO()
+	var err error
+	if subs, err = subs.ExpandTemplates(e); err != nil {
+		return err
+	}
+	return e.ParallelChanOp(ctx, subs, e.unsubscribeFromChan, 1)
+}
+
+// subscribeToChan handles a single subscription and parses the result
+// on success it adds the subscription to the websocket
+func (e *Exchange) subscribeToChan(ctx context.Context, subs subscription.List) error {
+	if len(subs) != 1 {
+		return subscription.ErrNotSinglePair
+	}
+
+	s := subs[0]
+	req := map[string]any{
+		"event": "subscribe",
+	}
+	if err := json.Unmarshal([]byte(s.QualifiedChannel), &req); err != nil {
+		return err
+	}
+
+	// subId is a single round-trip identifier that provides linking sub requests to chanIDs
+	// Although docs only mention subId for wsBookChannel, it works for all chans
+	subID := e.MessageID()
+	req["subId"] = subID
+
+	// Add a temporary Key so we can find this Sub when we get the resp without delay or context switch
+	// Otherwise we might drop the first messages after the subscribed resp
+	s.Key = subID // Note subID string type avoids conflicts with later chanID key
+	if err := e.Websocket.AddSubscriptions(e.Websocket.Conn, s); err != nil {
+		return fmt.Errorf("%w Channel: %s Pair: %s", err, s.Channel, s.Pairs)
+	}
+
+	// Always remove the temporary subscription keyed by subID
+	defer func() {
+		_ = e.Websocket.RemoveSubscriptions(e.Websocket.Conn, s)
+	}()
+
+	respRaw, err := e.Websocket.Conn.SendMessageReturnResponse(ctx, request.Unset, "subscribe:"+subID, req)
+	if err != nil {
+		return fmt.Errorf("%w: Channel: %s Pair: %s", err, s.Channel, s.Pairs)
+	}
+
+	if err = e.getErrResp(respRaw); err != nil {
+		return fmt.Errorf("%w: Channel: %s Pair: %s", err, s.Channel, s.Pairs)
+	}
+
+	return nil
+}
+
+// unsubscribeFromChan sends a websocket message to stop receiving data from a channel
+func (e *Exchange) unsubscribeFromChan(ctx context.Context, subs subscription.List) error {
+	if len(subs) != 1 {
+		return errors.New("subscription batching limited to 1")
+	}
+	s := subs[0]
+	chanID, ok := s.Key.(int)
+	if !ok {
+		return common.GetTypeAssertError("int", s.Key, "subscription.Key")
+	}
+
+	req := map[string]any{
+		"event":  "unsubscribe",
+		"chanId": chanID,
+	}
+
+	respRaw, err := e.Websocket.Conn.SendMessageReturnResponse(ctx, request.Unset, "unsubscribe:"+strconv.Itoa(chanID), req)
 	if err != nil {
 		return err
 	}
 
-	for i := range channelsToSubscribe {
-		req := make(map[string]interface{})
-		req["event"] = "subscribe"
-		req["channel"] = channelsToSubscribe[i].Channel
-
-		for k, v := range channelsToSubscribe[i].Params {
-			req[k] = v
-		}
-
-		err := b.Websocket.Conn.SendJSONMessage(req)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		b.Websocket.AddSuccessfulSubscriptions(channelsToSubscribe[i])
+	if err := e.getErrResp(respRaw); err != nil {
+		return fmt.Errorf("%w: ChanId: %v", err, chanID)
 	}
-	if errs != nil {
-		return errs
-	}
-	return nil
+
+	return e.Websocket.RemoveSubscriptions(e.Websocket.Conn, s)
 }
 
-// Unsubscribe sends a websocket message to stop receiving data from the channel
-func (b *Bitfinex) Unsubscribe(channelsToUnsubscribe []stream.ChannelSubscription) error {
-	var errs common.Errors
-	for i := range channelsToUnsubscribe {
-		req := make(map[string]interface{})
-		req["event"] = "unsubscribe"
-		req["channel"] = channelsToUnsubscribe[i].Channel
-
-		for k, v := range channelsToUnsubscribe[i].Params {
-			req[k] = v
-		}
-
-		err := b.Websocket.Conn.SendJSONMessage(req)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		b.Websocket.RemoveSuccessfulUnsubscriptions(channelsToUnsubscribe[i])
+// getErrResp takes a json response string and looks for an error event type
+// If found it parses the error code and message as a wrapped error and returns it
+// It might log parsing errors about the nature of the error
+// If the error message is not defined it will return a wrapped common.ErrUnknownError
+func (e *Exchange) getErrResp(resp []byte) error {
+	event, err := jsonparser.GetUnsafeString(resp, "event")
+	if err != nil {
+		return fmt.Errorf("%w 'event': %w from message: %s", common.ErrParsingWSField, err, resp)
 	}
-	if errs != nil {
-		return errs
+	if event != "error" {
+		return nil
 	}
-	return nil
+	errCode, err := jsonparser.GetInt(resp, "code")
+	if err != nil {
+		log.Errorf(log.ExchangeSys, "%s %s 'code': %s from message: %s", e.Name, common.ErrParsingWSField, err, resp)
+	}
+
+	var apiErr error
+	if msg, e2 := jsonparser.GetString(resp, "msg"); e2 != nil {
+		log.Errorf(log.ExchangeSys, "%s %s 'msg': %s from message: %s", e.Name, common.ErrParsingWSField, e2, resp)
+		apiErr = common.ErrUnknownError
+	} else {
+		apiErr = errors.New(msg)
+	}
+	return fmt.Errorf("%w (code: %d)", apiErr, errCode)
 }
 
-// WsSendAuth sends a autheticated event payload
-func (b *Bitfinex) WsSendAuth() error {
-	if !b.GetAuthenticatedAPISupport(exchange.WebsocketAuthentication) {
-		return fmt.Errorf("%v AuthenticatedWebsocketAPISupport not enabled",
-			b.Name)
+// WsSendAuth sends a authenticated event payload
+func (e *Exchange) WsSendAuth(ctx context.Context) error {
+	creds, err := e.GetCredentials(ctx)
+	if err != nil {
+		return err
 	}
+
 	nonce := strconv.FormatInt(time.Now().Unix(), 10)
 	payload := "AUTH" + nonce
-	request := WsAuthRequest{
-		Event:       "auth",
-		APIKey:      b.API.Credentials.Key,
-		AuthPayload: payload,
-		AuthSig: crypto.HexEncodeToString(crypto.GetHMAC(crypto.HashSHA512_384,
-			[]byte(payload),
-			[]byte(b.API.Credentials.Secret))),
-		AuthNonce:     nonce,
-		DeadManSwitch: 0,
-	}
-	err := b.Websocket.AuthConn.SendJSONMessage(request)
+
+	hmac, err := crypto.GetHMAC(crypto.HashSHA512_384, []byte(payload), []byte(creds.Secret))
 	if err != nil {
-		b.Websocket.SetCanUseAuthenticatedEndpoints(false)
 		return err
 	}
-	return nil
-}
 
-// WsAddSubscriptionChannel adds a new subscription channel to the
-// WebsocketSubdChannels map in bitfinex.go (Bitfinex struct)
-func (b *Bitfinex) WsAddSubscriptionChannel(chanID int, channel, pair string) {
-	chanInfo := WebsocketChanInfo{Pair: pair, Channel: channel}
-	b.WebsocketSubdChannels[chanID] = chanInfo
-
-	if b.Verbose {
-		log.Debugf(log.ExchangeSys,
-			"%s Subscribed to Channel: %s Pair: %s ChannelID: %d\n",
-			b.Name,
-			channel,
-			pair,
-			chanID)
-	}
+	return e.Websocket.AuthConn.SendJSONMessage(ctx, request.Unset, WsAuthRequest{
+		Event:         "auth",
+		APIKey:        creds.Key,
+		AuthPayload:   payload,
+		AuthSig:       hex.EncodeToString(hmac),
+		AuthNonce:     nonce,
+		DeadManSwitch: 0,
+	})
 }
 
 // WsNewOrder authenticated new order request
-func (b *Bitfinex) WsNewOrder(data *WsNewOrderRequest) (string, error) {
-	data.CustomID = b.Websocket.AuthConn.GenerateMessageID(false)
-	request := makeRequestInterface(wsOrderNew, data)
-	resp, err := b.Websocket.AuthConn.SendMessageReturnResponse(data.CustomID, request)
+func (e *Exchange) WsNewOrder(ctx context.Context, data *WsNewOrderRequest) (string, error) {
+	data.CustomID = e.MessageSequence()
+	req := makeRequestInterface(wsOrderNew, data)
+	resp, err := e.Websocket.AuthConn.SendMessageReturnResponse(ctx, request.Unset, data.CustomID, req)
 	if err != nil {
 		return "", err
 	}
 	if resp == nil {
-		return "", errors.New(b.Name + " - Order message not returned")
+		return "", errors.New(e.Name + " - Order message not returned")
 	}
-	var respData []interface{}
+	var respData []any
 	err = json.Unmarshal(resp, &respData)
 	if err != nil {
 		return "", err
 	}
-	responseDataDetail := respData[2].([]interface{})
-	responseOrderDetail := responseDataDetail[4].([]interface{})
+
+	if len(respData) < 3 {
+		return "", errors.New("unexpected respData length")
+	}
+	responseDataDetail, ok := respData[2].([]any)
+	if !ok {
+		return "", errors.New("unable to type assert respData")
+	}
+
+	if len(responseDataDetail) < 4 {
+		return "", errors.New("invalid responseDataDetail length")
+	}
+
+	responseOrderDetail, ok := responseDataDetail[4].([]any)
+	if !ok {
+		return "", errors.New("unable to type assert responseOrderDetail")
+	}
 	var orderID string
-	if responseOrderDetail[0] != nil && responseOrderDetail[0].(float64) > 0 {
-		orderID = strconv.FormatFloat(responseOrderDetail[0].(float64), 'f', -1, 64)
+	if responseOrderDetail[0] != nil {
+		if ordID, ordOK := responseOrderDetail[0].(float64); ordOK && ordID > 0 {
+			orderID = strconv.FormatFloat(ordID, 'f', -1, 64)
+		}
 	}
-	errCode := responseDataDetail[6].(string)
-	errorMessage := responseDataDetail[7].(string)
-
+	var errorMessage, errCode string
+	if len(responseDataDetail) > 6 {
+		errCode, ok = responseDataDetail[6].(string)
+		if !ok {
+			return "", errors.New("unable to type assert errCode")
+		}
+	}
+	if len(responseDataDetail) > 7 {
+		errorMessage, ok = responseDataDetail[7].(string)
+		if !ok {
+			return "", errors.New("unable to type assert errorMessage")
+		}
+	}
 	if strings.EqualFold(errCode, wsError) {
-		return orderID, errors.New(b.Name + " - " + errCode + ": " + errorMessage)
+		return orderID, errors.New(e.Name + " - " + errCode + ": " + errorMessage)
 	}
-
 	return orderID, nil
 }
 
 // WsModifyOrder authenticated modify order request
-func (b *Bitfinex) WsModifyOrder(data *WsUpdateOrderRequest) error {
-	request := makeRequestInterface(wsOrderUpdate, data)
-	resp, err := b.Websocket.AuthConn.SendMessageReturnResponse(data.OrderID, request)
+func (e *Exchange) WsModifyOrder(ctx context.Context, data *WsUpdateOrderRequest) error {
+	req := makeRequestInterface(wsOrderUpdate, data)
+	resp, err := e.Websocket.AuthConn.SendMessageReturnResponse(ctx, request.Unset, data.OrderID, req)
 	if err != nil {
 		return err
 	}
 	if resp == nil {
-		return errors.New(b.Name + " - Order message not returned")
+		return errors.New(e.Name + " - Order message not returned")
 	}
 
-	var responseData []interface{}
+	var responseData []any
 	err = json.Unmarshal(resp, &responseData)
 	if err != nil {
 		return err
 	}
-	responseOrderData := responseData[2].([]interface{})
-	errCode := responseOrderData[6].(string)
-	errorMessage := responseOrderData[7].(string)
-	if strings.EqualFold(errCode, wsError) {
-		return errors.New(b.Name + " - " + errCode + ": " + errorMessage)
+	if len(responseData) < 3 {
+		return errors.New("unexpected responseData length")
 	}
-
+	responseOrderData, ok := responseData[2].([]any)
+	if !ok {
+		return errors.New("unable to type assert responseOrderData")
+	}
+	var errorMessage, errCode string
+	if len(responseOrderData) > 6 {
+		errCode, ok = responseOrderData[6].(string)
+		if !ok {
+			return errors.New("unable to type assert errCode")
+		}
+	}
+	if len(responseOrderData) > 7 {
+		errorMessage, ok = responseOrderData[7].(string)
+		if !ok {
+			return errors.New("unable to type assert errorMessage")
+		}
+	}
+	if strings.EqualFold(errCode, wsError) {
+		return errors.New(e.Name + " - " + errCode + ": " + errorMessage)
+	}
 	return nil
 }
 
 // WsCancelMultiOrders authenticated cancel multi order request
-func (b *Bitfinex) WsCancelMultiOrders(orderIDs []int64) error {
+func (e *Exchange) WsCancelMultiOrders(ctx context.Context, orderIDs []int64) error {
 	cancel := WsCancelGroupOrdersRequest{
 		OrderID: orderIDs,
 	}
-	request := makeRequestInterface(wsCancelMultipleOrders, cancel)
-	return b.Websocket.AuthConn.SendJSONMessage(request)
+	req := makeRequestInterface(wsCancelMultipleOrders, cancel)
+	return e.Websocket.AuthConn.SendJSONMessage(ctx, request.Unset, req)
 }
 
 // WsCancelOrder authenticated cancel order request
-func (b *Bitfinex) WsCancelOrder(orderID int64) error {
+func (e *Exchange) WsCancelOrder(ctx context.Context, orderID int64) error {
 	cancel := WsCancelOrderRequest{
 		OrderID: orderID,
 	}
-	request := makeRequestInterface(wsOrderCancel, cancel)
-	resp, err := b.Websocket.AuthConn.SendMessageReturnResponse(orderID, request)
+	req := makeRequestInterface(wsOrderCancel, cancel)
+	resp, err := e.Websocket.AuthConn.SendMessageReturnResponse(ctx, request.Unset, orderID, req)
 	if err != nil {
 		return err
 	}
 	if resp == nil {
-		return fmt.Errorf("%v - Order %v failed to cancel", b.Name, orderID)
+		return fmt.Errorf("%v - Order %v failed to cancel", e.Name, orderID)
 	}
-	var responseData []interface{}
+	var responseData []any
 	err = json.Unmarshal(resp, &responseData)
 	if err != nil {
 		return err
 	}
-	responseOrderData := responseData[2].([]interface{})
-	errCode := responseOrderData[6].(string)
-	errorMessage := responseOrderData[7].(string)
-	if strings.EqualFold(errCode, wsError) {
-		return errors.New(b.Name + " - " + errCode + ": " + errorMessage)
+	if len(responseData) < 3 {
+		return errors.New("unexpected responseData length")
 	}
-
+	responseOrderData, ok := responseData[2].([]any)
+	if !ok {
+		return errors.New("unable to type assert responseOrderData")
+	}
+	var errorMessage, errCode string
+	if len(responseOrderData) > 6 {
+		errCode, ok = responseOrderData[6].(string)
+		if !ok {
+			return errors.New("unable to type assert errCode")
+		}
+	}
+	if len(responseOrderData) > 7 {
+		errorMessage, ok = responseOrderData[7].(string)
+		if !ok {
+			return errors.New("unable to type assert errorMessage")
+		}
+	}
+	if strings.EqualFold(errCode, wsError) {
+		return errors.New(e.Name + " - " + errCode + ": " + errorMessage)
+	}
 	return nil
 }
 
 // WsCancelAllOrders authenticated cancel all orders request
-func (b *Bitfinex) WsCancelAllOrders() error {
+func (e *Exchange) WsCancelAllOrders(ctx context.Context) error {
 	cancelAll := WsCancelAllOrdersRequest{All: 1}
-	request := makeRequestInterface(wsCancelMultipleOrders, cancelAll)
-	return b.Websocket.AuthConn.SendJSONMessage(request)
+	req := makeRequestInterface(wsCancelMultipleOrders, cancelAll)
+	return e.Websocket.AuthConn.SendJSONMessage(ctx, request.Unset, req)
 }
 
 // WsNewOffer authenticated new offer request
-func (b *Bitfinex) WsNewOffer(data *WsNewOfferRequest) error {
-	request := makeRequestInterface(wsFundingOrderNew, data)
-	return b.Websocket.AuthConn.SendJSONMessage(request)
+func (e *Exchange) WsNewOffer(ctx context.Context, data *WsNewOfferRequest) error {
+	req := makeRequestInterface(wsFundingOfferNew, data)
+	return e.Websocket.AuthConn.SendJSONMessage(ctx, request.Unset, req)
 }
 
 // WsCancelOffer authenticated cancel offer request
-func (b *Bitfinex) WsCancelOffer(orderID int64) error {
+func (e *Exchange) WsCancelOffer(ctx context.Context, orderID int64) error {
 	cancel := WsCancelOrderRequest{
 		OrderID: orderID,
 	}
-	request := makeRequestInterface(wsFundingOrderCancel, cancel)
-	resp, err := b.Websocket.AuthConn.SendMessageReturnResponse(orderID, request)
+	req := makeRequestInterface(wsFundingOfferCancel, cancel)
+	resp, err := e.Websocket.AuthConn.SendMessageReturnResponse(ctx, request.Unset, orderID, req)
 	if err != nil {
 		return err
 	}
 	if resp == nil {
-		return fmt.Errorf("%v - Order %v failed to cancel", b.Name, orderID)
+		return fmt.Errorf("%v - Order %v failed to cancel", e.Name, orderID)
 	}
-	var responseData []interface{}
+	var responseData []any
 	err = json.Unmarshal(resp, &responseData)
 	if err != nil {
 		return err
 	}
-	responseOrderData := responseData[2].([]interface{})
-	errCode := responseOrderData[6].(string)
-	var errorMessage string
-	if responseOrderData[7] != nil {
-		errorMessage = responseOrderData[7].(string)
+	if len(responseData) < 3 {
+		return errors.New("unexpected responseData length")
+	}
+	responseOrderData, ok := responseData[2].([]any)
+	if !ok {
+		return errors.New("unable to type assert responseOrderData")
+	}
+	var errorMessage, errCode string
+	if len(responseOrderData) > 6 {
+		errCode, ok = responseOrderData[6].(string)
+		if !ok {
+			return errors.New("unable to type assert errCode")
+		}
+	}
+	if len(responseOrderData) > 7 {
+		errorMessage, ok = responseOrderData[7].(string)
+		if !ok {
+			return errors.New("unable to type assert errorMessage")
+		}
 	}
 	if strings.EqualFold(errCode, wsError) {
-		return errors.New(b.Name + " - " + errCode + ": " + errorMessage)
+		return errors.New(e.Name + " - " + errCode + ": " + errorMessage)
 	}
 
 	return nil
 }
 
-func makeRequestInterface(channelName string, data interface{}) []interface{} {
-	return []interface{}{0, channelName, nil, data}
+func makeRequestInterface(channelName string, data any) []any {
+	return []any{0, channelName, nil, data}
 }
 
-func validateCRC32(book *orderbook.Base, token int) error {
+func validateCRC32(book *orderbook.Book, token uint32) error {
 	// Order ID's need to be sub-sorted in ascending order, this needs to be
 	// done on the main book to ensure that we do not cut price levels out below
 	reOrderByID(book.Bids)
 	reOrderByID(book.Asks)
 
-	// RO precision calculation is based on order ID's and amount values
-	var bids, asks []orderbook.Item
-	for i := 0; i < 25; i++ {
+	// R0 precision calculation is based on order ID's and amount values
+	var bids, asks []orderbook.Level
+	for i := range 25 {
 		if i < len(book.Bids) {
 			bids = append(bids, book.Bids[i])
 		}
@@ -1376,7 +2047,7 @@ func validateCRC32(book *orderbook.Base, token int) error {
 	}
 
 	var check strings.Builder
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		if i < len(bids) {
 			check.WriteString(strconv.FormatInt(bids[i].ID, 10))
 			check.WriteString(":")
@@ -1394,23 +2065,23 @@ func validateCRC32(book *orderbook.Base, token int) error {
 
 	checksumStr := strings.TrimSuffix(check.String(), ":")
 	checksum := crc32.ChecksumIEEE([]byte(checksumStr))
-	if checksum == uint32(token) {
+	if checksum == token {
 		return nil
 	}
 	return fmt.Errorf("invalid checksum for %s %s: calculated [%d] does not match [%d]",
 		book.Asset,
 		book.Pair,
 		checksum,
-		uint32(token))
+		token)
 }
 
 // reOrderByID sub sorts orderbook items by its corresponding ID when price
 // levels are the same. TODO: Deprecate and shift to buffer level insertion
 // based off ascending ID.
-func reOrderByID(depth []orderbook.Item) {
+func reOrderByID(depth []orderbook.Level) {
 subSort:
 	for x := 0; x < len(depth); {
-		var subset []orderbook.Item
+		var subset []orderbook.Level
 		// Traverse forward elements
 		for y := x + 1; y < len(depth); y++ {
 			if depth[x].Price == depth[y].Price &&
@@ -1427,9 +2098,7 @@ subSort:
 				// Append root element
 				subset = append(subset, depth[x])
 				// Sort IDs by ascending
-				sort.Slice(subset, func(i, j int) bool {
-					return subset[i].ID < subset[j].ID
-				})
+				slices.SortFunc(subset, func(a, b orderbook.Level) int { return cmp.Compare(a.ID, b.ID) })
 				// Re-align elements with sorted ID subset
 				for z := range subset {
 					depth[x+z] = subset[z]
@@ -1442,3 +2111,71 @@ subSort:
 		break
 	}
 }
+
+// subToMap returns a json object of request params for subscriptions
+func subToMap(s *subscription.Subscription, a asset.Item, p currency.Pair) map[string]any {
+	c := s.Channel
+	if name, ok := subscriptionNames[s.Channel]; ok {
+		c = name
+	}
+	req := map[string]any{
+		"channel": c,
+	}
+
+	var fundingPeriod string
+	for k, v := range s.Params {
+		switch k {
+		case CandlesPeriodKey:
+			s, ok := v.(string)
+			if !ok {
+				panic(common.GetTypeAssertError("string", v, "subscription.CandlesPeriodKey"))
+			}
+			fundingPeriod = ":" + s
+		case "key", "symbol", "len":
+			panic(fmt.Errorf("%w: %s", errParamNotAllowed, k)) // Ensure user's Params aren't silently overwritten
+		default:
+			req[k] = v
+		}
+	}
+
+	if s.Levels != 0 {
+		req["len"] = s.Levels
+	}
+
+	prefix := "t"
+	if a == asset.MarginFunding {
+		prefix = "f"
+	}
+
+	pairFmt := currency.PairFormat{Uppercase: true}
+	if needsDelimiter := p.Len() > 6; needsDelimiter {
+		pairFmt.Delimiter = ":"
+	}
+	symbol := p.Format(pairFmt).String()
+	if c == wsCandlesChannel {
+		req["key"] = "trade:" + s.Interval.Short() + ":" + prefix + symbol + fundingPeriod
+	} else {
+		req["symbol"] = prefix + symbol
+	}
+
+	return req
+}
+
+// removeSpotFromMargin removes spot pairs from margin pairs in the supplied AssetPairs map to avoid duplicate subscriptions
+func removeSpotFromMargin(ap map[asset.Item]currency.Pairs, spotPairs currency.Pairs) string {
+	if p, ok := ap[asset.Margin]; ok {
+		ap[asset.Margin] = p.Remove(spotPairs...)
+	}
+	return ""
+}
+
+const subTplText = `
+{{- removeSpotFromMargin $.AssetPairs -}}
+{{ range $asset, $pairs := $.AssetPairs }}
+	{{- range $p := $pairs  -}}
+		{{- subToMap $.S $asset $p | mustToJson }}
+		{{- $.PairSeparator }}
+	{{- end -}}
+	{{ $.AssetSeparator }}
+{{- end -}}
+`

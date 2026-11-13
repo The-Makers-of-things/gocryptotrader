@@ -1,4 +1,4 @@
-//+build mock_test_off
+//go:build mock_test_off
 
 // This will build if build tag mock_test_off is parsed and will do live testing
 // using all tests in (exchange)_test.go
@@ -9,36 +9,33 @@ import (
 	"os"
 	"testing"
 
-	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/exchange/accounts"
 	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/sharedtestvalues"
+	testexch "github.com/thrasher-corp/gocryptotrader/internal/testing/exchange"
 )
 
-var mockTests = false
+var (
+	mockTests = false
+	// Please enter sandbox API keys and assigned roles for authenticated endpoint testing.
+	apiCredentials = &accounts.Credentials{
+		Key:    "",
+		Secret: "",
+	}
+)
 
 func TestMain(m *testing.M) {
-	cfg := config.GetConfig()
-	err := cfg.LoadConfig("../../testdata/configtest.json", true)
-	if err != nil {
-		log.Fatal("Gemini load config error", err)
+	e = new(Exchange)
+	if err := testexch.Setup(e); err != nil {
+		log.Fatalf("Gemini Setup error: %s", err)
 	}
-	geminiConfig, err := cfg.GetExchangeConfig("Gemini")
-	if err != nil {
-		log.Fatal("Gemini Setup() init error", err)
+	if apiCredentials.Key != "" && apiCredentials.Secret != "" {
+		e.API.AuthenticatedSupport = true
+		e.SetCredentials(apiCredentials)
 	}
-	geminiConfig.API.AuthenticatedSupport = true
-	geminiConfig.API.Credentials.Key = apiKey
-	geminiConfig.API.Credentials.Secret = apiSecret
-	g.SetDefaults()
-	g.Websocket = sharedtestvalues.NewTestWebsocket()
-	err = g.Setup(geminiConfig)
-	if err != nil {
-		log.Fatal("Gemini setup error", err)
+	if err := e.API.Endpoints.SetRunningURL(exchange.RestSpot.String(), geminiAPIURL); err != nil {
+		log.Fatalf("Gemini SetRunningURL error: %s", err)
 	}
-	err = g.API.Endpoints.SetRunning(exchange.RestSpot.String(), geminiSandboxAPIURL)
-	if err != nil {
-		log.Fatalf("endpoint setting failed. key: %s, val: %s", exchange.RestSpot.String(), geminiSandboxAPIURL)
-	}
-	log.Printf(sharedtestvalues.LiveTesting, g.Name)
+	log.Printf(sharedtestvalues.LiveTesting, e.Name)
 	os.Exit(m.Run())
 }

@@ -5,11 +5,15 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/thrasher-corp/gocryptotrader/common/file"
 	"github.com/thrasher-corp/gocryptotrader/config"
 )
 
 func TestCheckExchangeName(t *testing.T) {
-	tester := []struct {
+	t.Parallel()
+	for _, tt := range []struct {
 		Name        string
 		ErrExpected error
 	}{
@@ -35,32 +39,81 @@ func TestCheckExchangeName(t *testing.T) {
 		{
 			Name: "testexch",
 		},
-	}
-
-	for x := range tester {
-		if r := checkExchangeName(tester[x].Name); r != tester[x].ErrExpected {
-			t.Errorf("test: %d unexpected result", x)
-		}
+	} {
+		t.Run(tt.Name, func(t *testing.T) {
+			t.Parallel()
+			err := checkExchangeName(tt.Name)
+			if tt.ErrExpected == nil {
+				assert.NoError(t, err)
+			} else {
+				assert.Equal(t, tt.ErrExpected, err)
+			}
+		})
 	}
 }
 
-func TestNewExchange(t *testing.T) {
-	testExchangeName := "testexch"
+func TestNewExchangeAndSaveConfig(t *testing.T) {
+	const testExchangeName = "testexch"
 	testExchangeDir := filepath.Join(targetPath, testExchangeName)
+	cfg := config.GetConfig()
+
+	t.Cleanup(func() {
+		if err := os.RemoveAll(testExchangeDir); err != nil {
+			t.Errorf("RemoveAll failed: %s, manual deletion of test directory required", err)
+		}
+	})
 
 	_, err := makeExchange(
 		testExchangeDir,
-		config.GetConfig(),
+		cfg,
 		&exchange{
 			Name: testExchangeName,
 			REST: true,
 			WS:   true,
-		})
-	if err != nil {
-		t.Error(err)
-	}
+		},
+	)
+	assert.NoError(t, err)
+	readme, err := os.ReadFile(filepath.Join(testExchangeDir, "README.md"))
+	require.NoError(t, err, "reading generated README must not error")
+	assert.Contains(t, string(readme), `<img src="../../common/gctlogo.png" alt="GoCryptoTrader logo"`, "generated README should link the logo relative to the exchange directory")
+	assert.NotRegexp(t, `(?m)[ \t]+$`, string(readme), "generated README should not include trailing whitespace")
 
-	if err := os.RemoveAll(testExchangeDir); err != nil {
-		t.Errorf("unable to remove dir: %s, manual removal required", err)
-	}
+	err = os.RemoveAll(testExchangeDir)
+	require.NoError(t, err, "removing the REST and websocket test exchange must not error")
+	_, err = makeExchange(
+		testExchangeDir,
+		cfg,
+		&exchange{
+			Name: testExchangeName,
+			REST: false,
+			WS:   true,
+		},
+	)
+	require.NoError(t, err, "making websocket-only exchange must not error")
+	readme, err = os.ReadFile(filepath.Join(testExchangeDir, "README.md"))
+	require.NoError(t, err, "reading websocket-only README must not error")
+	assert.NotContains(t, string(readme), "\n\n\n", "websocket-only README should not include consecutive blank lines")
+
+	err = os.RemoveAll(testExchangeDir)
+	require.NoError(t, err, "removing the websocket-only test exchange must not error")
+
+	exchCfg, err := makeExchange(
+		testExchangeDir,
+		cfg,
+		&exchange{
+			Name: testExchangeName,
+			REST: true,
+			WS:   false,
+		},
+	)
+	require.NoError(t, err)
+
+	cfgData, err := os.ReadFile(exchangeConfigPath)
+	require.NoError(t, err, "os.ReadFile must not error")
+
+	err = saveConfig(testExchangeDir, cfg, exchCfg)
+	require.NoError(t, err, "saveConfig must not error")
+
+	err = os.WriteFile(exchangeConfigPath, cfgData, file.DefaultPermissionOctal)
+	require.NoError(t, err, "os.WriteFile must not error")
 }

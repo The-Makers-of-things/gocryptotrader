@@ -1,353 +1,673 @@
 package orderbook
 
 import (
+	"errors"
+	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
+	"uuid"
 
-	"github.com/gofrs/uuid"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/common/key"
+	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/dispatch"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/alert"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
-// Depth defines a linked list of orderbook items
+// Public errors
+var (
+	ErrOrderbookInvalid  = errors.New("orderbook data integrity compromised")
+	ErrInvalidAction     = errors.New("invalid action")
+	ErrLastUpdatedNotSet = errors.New("last updated not set")
+)
+
+var errInvalidBookDepth = errors.New("invalid book depth")
+
+// Outbound restricts outbound usage of depth. NOTE: Type assert to
+// *orderbook.Depth.
+type Outbound interface {
+	Retrieve() (*Book, error)
+}
+
+// Depth defines a store of orderbook Levels
 type Depth struct {
-	asks
-	bids
+	askLevels
+	bidLevels
 
-	// unexported stack of nodes
-	stack *stack
-
-	Alert
+	alert.Notice
 
 	mux *dispatch.Mux
 	id  uuid.UUID
 
 	options
-	m sync.Mutex
+
+	// validationError defines current book state and why it was invalidated.
+	validationError error
+
+	m sync.RWMutex
 }
 
-// NewDepth returns a new depth item
-func newDepth(id uuid.UUID) *Depth {
-	return &Depth{
-		stack: newStack(),
-		id:    id,
-		mux:   service.Mux,
-	}
+// NewDepth returns a new orderbook depth
+func NewDepth(id uuid.UUID) *Depth {
+	return &Depth{id: id, mux: s.signalMux}
 }
 
 // Publish alerts any subscribed routines using a dispatch mux
 func (d *Depth) Publish() {
-	err := d.mux.Publish([]uuid.UUID{d.id}, d.Retrieve())
-	if err != nil {
+	if err := d.mux.Publish(Outbound(d), d.id); err != nil {
 		log.Errorf(log.ExchangeSys, "Cannot publish orderbook update to mux %v", err)
 	}
 }
 
-// GetAskLength returns length of asks
-func (d *Depth) GetAskLength() int {
-	d.m.Lock()
-	defer d.m.Unlock()
-	return d.asks.length
-}
-
-// GetBidLength returns length of bids
-func (d *Depth) GetBidLength() int {
-	d.m.Lock()
-	defer d.m.Unlock()
-	return d.bids.length
-}
-
-// Retrieve returns the orderbook base a copy of the underlying linked list
+// Retrieve returns a snapshot of the orderbook
 // spread
-func (d *Depth) Retrieve() *Base {
-	d.m.Lock()
-	defer d.m.Unlock()
-	return &Base{
-		Bids:             d.bids.retrieve(),
-		Asks:             d.asks.retrieve(),
-		Exchange:         d.exchange,
-		Asset:            d.asset,
-		Pair:             d.pair,
-		LastUpdated:      d.lastUpdated,
-		LastUpdateID:     d.lastUpdateID,
-		PriceDuplication: d.priceDuplication,
-		IsFundingRate:    d.isFundingRate,
-		VerifyOrderbook:  d.VerifyOrderbook,
+func (d *Depth) Retrieve() (*Book, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return nil, d.validationError
 	}
-}
-
-// TotalBidAmounts returns the total amount of bids and the total orderbook
-// bids value
-func (d *Depth) TotalBidAmounts() (liquidity, value float64) {
-	d.m.Lock()
-	defer d.m.Unlock()
-	return d.bids.amount()
-}
-
-// TotalAskAmounts returns the total amount of asks and the total orderbook
-// asks value
-func (d *Depth) TotalAskAmounts() (liquidity, value float64) {
-	d.m.Lock()
-	defer d.m.Unlock()
-	return d.asks.amount()
+	return &Book{
+		Bids:                   d.bidLevels.retrieve(0),
+		Asks:                   d.askLevels.retrieve(0),
+		Exchange:               d.exchange,
+		Asset:                  d.asset,
+		Pair:                   d.pair,
+		LastUpdated:            d.lastUpdated,
+		LastPushed:             d.lastPushed,
+		InsertedAt:             d.insertedAt,
+		LastUpdateID:           d.lastUpdateID,
+		PriceDuplication:       d.priceDuplication,
+		IsFundingRate:          d.isFundingRate,
+		ValidateOrderbook:      d.validateOrderbook,
+		MaxDepth:               d.maxDepth,
+		ChecksumStringRequired: d.checksumStringRequired,
+		RestSnapshot:           d.restSnapshot,
+		IDAlignment:            d.idAligned,
+	}, nil
 }
 
 // LoadSnapshot flushes the bids and asks with a snapshot
-func (d *Depth) LoadSnapshot(bids, asks []Item) {
-	d.m.Lock()
-	d.bids.load(bids, d.stack)
-	d.asks.load(asks, d.stack)
-	d.alert()
-	d.m.Unlock()
-}
-
-// Flush flushes the bid and ask depths
-func (d *Depth) Flush() {
-	d.m.Lock()
-	d.bids.load(nil, d.stack)
-	d.asks.load(nil, d.stack)
-	d.alert()
-	d.m.Unlock()
-}
-
-// UpdateBidAskByPrice updates the bid and ask spread by supplied updates, this
-// will trim total length of depth level to a specified supplied number
-func (d *Depth) UpdateBidAskByPrice(bidUpdts, askUpdts Items, maxDepth int) {
-	if len(bidUpdts) == 0 && len(askUpdts) == 0 {
-		return
-	}
-	d.m.Lock()
-	tn := getNow()
-	if len(bidUpdts) != 0 {
-		d.bids.updateInsertByPrice(bidUpdts, d.stack, maxDepth, tn)
-	}
-	if len(askUpdts) != 0 {
-		d.asks.updateInsertByPrice(askUpdts, d.stack, maxDepth, tn)
-	}
-	d.alert()
-	d.m.Unlock()
-}
-
-// UpdateBidAskByID amends details by ID
-func (d *Depth) UpdateBidAskByID(bidUpdts, askUpdts Items) error {
-	if len(bidUpdts) == 0 && len(askUpdts) == 0 {
-		return nil
-	}
+func (d *Depth) LoadSnapshot(incoming *Book) error {
 	d.m.Lock()
 	defer d.m.Unlock()
-	if len(bidUpdts) != 0 {
-		err := d.bids.updateByID(bidUpdts)
-		if err != nil {
-			return err
-		}
+	if incoming.LastUpdated.IsZero() {
+		return fmt.Errorf("error loading orderbook snapshot: %s %s %s - %w", d.exchange, d.pair, d.asset, ErrLastUpdatedNotSet)
 	}
-	if len(askUpdts) != 0 {
-		err := d.asks.updateByID(askUpdts)
-		if err != nil {
-			return err
-		}
-	}
-	d.alert()
+	d.lastUpdateID = incoming.LastUpdateID
+	d.lastUpdated = incoming.LastUpdated
+	d.lastPushed = incoming.LastPushed
+	d.insertedAt = time.Now()
+	d.restSnapshot = incoming.RestSnapshot
+	d.bidLevels.load(incoming.Bids)
+	d.askLevels.load(incoming.Asks)
+	d.validationError = nil
+	d.Alert()
 	return nil
 }
 
-// DeleteBidAskByID deletes a price level by ID
-func (d *Depth) DeleteBidAskByID(bidUpdts, askUpdts Items, bypassErr bool) error {
-	if len(bidUpdts) == 0 && len(askUpdts) == 0 {
-		return nil
-	}
+// Invalidate initialises the Depth, with a error to explain why it was invalid
+func (d *Depth) Invalidate(withReason error) error {
 	d.m.Lock()
 	defer d.m.Unlock()
-	if len(bidUpdts) != 0 {
-		err := d.bids.deleteByID(bidUpdts, d.stack, bypassErr)
-		if err != nil {
-			return err
-		}
-	}
-	if len(askUpdts) != 0 {
-		err := d.asks.deleteByID(askUpdts, d.stack, bypassErr)
-		if err != nil {
-			return err
-		}
-	}
-	d.alert()
-	return nil
+	return d.invalidate(withReason)
 }
 
-// InsertBidAskByID inserts new updates
-func (d *Depth) InsertBidAskByID(bidUpdts, askUpdts Items) error {
-	if len(bidUpdts) == 0 && len(askUpdts) == 0 {
-		return nil
-	}
-	d.m.Lock()
-	defer d.m.Unlock()
-	if len(bidUpdts) != 0 {
-		err := d.bids.insertUpdates(bidUpdts, d.stack)
-		if err != nil {
-			return err
-		}
-	}
-	if len(askUpdts) != 0 {
-		err := d.asks.insertUpdates(askUpdts, d.stack)
-		if err != nil {
-			return err
-		}
-	}
-	d.alert()
-	return nil
+// invalidate initialises the Depth, with a error to explain why it was invalid
+// NOTE: This requires locking.
+func (d *Depth) invalidate(withReason error) error {
+	d.lastUpdateID = 0
+	d.lastUpdated = time.Time{}
+	d.bidLevels.load(nil)
+	d.askLevels.load(nil)
+	d.validationError = fmt.Errorf("%s %s %s Reason: [%w]", d.exchange, d.pair, d.asset, common.AppendError(ErrOrderbookInvalid, withReason))
+	d.Alert()
+	return d.validationError
 }
 
-// UpdateInsertByID updates or inserts by ID at current price level.
-func (d *Depth) UpdateInsertByID(bidUpdts, askUpdts Items) error {
-	if len(bidUpdts) == 0 && len(askUpdts) == 0 {
-		return nil
-	}
-	d.m.Lock()
-	defer d.m.Unlock()
-	if len(bidUpdts) != 0 {
-		err := d.bids.updateInsertByID(bidUpdts, d.stack)
-		if err != nil {
-			return err
-		}
-	}
-	if len(askUpdts) != 0 {
-		err := d.asks.updateInsertByID(askUpdts, d.stack)
-		if err != nil {
-			return err
-		}
-	}
-	d.alert()
-	return nil
+// IsValid returns if the underlying book is valid.
+func (d *Depth) IsValid() bool {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	return d.validationError == nil
 }
 
 // AssignOptions assigns the initial options for the depth instance
-func (d *Depth) AssignOptions(b *Base) {
+func (d *Depth) AssignOptions(b *Book) {
 	d.m.Lock()
 	d.options = options{
-		exchange:         b.Exchange,
-		pair:             b.Pair,
-		asset:            b.Asset,
-		lastUpdated:      b.LastUpdated,
-		lastUpdateID:     b.LastUpdateID,
-		priceDuplication: b.PriceDuplication,
-		isFundingRate:    b.IsFundingRate,
-		VerifyOrderbook:  b.VerifyOrderbook,
-		restSnapshot:     b.RestSnapshot,
-		idAligned:        b.IDAlignment,
+		exchange:               b.Exchange,
+		pair:                   b.Pair,
+		asset:                  b.Asset,
+		lastUpdated:            b.LastUpdated,
+		lastUpdateID:           b.LastUpdateID,
+		priceDuplication:       b.PriceDuplication,
+		isFundingRate:          b.IsFundingRate,
+		validateOrderbook:      b.ValidateOrderbook,
+		restSnapshot:           b.RestSnapshot,
+		idAligned:              b.IDAlignment,
+		maxDepth:               b.MaxDepth,
+		checksumStringRequired: b.ChecksumStringRequired,
 	}
-	d.m.Unlock()
-}
-
-// SetLastUpdate sets details of last update information
-func (d *Depth) SetLastUpdate(lastUpdate time.Time, lastUpdateID int64, updateByREST bool) {
-	d.m.Lock()
-	d.lastUpdated = lastUpdate
-	d.lastUpdateID = lastUpdateID
-	d.restSnapshot = updateByREST
 	d.m.Unlock()
 }
 
 // GetName returns name of exchange
 func (d *Depth) GetName() string {
-	d.m.Lock()
-	defer d.m.Unlock()
+	d.m.RLock()
+	defer d.m.RUnlock()
 	return d.exchange
 }
 
-// IsRestSnapshot returns if the depth item was updated via REST
-func (d *Depth) IsRestSnapshot() bool {
-	d.m.Lock()
-	defer d.m.Unlock()
-	return d.restSnapshot
+// IsRESTSnapshot returns if the depth was updated via REST
+func (d *Depth) IsRESTSnapshot() (bool, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return false, d.validationError
+	}
+	return d.restSnapshot, nil
 }
 
 // LastUpdateID returns the last Update ID
-func (d *Depth) LastUpdateID() int64 {
-	d.m.Lock()
-	defer d.m.Unlock()
-	return d.lastUpdateID
+func (d *Depth) LastUpdateID() (int64, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
+	}
+	return d.lastUpdateID, nil
 }
 
 // IsFundingRate returns if the depth is a funding rate
 func (d *Depth) IsFundingRate() bool {
-	d.m.Lock()
-	defer d.m.Unlock()
+	d.m.RLock()
+	defer d.m.RUnlock()
 	return d.isFundingRate
 }
 
-// Alert defines fields required to alert sub-systems of a change of state to
-// re-check depth list
-type Alert struct {
-	// Channel to wait for an alert on.
-	forAlert chan struct{}
-	// Lets the updater functions know if there are any routines waiting for an
-	// alert.
-	sema uint32
-	// After closing the forAlert channel this will notify when all the routines
-	// that have waited, have either checked the orderbook depth or finished.
-	wg sync.WaitGroup
-	// Segregated lock only for waiting routines, so as this does not interfere
-	// with the main depth lock, acts as a rolling gate.
-	m sync.Mutex
+// ValidateOrderbook returns if the verify orderbook option is set
+func (d *Depth) ValidateOrderbook() bool {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	return d.validateOrderbook
 }
 
-// alert establishes a state change on the orderbook depth.
-func (a *Alert) alert() {
-	// CompareAndSwap is used to swap from 1 -> 2 so we don't keep actuating
-	// the opposing compare and swap in method wait. This function can return
-	// freely when an alert operation is in process.
-	if !atomic.CompareAndSwapUint32(&a.sema, 1, 2) {
-		// Return if no waiting routines or currently alerting.
-		return
+// GetAskLength returns length of asks
+func (d *Depth) GetAskLength() (int, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
 	}
-
-	go func() {
-		// Actuate lock in a different routine, as alerting is a second order
-		// priority compared to updating and releasing calling routine.
-		a.m.Lock()
-		// Closing; alerts many waiting routines.
-		close(a.forAlert)
-		// Wait for waiting routines to receive alert and return.
-		a.wg.Wait()
-		atomic.SwapUint32(&a.sema, 0) // Swap back to neutral state.
-		a.m.Unlock()
-	}()
+	return len(d.askLevels.Levels), nil
 }
 
-// Wait pauses calling routine until depth change has been established via depth
-// method alert. Kick allows for cancellation of waiting or when the caller has
-// has been shut down, if this is not needed it can be set to nil. This
-// returns a channel so strategies can cleanly wait on a select statement case.
-func (a *Alert) Wait(kick <-chan struct{}) <-chan bool {
-	reply := make(chan bool)
-	a.m.Lock()
-	a.wg.Add(1)
-	if atomic.CompareAndSwapUint32(&a.sema, 0, 1) {
-		a.forAlert = make(chan struct{})
+// GetBidLength returns length of bids
+func (d *Depth) GetBidLength() (int, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
 	}
-	go a.hold(reply, kick)
-	a.m.Unlock()
-	return reply
+	return len(d.bidLevels.Levels), nil
 }
 
-// hold waits on either channel in the event that the routine has finished or an
-// alert from a depth update has occurred.
-func (a *Alert) hold(ch chan<- bool, kick <-chan struct{}) {
-	select {
-	// In a select statement, if by chance there is no receiver or its late,
-	// we can still close and return, limiting dead-lock potential.
-	case <-a.forAlert: // Main waiting channel from alert
-		select {
-		case ch <- false:
-		default:
-		}
-	case <-kick: // This can be nil.
-		select {
-		case ch <- true:
-		default:
-		}
+// TotalBidAmounts returns the total amount of bids and the total orderbook
+// bids value
+func (d *Depth) TotalBidAmounts() (liquidity, value float64, err error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, 0, d.validationError
 	}
-	a.wg.Done()
-	close(ch)
+	liquidity, value = d.bidLevels.amount()
+	return liquidity, value, nil
+}
+
+// TotalAskAmounts returns the total amount of asks and the total orderbook
+// asks value
+func (d *Depth) TotalAskAmounts() (liquidity, value float64, err error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, 0, d.validationError
+	}
+	liquidity, value = d.askLevels.amount()
+	return liquidity, value, nil
+}
+
+// updateAndAlert updates the last updated ID and when it was updated to the
+// recent update. Then alerts all pending routines. NOTE: This requires locking.
+func (d *Depth) updateAndAlert(update *Update) {
+	d.lastUpdateID = update.UpdateID
+	d.lastUpdated = update.UpdateTime
+	d.lastPushed = update.LastPushed
+	d.insertedAt = time.Now()
+	d.Alert()
+}
+
+// HitTheBidsByNominalSlippage hits the bids by the required nominal slippage
+// percentage, calculated from the reference price and returns orderbook
+// movement details for the bid side.
+func (d *Depth) HitTheBidsByNominalSlippage(maxSlippage, refPrice float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	return d.bidLevels.hitBidsByNominalSlippage(maxSlippage, refPrice)
+}
+
+// HitTheBidsByNominalSlippageFromMid hits the bids by the required nominal
+// slippage percentage, calculated from the mid price and returns orderbook
+// movement details for the bid side.
+func (d *Depth) HitTheBidsByNominalSlippageFromMid(maxSlippage float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	mid, err := d.getMidPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	return d.bidLevels.hitBidsByNominalSlippage(maxSlippage, mid)
+}
+
+// HitTheBidsByNominalSlippageFromBest hits the bids by the required nominal
+// slippage percentage, calculated from the best bid price and returns orderbook
+// movement details for the bid side.
+func (d *Depth) HitTheBidsByNominalSlippageFromBest(maxSlippage float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	head, err := d.bidLevels.getHeadPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	return d.bidLevels.hitBidsByNominalSlippage(maxSlippage, head)
+}
+
+// LiftTheAsksByNominalSlippage lifts the asks by the required nominal slippage
+// percentage, calculated from the reference price and returns orderbook
+// movement details for the ask side.
+func (d *Depth) LiftTheAsksByNominalSlippage(maxSlippage, refPrice float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	return d.askLevels.liftAsksByNominalSlippage(maxSlippage, refPrice)
+}
+
+// LiftTheAsksByNominalSlippageFromMid lifts the asks by the required nominal
+// slippage percentage, calculated from the mid price and returns orderbook
+// movement details for the ask side.
+func (d *Depth) LiftTheAsksByNominalSlippageFromMid(maxSlippage float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	mid, err := d.getMidPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	return d.askLevels.liftAsksByNominalSlippage(maxSlippage, mid)
+}
+
+// LiftTheAsksByNominalSlippageFromBest lifts the asks by the required nominal
+// slippage percentage, calculated from the best ask price and returns orderbook
+// movement details for the ask side.
+func (d *Depth) LiftTheAsksByNominalSlippageFromBest(maxSlippage float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	head, err := d.askLevels.getHeadPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	return d.askLevels.liftAsksByNominalSlippage(maxSlippage, head)
+}
+
+// HitTheBidsByImpactSlippage hits the bids by the required impact slippage
+// percentage, calculated from the reference price and returns orderbook
+// movement details for the bid side.
+func (d *Depth) HitTheBidsByImpactSlippage(maxSlippage, refPrice float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	return d.bidLevels.hitBidsByImpactSlippage(maxSlippage, refPrice)
+}
+
+// HitTheBidsByImpactSlippageFromMid hits the bids by the required impact
+// slippage percentage, calculated from the mid price and returns orderbook
+// movement details for the bid side.
+func (d *Depth) HitTheBidsByImpactSlippageFromMid(maxSlippage float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	mid, err := d.getMidPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	return d.bidLevels.hitBidsByImpactSlippage(maxSlippage, mid)
+}
+
+// HitTheBidsByImpactSlippageFromBest hits the bids by the required impact
+// slippage percentage, calculated from the best bid price and returns orderbook
+// movement details for the bid side.
+func (d *Depth) HitTheBidsByImpactSlippageFromBest(maxSlippage float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	head, err := d.bidLevels.getHeadPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	return d.bidLevels.hitBidsByImpactSlippage(maxSlippage, head)
+}
+
+// LiftTheAsksByImpactSlippage lifts the asks by the required impact slippage
+// percentage, calculated from the reference price and returns orderbook
+// movement details for the ask side.
+func (d *Depth) LiftTheAsksByImpactSlippage(maxSlippage, refPrice float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	return d.askLevels.liftAsksByImpactSlippage(maxSlippage, refPrice)
+}
+
+// LiftTheAsksByImpactSlippageFromMid lifts the asks by the required impact
+// slippage percentage, calculated from the mid price and returns orderbook
+// movement details for the ask side.
+func (d *Depth) LiftTheAsksByImpactSlippageFromMid(maxSlippage float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	mid, err := d.getMidPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	return d.askLevels.liftAsksByImpactSlippage(maxSlippage, mid)
+}
+
+// LiftTheAsksByImpactSlippageFromBest lifts the asks by the required impact
+// slippage percentage, calculated from the best ask price and returns orderbook
+// movement details for the ask side.
+func (d *Depth) LiftTheAsksByImpactSlippageFromBest(maxSlippage float64) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	head, err := d.askLevels.getHeadPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	return d.askLevels.liftAsksByImpactSlippage(maxSlippage, head)
+}
+
+// HitTheBids derives full orderbook slippage information from reference price
+// using an amount. Purchase refers to how much quote currency is desired else
+// the amount would refer to base currency deployed to orderbook bid side.
+func (d *Depth) HitTheBids(amount, refPrice float64, purchase bool) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	if purchase {
+		return d.bidLevels.getMovementByQuotation(amount, refPrice, false)
+	}
+	return d.bidLevels.getMovementByBase(amount, refPrice, false)
+}
+
+// HitTheBidsFromMid derives full orderbook slippage information from mid price
+// using an amount. Purchase refers to how much quote currency is desired else
+// the amount would refer to base currency deployed to orderbook bid side.
+func (d *Depth) HitTheBidsFromMid(amount float64, purchase bool) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	mid, err := d.getMidPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	if purchase {
+		return d.bidLevels.getMovementByQuotation(amount, mid, false)
+	}
+	return d.bidLevels.getMovementByBase(amount, mid, false)
+}
+
+// HitTheBidsFromBest derives full orderbook slippage information from best bid
+// price using an amount. Purchase refers to how much quote currency is desired
+// else the amount would refer to base currency deployed to orderbook bid side.
+func (d *Depth) HitTheBidsFromBest(amount float64, purchase bool) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	head, err := d.bidLevels.getHeadPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	if purchase {
+		return d.bidLevels.getMovementByQuotation(amount, head, false)
+	}
+	return d.bidLevels.getMovementByBase(amount, head, false)
+}
+
+// LiftTheAsks derives full orderbook slippage information from reference price
+// using an amount. Purchase refers to how much base currency is desired else
+// the amount would refer to quote currency deployed to orderbook ask side.
+func (d *Depth) LiftTheAsks(amount, refPrice float64, purchase bool) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	if purchase {
+		return d.askLevels.getMovementByBase(amount, refPrice, true)
+	}
+	return d.askLevels.getMovementByQuotation(amount, refPrice, true)
+}
+
+// LiftTheAsksFromMid derives full orderbook slippage information from mid price
+// using an amount. Purchase refers to how much base currency is desired else
+// the amount would refer to quote currency deployed to orderbook ask side.
+func (d *Depth) LiftTheAsksFromMid(amount float64, purchase bool) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	mid, err := d.getMidPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	if purchase {
+		return d.askLevels.getMovementByBase(amount, mid, true)
+	}
+	return d.askLevels.getMovementByQuotation(amount, mid, true)
+}
+
+// LiftTheAsksFromBest derives full orderbook slippage information from best ask
+// price using an amount. Purchase refers to how much base currency is desired
+// else the amount would refer to quote currency deployed to orderbook ask side.
+func (d *Depth) LiftTheAsksFromBest(amount float64, purchase bool) (*Movement, error) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	if d.validationError != nil {
+		return nil, d.validationError
+	}
+	head, err := d.askLevels.getHeadPriceNoLock()
+	if err != nil {
+		return nil, err
+	}
+	if purchase {
+		return d.askLevels.getMovementByBase(amount, head, true)
+	}
+	return d.askLevels.getMovementByQuotation(amount, head, true)
+}
+
+// GetMidPrice returns the mid price between the ask and bid spread
+func (d *Depth) GetMidPrice() (float64, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
+	}
+	return d.getMidPriceNoLock()
+}
+
+// getMidPriceNoLock is an unprotected helper that gets mid price
+func (d *Depth) getMidPriceNoLock() (float64, error) {
+	bidHead, err := d.bidLevels.getHeadPriceNoLock()
+	if err != nil {
+		return 0, err
+	}
+	askHead, err := d.askLevels.getHeadPriceNoLock()
+	if err != nil {
+		return 0, err
+	}
+	return (bidHead + askHead) / 2, nil
+}
+
+// GetBestBid returns the best bid price
+func (d *Depth) GetBestBid() (float64, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
+	}
+	return d.bidLevels.getHeadPriceNoLock()
+}
+
+// GetBestAsk returns the best ask price
+func (d *Depth) GetBestAsk() (float64, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
+	}
+	return d.askLevels.getHeadPriceNoLock()
+}
+
+// GetSpreadAmount returns the spread as a quotation amount
+func (d *Depth) GetSpreadAmount() (float64, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
+	}
+	askHead, err := d.askLevels.getHeadPriceNoLock()
+	if err != nil {
+		return 0, err
+	}
+	bidHead, err := d.bidLevels.getHeadPriceNoLock()
+	if err != nil {
+		return 0, err
+	}
+	return askHead - bidHead, nil
+}
+
+// GetSpreadPercentage returns the spread as a percentage
+func (d *Depth) GetSpreadPercentage() (float64, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
+	}
+	askHead, err := d.askLevels.getHeadPriceNoLock()
+	if err != nil {
+		return 0, err
+	}
+	bidHead, err := d.bidLevels.getHeadPriceNoLock()
+	if err != nil {
+		return 0, err
+	}
+	return (askHead - bidHead) / askHead * 100, nil
+}
+
+// GetImbalance returns top orderbook imbalance
+func (d *Depth) GetImbalance() (float64, error) {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return 0, d.validationError
+	}
+	askVolume, err := d.askLevels.getHeadVolumeNoLock()
+	if err != nil {
+		return 0, err
+	}
+	bidVolume, err := d.bidLevels.getHeadVolumeNoLock()
+	if err != nil {
+		return 0, err
+	}
+	return (bidVolume - askVolume) / (bidVolume + askVolume), nil
+}
+
+// GetLevels returns the desired level for the required depth count. If
+// count is 0, it will return the entire orderbook. Count == 1 will retrieve the
+// best bid and ask. If the required count exceeds the orderbook depth, it will
+// return the entire orderbook.
+func (d *Depth) GetLevels(count int) (ask, bid []Level, err error) {
+	if count < 0 {
+		return nil, nil, errInvalidBookDepth
+	}
+	d.m.RLock()
+	defer d.m.RUnlock()
+	if d.validationError != nil {
+		return nil, nil, d.validationError
+	}
+	return d.askLevels.retrieve(count), d.bidLevels.retrieve(count), nil
+}
+
+// Pair returns the pair associated with the depth
+func (d *Depth) Pair() currency.Pair {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	return d.pair
+}
+
+// Asset returns the asset associated with the depth
+func (d *Depth) Asset() asset.Item {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	return d.asset
+}
+
+// Exchange returns the exchange associated with the depth
+func (d *Depth) Exchange() string {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	return d.exchange
+}
+
+// Key returns a combined key for the depth
+func (d *Depth) Key() key.ExchangeAssetPair {
+	d.m.RLock()
+	defer d.m.RUnlock()
+	return key.NewExchangeAssetPair(d.exchange, d.asset, d.pair)
 }

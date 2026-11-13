@@ -1,19 +1,28 @@
 package portfolio
 
 import (
+	"sync"
 	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/currency"
+	"golang.org/x/time/rate"
 )
 
 // Base holds the portfolio base addresses
 type Base struct {
 	Addresses []Address `json:"addresses"`
+	Providers providers `json:"providers,omitzero"`
+	Verbose   bool      `json:"verbose"`
+
+	mtx                 sync.RWMutex
+	cryptoIDLimiter     *rate.Limiter
+	cryptoIDLimiterOnce sync.Once
 }
 
 // Address sub type holding address information for portfolio
 type Address struct {
 	Address            string
+	AddressTag         string
 	CoinType           currency.Code
 	Balance            float64
 	Description        string
@@ -27,13 +36,13 @@ type Address struct {
 type EtherchainBalanceResponse struct {
 	Status int `json:"status"`
 	Data   []struct {
-		Address   string      `json:"address"`
-		Balance   float64     `json:"balance"`
-		Nonce     interface{} `json:"nonce"`
-		Code      string      `json:"code"`
-		Name      interface{} `json:"name"`
-		Storage   interface{} `json:"storage"`
-		FirstSeen interface{} `json:"firstSeen"`
+		Address   string  `json:"address"`
+		Balance   float64 `json:"balance"`
+		Nonce     any     `json:"nonce"`
+		Code      string  `json:"code"`
+		Name      any     `json:"name"`
+		Storage   any     `json:"storage"`
+		FirstSeen any     `json:"firstSeen"`
 	} `json:"data"`
 }
 
@@ -145,7 +154,7 @@ type XRPScanAccount struct {
 	TxHash         string      `json:"tx_hash"`
 	AccountName    AccountInfo `json:"accountName"`
 	ParentName     AccountInfo `json:"parentName"`
-	Advisory       interface{} `json:"advisory"`
+	Advisory       any         `json:"advisory"`
 }
 
 // AccountInfo is a XRPScan subtype for account associations
@@ -157,3 +166,11 @@ type AccountInfo struct {
 	Twitter     string `json:"twitter"`
 	Verified    bool   `json:"verified"`
 }
+
+type provider struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	APIKey  string `json:"apiKey,omitempty"`
+}
+
+type providers []provider

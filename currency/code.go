@@ -1,17 +1,41 @@
 package currency
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 )
 
+// Public errors
+var (
+	ErrCurrencyCodeEmpty    = errors.New("currency code is empty")
+	ErrCurrencyNotFound     = errors.New("currency code not found in list")
+	ErrCurrencyPairEmpty    = errors.New("currency pair is empty")
+	ErrCurrencyNotSupported = errors.New("currency not supported")
+	ErrCurrencyPairsEmpty   = errors.New("currency pairs is empty")
+	ErrCurrencyCodesEmpty   = errors.New("currency codes is empty")
+)
+
+var (
+	errItemIsNil   = errors.New("item is nil")
+	errItemIsEmpty = errors.New("item is empty")
+	errRoleUnset   = errors.New("role unset")
+)
+
+var (
+	// EMPTYCODE is an empty currency code
+	EMPTYCODE Code
+	// EMPTYPAIR is an empty currency pair
+	EMPTYPAIR Pair
+)
+
+// String implements the stringer interface and returns a string representation
+// of the underlying role.
 func (r Role) String() string {
 	switch r {
-	case Unset:
-		return UnsetRoleString
 	case Fiat:
 		return FiatCurrencyString
 	case Cryptocurrency:
@@ -20,8 +44,10 @@ func (r Role) String() string {
 		return TokenString
 	case Contract:
 		return ContractString
+	case Stable:
+		return StableString
 	default:
-		return "UNKNOWN"
+		return UnsetRoleString
 	}
 }
 
@@ -49,6 +75,8 @@ func (r *Role) UnmarshalJSON(d []byte) error {
 		*r = Token
 	case ContractString:
 		*r = Contract
+	case StableString:
+		*r = Stable
 	default:
 		return fmt.Errorf("unmarshal error role type %s unsupported for currency",
 			incoming)
@@ -66,23 +94,28 @@ func (b *BaseCodes) HasData() bool {
 // GetFullCurrencyData returns a type that is read to dump to file
 func (b *BaseCodes) GetFullCurrencyData() (File, error) {
 	var file File
-	for i := range b.Items {
-		switch b.Items[i].Role {
-		case Unset:
-			file.UnsetCurrency = append(file.UnsetCurrency, *b.Items[i])
-		case Fiat:
-			file.FiatCurrency = append(file.FiatCurrency, *b.Items[i])
-		case Cryptocurrency:
-			file.Cryptocurrency = append(file.Cryptocurrency, *b.Items[i])
-		case Token:
-			file.Token = append(file.Token, *b.Items[i])
-		case Contract:
-			file.Contracts = append(file.Contracts, *b.Items[i])
-		default:
-			return file, errors.New("role undefined")
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+	for _, stored := range b.Items {
+		for x := range stored {
+			switch stored[x].Role {
+			case Unset:
+				file.UnsetCurrency = append(file.UnsetCurrency, stored[x])
+			case Fiat:
+				file.FiatCurrency = append(file.FiatCurrency, stored[x])
+			case Cryptocurrency:
+				file.Cryptocurrency = append(file.Cryptocurrency, stored[x])
+			case Token:
+				file.Token = append(file.Token, stored[x])
+			case Contract:
+				file.Contracts = append(file.Contracts, stored[x])
+			case Stable:
+				file.Stable = append(file.Stable, stored[x])
+			default:
+				return file, errors.New("role undefined")
+			}
 		}
 	}
-
 	file.LastMainUpdate = b.LastMainUpdate.Unix()
 	return file, nil
 }
@@ -90,130 +123,136 @@ func (b *BaseCodes) GetFullCurrencyData() (File, error) {
 // GetCurrencies gets the full currency list from the base code type available
 // from the currency system
 func (b *BaseCodes) GetCurrencies() Currencies {
-	var currencies Currencies
 	b.mtx.Lock()
-	for i := range b.Items {
-		currencies = append(currencies, Code{
-			Item: b.Items[i],
-		})
+	currencies := make(Currencies, len(b.Items))
+	var target int
+	for _, stored := range b.Items {
+		if len(stored) == 0 {
+			continue
+		}
+		currencies[target] = Code{Item: stored[0]}
+		target++
 	}
 	b.mtx.Unlock()
 	return currencies
 }
 
 // UpdateCurrency updates or registers a currency/contract
-func (b *BaseCodes) UpdateCurrency(fullName, symbol, blockchain string, id int, r Role) error {
-	if r == Unset {
-		return fmt.Errorf("role cannot be unset in update currency for %s", symbol)
+func (b *BaseCodes) UpdateCurrency(update *Item) error {
+	if update == nil {
+		return errItemIsNil
 	}
+
+	if update.Symbol == "" {
+		return errSymbolEmpty
+	}
+
+	if update.Role == Unset {
+		return fmt.Errorf("cannot update currency %w for %s", errRoleUnset, update.Symbol)
+	}
+
+	update.Symbol = strings.ToUpper(update.Symbol)
+	update.Lower = strings.ToLower(update.Symbol)
+
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
-	for i := range b.Items {
-		if b.Items[i].Symbol != symbol {
-			continue
-		}
 
-		if b.Items[i].Role == Unset {
-			b.Items[i].FullName = fullName
-			b.Items[i].Role = r
-			b.Items[i].AssocChain = blockchain
-			b.Items[i].ID = id
+	stored, ok := b.Items[update.Symbol]
+	if ok {
+		for x := range stored {
+			if stored[x].Role != Unset && stored[x].Role != update.Role {
+				continue
+			}
+
+			stored[x].Role = update.Role // NOTE: Update role is checked above.
+
+			if update.FullName != "" {
+				stored[x].FullName = update.FullName
+			}
+			if update.AssocChain != "" {
+				stored[x].AssocChain = update.AssocChain
+			}
+			if update.ID != 0 {
+				stored[x].ID = update.ID
+			}
 			return nil
 		}
-
-		if b.Items[i].Role != r {
-			// Captures same name currencies and duplicates to different roles
-			break
-		}
-
-		b.Items[i].FullName = fullName
-		b.Items[i].AssocChain = blockchain
-		b.Items[i].ID = id
-		return nil
 	}
-
-	b.Items = append(b.Items, &Item{
-		Symbol:     symbol,
-		FullName:   fullName,
-		Role:       r,
-		AssocChain: blockchain,
-		ID:         id,
-	})
+	b.Items[update.Symbol] = append(b.Items[update.Symbol], update)
 	return nil
 }
 
-// Register registers a currency from a string and returns a currency code
-func (b *BaseCodes) Register(c string) Code {
-	var format bool
-	if c != "" {
-		format = unicode.IsUpper(rune(c[0]))
+// Register registers a currency from a string and returns a currency code, this
+// can optionally include a role when it is known.
+func (b *BaseCodes) Register(c string, newRole Role) Code {
+	if c == "" {
+		return EMPTYCODE
 	}
+
+	isUpperCase := strings.ContainsFunc(c, func(r rune) bool { return unicode.IsLetter(r) && unicode.IsUpper(r) })
+
 	// Force upper string storage and matching
 	c = strings.ToUpper(c)
 
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
-	for i := range b.Items {
-		if b.Items[i].Symbol == c {
-			return Code{
-				Item:      b.Items[i],
-				UpperCase: format,
+
+	if b.Items == nil {
+		b.Items = make(map[string][]*Item)
+	}
+
+	stored, ok := b.Items[c]
+	if ok {
+		for x := range stored {
+			if newRole != Unset {
+				if stored[x].Role != Unset && stored[x].Role != newRole {
+					// This will duplicate item with same name but different
+					// role if not matched in stored list.
+					// TODO: This will need a specific update to NewCode() or
+					// new function to find the exact name and role.
+					continue
+				}
+				stored[x].Role = newRole
 			}
+			return Code{Item: stored[x], upperCase: isUpperCase}
 		}
 	}
 
-	newItem := &Item{Symbol: c}
-	b.Items = append(b.Items, newItem)
-
-	return Code{
-		Item:      newItem,
-		UpperCase: format,
-	}
-}
-
-// RegisterFiat registers a fiat currency from a string and returns a currency
-// code
-func (b *BaseCodes) RegisterFiat(c string) Code {
-	c = strings.ToUpper(c)
-
-	b.mtx.Lock()
-	defer b.mtx.Unlock()
-	for i := range b.Items {
-		if b.Items[i].Symbol == c {
-			if b.Items[i].Role == Unset {
-				b.Items[i].Role = Fiat
-			}
-
-			if b.Items[i].Role != Fiat {
-				continue
-			}
-			return Code{Item: b.Items[i], UpperCase: true}
-		}
-	}
-
-	item := &Item{Symbol: c, Role: Fiat}
-	b.Items = append(b.Items, item)
-	return Code{Item: item, UpperCase: true}
+	newItem := &Item{Symbol: c, Lower: strings.ToLower(c), Role: newRole}
+	b.Items[c] = append(b.Items[c], newItem)
+	return Code{Item: newItem, upperCase: isUpperCase}
 }
 
 // LoadItem sets item data
 func (b *BaseCodes) LoadItem(item *Item) error {
+	if item == nil {
+		return errItemIsNil
+	}
+
+	if *item == (Item{}) {
+		return errItemIsEmpty
+	}
+
+	item.Symbol = strings.ToUpper(item.Symbol)
+	item.Lower = strings.ToLower(item.Symbol)
+
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
-	for i := range b.Items {
-		if b.Items[i].Symbol != item.Symbol ||
-			(b.Items[i].Role != Unset &&
-				item.Role != Unset &&
-				b.Items[i].Role != item.Role) {
-			continue
+
+	stored, ok := b.Items[item.Symbol]
+	if ok {
+		for x := range stored {
+			if stored[x].Role == item.Role {
+				return nil
+			}
+
+			if stored[x].Role == Unset && item.Role != Unset {
+				stored[x].Role = item.Role
+				return nil
+			}
 		}
-		b.Items[i].AssocChain = item.AssocChain
-		b.Items[i].ID = item.ID
-		b.Items[i].Role = item.Role
-		b.Items[i].FullName = item.FullName
-		return nil
 	}
-	b.Items = append(b.Items, item)
+	b.Items[item.Symbol] = append(b.Items[item.Symbol], item)
 	return nil
 }
 
@@ -224,7 +263,7 @@ func NewCode(c string) Code {
 
 // String conforms to the stringer interface
 func (i *Item) String() string {
-	return i.FullName
+	return i.Symbol
 }
 
 // String converts the code to string
@@ -232,26 +271,33 @@ func (c Code) String() string {
 	if c.Item == nil {
 		return ""
 	}
-
-	if c.UpperCase {
-		return strings.ToUpper(c.Item.Symbol)
+	if c.upperCase {
+		return c.Item.Symbol
 	}
-	return strings.ToLower(c.Item.Symbol)
+	return c.Item.Lower
 }
 
-// Lower converts the code to lowercase formatting
+// Lower flags the Code to use LowerCase formatting, but does not change Symbol
+// If Code cannot be lowercased then it will return Code unchanged
 func (c Code) Lower() Code {
-	c.UpperCase = false
+	if c.Item == nil {
+		return c
+	}
+	c.upperCase = false
 	return c
 }
 
-// Upper converts the code to uppercase formatting
+// Upper flags the Code to use UpperCase formatting, but does not change Symbol
+// If Code cannot be uppercased then it will return Code unchanged
 func (c Code) Upper() Code {
-	c.UpperCase = true
+	if c.Item == nil {
+		return c
+	}
+	c.upperCase = true
 	return c
 }
 
-// UnmarshalJSON comforms type to the umarshaler interface
+// UnmarshalJSON conforms type to the unmarshaler interface
 func (c *Code) UnmarshalJSON(d []byte) error {
 	var newcode string
 	err := json.Unmarshal(d, &newcode)
@@ -270,37 +316,49 @@ func (c Code) MarshalJSON() ([]byte, error) {
 	return json.Marshal(c.String())
 }
 
+// MarshalText implements encoding.TextMarshaler. sonic ignores MarshalJSON for map keys and
+// consults this instead, as v1 did, so without it a map[Code]T cannot encode under sonic_on
+func (c Code) MarshalText() ([]byte, error) {
+	return []byte(c.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler, the decode half of the same map key contract
+func (c *Code) UnmarshalText(d []byte) error {
+	*c = NewCode(string(d))
+	return nil
+}
+
 // IsEmpty returns true if the code is empty
 func (c Code) IsEmpty() bool {
-	if c.Item == nil {
-		return true
-	}
-	return c.Item.Symbol == ""
+	return c.Item == nil || c.Item.Symbol == ""
 }
 
-// Match returns if the code supplied is the same as the corresponding code
-func (c Code) Match(check Code) bool {
+// Equal returns if the code supplied is the same as the corresponding code
+func (c Code) Equal(check Code) bool {
 	return c.Item == check.Item
-}
-
-// IsDefaultFiatCurrency checks if the currency passed in matches the default
-// fiat currency
-func (c Code) IsDefaultFiatCurrency() bool {
-	return storage.IsDefaultCurrency(c)
-}
-
-// IsDefaultCryptocurrency checks if the currency passed in matches the default
-// cryptocurrency
-func (c Code) IsDefaultCryptocurrency() bool {
-	return storage.IsDefaultCryptocurrency(c)
 }
 
 // IsFiatCurrency checks if the currency passed is an enabled fiat currency
 func (c Code) IsFiatCurrency() bool {
-	return storage.IsFiatCurrency(c)
+	return c.Item != nil && c.Item.Role == Fiat
 }
 
 // IsCryptocurrency checks if the currency passed is an enabled CRYPTO currency.
+// NOTE: All unset currencies will default to cryptocurrencies and stable coins
+// are cryptocurrencies as well.
 func (c Code) IsCryptocurrency() bool {
-	return storage.IsCryptocurrency(c)
+	return c.Item != nil && c.Item.Role&(Cryptocurrency|Stable) == c.Item.Role
+}
+
+// IsStableCurrency checks if the currency is a stable currency.
+func (c Code) IsStableCurrency() bool {
+	return c.Item != nil && c.Item.Role == Stable
+}
+
+// Currency allows an item to revert to a code
+func (i *Item) Currency() Code {
+	if i == nil {
+		return EMPTYCODE
+	}
+	return NewCode(i.Symbol)
 }

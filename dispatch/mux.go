@@ -2,25 +2,34 @@ package dispatch
 
 import (
 	"errors"
-	"reflect"
+	"uuid"
 
-	"github.com/gofrs/uuid"
+	"github.com/thrasher-corp/gocryptotrader/common"
 )
 
-// GetNewMux returns a new multiplexor to track subsystem updates
-func GetNewMux() *Mux {
-	return &Mux{d: dispatcher}
+var (
+	errIDNotSet = errors.New("id not set")
+	errNoIDs    = errors.New("no IDs to publish data to")
+)
+
+// GetNewMux returns a new multiplexer to track subsystem updates, if nil
+// dispatcher provided it will default to the global Dispatcher.
+func GetNewMux(d *Dispatcher) *Mux {
+	if d == nil {
+		d = dispatcher
+	}
+	return &Mux{d: d}
 }
 
 // Subscribe takes in a package defined signature element pointing to an ID set
 // and returns the associated pipe
 func (m *Mux) Subscribe(id uuid.UUID) (Pipe, error) {
-	if m == nil {
-		return Pipe{}, errors.New("mux is nil")
+	if err := common.NilGuard(m); err != nil {
+		return Pipe{}, err
 	}
 
-	if id == (uuid.UUID{}) {
-		return Pipe{}, errors.New("id not set")
+	if id == uuid.Nil() {
+		return Pipe{}, errIDNotSet
 	}
 
 	ch, err := m.d.subscribe(id)
@@ -28,34 +37,33 @@ func (m *Mux) Subscribe(id uuid.UUID) (Pipe, error) {
 		return Pipe{}, err
 	}
 
-	return Pipe{C: ch, id: id, m: m}, nil
+	return Pipe{c: ch, id: id, m: m}, nil
 }
 
 // Unsubscribe returns channel to the pool for the full signature set
-func (m *Mux) Unsubscribe(id uuid.UUID, ch chan interface{}) error {
-	if m == nil {
-		return errors.New("mux is nil")
+func (m *Mux) Unsubscribe(id uuid.UUID, ch chan any) error {
+	if err := common.NilGuard(m); err != nil {
+		return err
 	}
 	return m.d.unsubscribe(id, ch)
 }
 
 // Publish takes in a persistent memory address and dispatches changes to
-// required pipes. Data should be of *type.
-func (m *Mux) Publish(ids []uuid.UUID, data interface{}) error {
-	if m == nil {
-		return errors.New("mux is nil")
+// required pipes.
+func (m *Mux) Publish(data any, ids ...uuid.UUID) error {
+	if err := common.NilGuard(m, data); err != nil {
+		return err
 	}
 
-	if data == nil {
-		return errors.New("data payload is nil")
+	if len(ids) == 0 {
+		return errNoIDs
 	}
-
-	cpy := reflect.ValueOf(data).Elem().Interface()
+	if m.d.subscriberCount.Load() == 0 {
+		return nil
+	}
 
 	for i := range ids {
-		// Create copy to not interfere with stored value
-		err := m.d.publish(ids[i], &cpy)
-		if err != nil {
+		if err := m.d.publish(ids[i], data); err != nil {
 			return err
 		}
 	}
@@ -64,13 +72,18 @@ func (m *Mux) Publish(ids []uuid.UUID, data interface{}) error {
 
 // GetID a new unique ID to track routing information in the dispatch system
 func (m *Mux) GetID() (uuid.UUID, error) {
-	if m == nil {
-		return uuid.UUID{}, errors.New("mux is nil")
+	if err := common.NilGuard(m); err != nil {
+		return uuid.UUID{}, err
 	}
-	return m.d.getNewID()
+	return m.d.getNewID(uuid.NewV4)
 }
 
 // Release returns the channel to the communications pool to be reused
 func (p *Pipe) Release() error {
-	return p.m.Unsubscribe(p.id, p.C)
+	return p.m.Unsubscribe(p.id, p.c)
+}
+
+// Channel returns the Pipe's channel
+func (p *Pipe) Channel() <-chan any {
+	return p.c
 }

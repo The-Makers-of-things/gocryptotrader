@@ -8,6 +8,7 @@ import (
 )
 
 func TestLinearBackoff(t *testing.T) {
+	t.Parallel()
 	type args struct {
 		Backoff request.Backoff
 	}
@@ -64,7 +65,6 @@ func TestLinearBackoff(t *testing.T) {
 	}
 
 	for name, tt := range testTable {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 

@@ -1,41 +1,64 @@
-//+build mock_test_off
+//go:build mock_test_off
 
 // This will build if build tag mock_test_off is parsed and will do live testing
 // using all tests in (exchange)_test.go
 package binance
 
 import (
+	"context"
 	"log"
 	"os"
 	"testing"
 
-	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/exchange/accounts"
+	"github.com/thrasher-corp/gocryptotrader/exchange/stream"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/sharedtestvalues"
+	testexch "github.com/thrasher-corp/gocryptotrader/internal/testing/exchange"
+	"github.com/thrasher-corp/gocryptotrader/internal/testing/livetest"
 )
 
-var mockTests = false
+var (
+	mockTests = false
+	// Please supply your own credentials here to do authenticated endpoint testing.
+	apiCredentials = &accounts.Credentials{
+		Key:    "",
+		Secret: "",
+	}
+)
 
 func TestMain(m *testing.M) {
-	cfg := config.GetConfig()
-	err := cfg.LoadConfig("../../testdata/configtest.json", true)
-	if err != nil {
-		log.Fatal("Binance load config error", err)
+	if livetest.ShouldSkip() {
+		log.Printf(livetest.LiveTestingSkipped, "Binance")
+		os.Exit(0)
 	}
-	binanceConfig, err := cfg.GetExchangeConfig("Binance")
-	if err != nil {
-		log.Fatal("Binance Setup() init error", err)
+
+	e = new(Exchange)
+	if err := testexch.Setup(e); err != nil {
+		log.Fatalf("Binance Setup error: %s", err)
 	}
-	binanceConfig.API.AuthenticatedSupport = true
-	binanceConfig.API.Credentials.Key = apiKey
-	binanceConfig.API.Credentials.Secret = apiSecret
-	b.SetDefaults()
-	b.Websocket = sharedtestvalues.NewTestWebsocket()
-	err = b.Setup(binanceConfig)
-	if err != nil {
-		log.Fatal("Binance setup error", err)
+
+	if apiCredentials.Key != "" && apiCredentials.Secret != "" {
+		e.API.AuthenticatedSupport = true
+		e.API.CredentialsValidator.RequiresBase64DecodeSecret = false
+		e.SetCredentials(apiCredentials)
 	}
-	b.setupOrderbookManager()
-	b.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
-	log.Printf(sharedtestvalues.LiveTesting, b.Name)
+
+	if useTestNet {
+		for k, v := range map[exchange.URL]string{
+			exchange.RestUSDTMargined: testnetFutures,
+			exchange.RestCoinMargined: testnetFutures,
+			exchange.RestSpot:         testnetSpotURL,
+		} {
+			if err := e.API.Endpoints.SetRunningURL(k.String(), v); err != nil {
+				log.Fatalf("Binance SetRunningURL error: %s", err)
+			}
+		}
+	}
+	e.Websocket.DataHandler = stream.NewRelay(sharedtestvalues.WebsocketRelayBufferCapacity)
+	log.Printf(sharedtestvalues.LiveTesting, e.Name)
+	if err := e.UpdateTradablePairs(context.Background()); err != nil {
+		log.Fatalf("Binance UpdateTradablePairs error: %s", err)
+	}
 	os.Exit(m.Run())
 }

@@ -3,6 +3,7 @@ package currencylayer
 import (
 	"github.com/thrasher-corp/gocryptotrader/currency/forexprovider/base"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/types"
 )
 
 // const declarations consist of endpoints and APIKey privileges
@@ -20,14 +21,10 @@ const (
 	APIEndpointConversion = "convert"
 	APIEndpointTimeframe  = "timeframe"
 	APIEndpointChange     = "change"
-
-	authRate   = 0
-	unAuthRate = 0
 )
 
-// CurrencyLayer is a foreign exchange rate provider at
-// https://currencylayer.com NOTE default base currency is USD when using a free
-// account. Has automatic upgrade to a SSL connection.
+// CurrencyLayer is a foreign exchange rate provider at https://currencylayer.com
+// NOTE default base currency is USD when using a free account
 type CurrencyLayer struct {
 	base.Base
 	Requester *request.Requester
@@ -35,7 +32,8 @@ type CurrencyLayer struct {
 
 // Error Defines the response error if an error occurred
 type Error struct {
-	Code int    `json:"code"`
+	Code uint64 `json:"code"`
+	Type string `json:"type"`
 	Info string `json:"info"`
 }
 
@@ -45,7 +43,7 @@ type LiveRates struct {
 	Error     Error              `json:"error"`
 	Terms     string             `json:"terms"`
 	Privacy   string             `json:"privacy"`
-	Timestamp int64              `json:"timestamp"`
+	Timestamp types.Time         `json:"timestamp"`
 	Source    string             `json:"source"`
 	Quotes    map[string]float64 `json:"quotes"`
 }
@@ -94,15 +92,15 @@ type ConversionRate struct {
 
 // TimeFrame is a response type holding exchange rates for a time period
 type TimeFrame struct {
-	Success   bool                   `json:"success"`
-	Error     Error                  `json:"error"`
-	Terms     string                 `json:"terms"`
-	Privacy   string                 `json:"privacy"`
-	Timeframe bool                   `json:"timeframe"`
-	StartDate string                 `json:"start_date"`
-	EndDate   string                 `json:"end_date"`
-	Source    string                 `json:"source"`
-	Quotes    map[string]interface{} `json:"quotes"`
+	Success   bool           `json:"success"`
+	Error     Error          `json:"error"`
+	Terms     string         `json:"terms"`
+	Privacy   string         `json:"privacy"`
+	Timeframe bool           `json:"timeframe"`
+	StartDate string         `json:"start_date"`
+	EndDate   string         `json:"end_date"`
+	Source    string         `json:"source"`
+	Quotes    map[string]any `json:"quotes"`
 }
 
 // ChangeRate is the response type that holds rate change data.

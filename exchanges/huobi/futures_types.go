@@ -1,17 +1,24 @@
 package huobi
 
+import (
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/types"
+)
+
 // FContractInfoData gets contract info data for futures
 type FContractInfoData struct {
 	Data []struct {
-		Symbol         string  `json:"symbol"`
-		ContractCode   string  `json:"contract_code"`
-		ContractType   string  `json:"contract_type"`
-		ContractSize   float64 `json:"contract_size"`
-		PriceTick      float64 `json:"price_tick"`
-		DeliveryDate   string  `json:"delivery_date"`
-		CreateDate     string  `json:"create_date"`
-		ContractStatus int64   `json:"contract_status"`
-	}
+		Symbol         string     `json:"symbol"`
+		ContractCode   string     `json:"contract_code"`
+		ContractType   string     `json:"contract_type"`
+		ContractSize   float64    `json:"contract_size"`
+		PriceTick      float64    `json:"price_tick"`
+		DeliveryDate   string     `json:"delivery_date"`
+		DeliveryTime   types.Time `json:"delivery_time"`
+		CreateDate     types.Time `json:"create_date"`
+		ContractStatus int64      `json:"contract_status"`
+		SettlementTime types.Time `json:"settlement_time"`
+	} `json:"data"`
 }
 
 // FContractIndexPriceInfo stores contract index price
@@ -20,31 +27,28 @@ type FContractIndexPriceInfo struct {
 		Symbol     string  `json:"symbol"`
 		IndexPrice float64 `json:"index_price"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
-}
-
-// FContractPriceLimits gets limits for futures contracts
-type FContractPriceLimits struct {
-	Data struct {
-		Symbol       string  `json:"symbol"`
-		HighLimit    float64 `json:"high_limit"`
-		LowLimit     float64 `json:"low_limit"`
-		ContractCode string  `json:"contract_code"`
-		ContractType string  `json:"contract_type"`
-	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FContractOIData stores open interest data for futures contracts
 type FContractOIData struct {
-	Data []struct {
-		Symbol       string  `json:"symbol"`
-		ContractType string  `json:"contract_type"`
-		Volume       float64 `json:"volume"`
-		Amount       float64 `json:"amount"`
-		ContractCode string  `json:"contract_code"`
-	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Data      []UContractOpenInterest `json:"data"`
+	Timestamp types.Time              `json:"ts"`
+}
+
+// UContractOpenInterest stores open interest data for futures contracts
+type UContractOpenInterest struct {
+	Volume        float64 `json:"volume"`
+	Amount        float64 `json:"amount"`
+	Symbol        string  `json:"symbol"`
+	Value         float64 `json:"value"`
+	ContractCode  string  `json:"contract_code"`
+	TradeAmount   float64 `json:"trade_amount"`
+	TradeVolume   float64 `json:"trade_volume"`
+	TradeTurnover float64 `json:"trade_turnover"`
+	BusinessType  string  `json:"business_type"`
+	Pair          string  `json:"pair"`
+	ContractType  string  `json:"contract_type"`
 }
 
 // FEstimatedDeliveryPriceInfo stores estimated delivery price data for futures
@@ -52,19 +56,19 @@ type FEstimatedDeliveryPriceInfo struct {
 	Data struct {
 		DeliveryPrice float64 `json:"delivery_price"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FMarketDepth gets orderbook data for futures
 type FMarketDepth struct {
-	Ch        string `json:"ch"`
-	Timestamp int64  `json:"ts"`
+	Ch        string     `json:"ch"`
+	Timestamp types.Time `json:"ts"`
 	Tick      struct {
 		MRID      int64        `json:"mrid"`
 		ID        int64        `json:"id"`
 		Bids      [][2]float64 `json:"bids"`
 		Asks      [][2]float64 `json:"asks"`
-		Timestamp int64        `json:"ts"`
+		Timestamp types.Time   `json:"ts"`
 		Version   int64        `json:"version"`
 		Ch        string       `json:"ch"`
 	} `json:"tick"`
@@ -86,35 +90,35 @@ type obItem struct {
 type FKlineData struct {
 	Ch   string `json:"ch"`
 	Data []struct {
-		Vol    float64 `json:"vol"`
-		Close  float64 `json:"close"`
-		Count  float64 `json:"count"`
-		High   float64 `json:"high"`
-		ID     int64   `json:"id"`
-		Low    float64 `json:"low"`
-		Open   float64 `json:"open"`
-		Amount float64 `json:"amount"`
+		Volume      float64    `json:"vol"`
+		Close       float64    `json:"close"`
+		Count       float64    `json:"count"`
+		High        float64    `json:"high"`
+		IDTimestamp types.Time `json:"id"`
+		Low         float64    `json:"low"`
+		Open        float64    `json:"open"`
+		Amount      float64    `json:"amount"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FMarketOverviewData stores overview data for futures
 type FMarketOverviewData struct {
 	Ch   string `json:"ch"`
 	Tick struct {
-		Vol       float64 `json:"vol,string"`
-		Ask       [2]float64
-		Bid       [2]float64
-		Close     float64 `json:"close,string"`
-		Count     float64 `json:"count"`
-		High      float64 `json:"high,string"`
-		ID        int64   `jso:"id"`
-		Low       float64 `json:"low,string"`
-		Open      float64 `json:"open,string"`
-		Timestamp int64   `json:"ts"`
-		Amount    float64 `json:"amount,string"`
+		Vol       float64    `json:"vol,string"`
+		Ask       [2]float64 `json:"ask"`
+		Bid       [2]float64 `json:"bid"`
+		Close     float64    `json:"close,string"`
+		Count     float64    `json:"count"`
+		High      float64    `json:"high,string"`
+		ID        int64      `json:"id"`
+		Low       float64    `json:"low,string"`
+		Open      float64    `json:"open,string"`
+		Timestamp types.Time `json:"ts"`
+		Amount    float64    `json:"amount,string"`
 	} `json:"tick"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FLastTradeData stores last trade's data for a contract
@@ -122,55 +126,36 @@ type FLastTradeData struct {
 	Ch   string `json:"ch"`
 	Tick struct {
 		Data []struct {
-			Amount    float64 `json:"amount,string"`
-			Direction string  `json:"direction"`
-			ID        int64   `json:"id"`
-			Price     float64 `json:"price,string"`
-			Timestamp int64   `json:"ts"`
+			Amount    float64    `json:"amount,string"`
+			Direction string     `json:"direction"`
+			ID        int64      `json:"id"`
+			Price     float64    `json:"price,string"`
+			Timestamp types.Time `json:"ts"`
 		} `json:"data"`
-		ID        int64 `json:"id"`
-		Timestamp int64 `json:"ts"`
+		ID        int64      `json:"id"`
+		Timestamp types.Time `json:"ts"`
 	} `json:"tick"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FBatchTradesForContractData stores batch of trades data for a contract
 type FBatchTradesForContractData struct {
-	Ch        string `json:"ch"`
-	Timestamp int64  `json:"ts"`
+	Ch        string     `json:"ch"`
+	Timestamp types.Time `json:"ts"`
 	Data      []struct {
-		ID        int64 `json:"id"`
-		Timestamp int64 `json:"ts"`
-		Data      []struct {
-			Amount    float64 `json:"amount"`
-			Direction string  `json:"direction"`
-			ID        int64   `json:"id"`
-			Price     float64 `json:"price"`
-			Timestamp int64   `json:"ts"`
-		} `json:"data"`
+		ID        int64          `json:"id"`
+		Timestamp types.Time     `json:"ts"`
+		Data      []FuturesTrade `json:"data"`
 	} `json:"data"`
 }
 
-// FClawbackRateAndInsuranceData stores clawback rate and insurance data for futures
-type FClawbackRateAndInsuranceData struct {
-	Timestamp int64 `json:"ts"`
-	Data      []struct {
-		Symbol            string  `json:"symbol"`
-		InsuranceFund     float64 `json:"insurance_fund"`
-		EstimatedClawback float64 `json:"estimated_clawback"`
-	} `json:"data"`
-}
-
-// FHistoricalInsuranceRecordsData stores historical records of insurance fund balances for futures
-type FHistoricalInsuranceRecordsData struct {
-	Timestamp int64 `json:"timestamp"`
-	Data      struct {
-		Symbol string `json:"symbol"`
-		Tick   []struct {
-			InsuranceFund float64 `json:"insurance_fund"`
-			Timestamp     int64   `json:"ts"`
-		} `json:"tick"`
-	} `json:"data"`
+// FuturesTrade is futures trade data
+type FuturesTrade struct {
+	Amount    float64    `json:"amount"`
+	Direction string     `json:"direction"`
+	ID        int64      `json:"id"`
+	Price     float64    `json:"price"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FTieredAdjustmentFactorInfo stores info on adjustment factor for futures
@@ -187,7 +172,7 @@ type FTieredAdjustmentFactorInfo struct {
 			} `json:"ladders"`
 		} `json:"list"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FOIData gets oi data on futures
@@ -196,39 +181,26 @@ type FOIData struct {
 		Symbol       string `json:"symbol"`
 		ContractType string `json:"contract_type"`
 		Tick         []struct {
-			Volume     float64 `json:"volume,string"`
-			AmountType int64   `json:"amount_type"`
-			Timestamp  int64   `json:"ts"`
+			Volume     float64    `json:"volume,string"`
+			AmountType int64      `json:"amount_type"`
+			Timestamp  types.Time `json:"ts"`
 		} `json:"tick"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
-}
-
-// FInfoSystemStatusData stores system status info for futures
-type FInfoSystemStatusData struct {
-	Data []struct {
-		Symbol      string `json:"symbol"`
-		Open        int64  `json:"open"`
-		Close       int64  `json:"close"`
-		Cancel      int64  `json:"cancel"`
-		TransferIn  int64  `json:"transfer_in"`
-		TransferOut int64  `json:"transfer_out"`
-	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FTopAccountsLongShortRatio stores long/short ratio for top futures accounts
 type FTopAccountsLongShortRatio struct {
 	Data struct {
 		List []struct {
-			BuyRatio    float64 `json:"buy_ratio"`
-			SellRatio   float64 `json:"sell_ratio"`
-			LockedRatio float64 `json:"locked_ratio"`
-			Timestamp   int64   `json:"ts"`
+			BuyRatio    float64    `json:"buy_ratio"`
+			SellRatio   float64    `json:"sell_ratio"`
+			LockedRatio float64    `json:"locked_ratio"`
+			Timestamp   types.Time `json:"ts"`
 		} `json:"list"`
 		Symbol string `json:"symbol"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FTopPositionsLongShortRatio stores long short ratio for top futures positions
@@ -236,31 +208,12 @@ type FTopPositionsLongShortRatio struct {
 	Data struct {
 		Symbol string `json:"symbol"`
 		List   []struct {
-			BuyRatio  float64 `json:"buy_ratio"`
-			SellRatio float64 `json:"sell_ratio"`
-			Timestamp int64   `json:"timestamp"`
+			BuyRatio  float64    `json:"buy_ratio"`
+			SellRatio float64    `json:"sell_ratio"`
+			Timestamp types.Time `json:"timestamp"`
 		} `json:"list"`
 	} `json:"data"`
-	Timestamp int64 `json:"timestamp"`
-}
-
-// FLiquidationOrdersInfo stores data of futures liquidation orders
-type FLiquidationOrdersInfo struct {
-	Data struct {
-		Orders []struct {
-			Symbol       string  `json:"symbol"`
-			ContractCode string  `json:"contract_code"`
-			Direction    string  `json:"direction"`
-			Offset       string  `json:"offset"`
-			Volume       float64 `json:"volume"`
-			Price        float64 `json:"price"`
-			CreatedAt    int64   `json:"created_at"`
-		} `json:"orders"`
-		TotalPage   int64 `json:"total_page"`
-		CurrentPage int64 `json:"current_page"`
-		TotalSize   int64 `json:"total_size"`
-	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"timestamp"`
 }
 
 // FIndexKlineData stores index kline data for futures
@@ -276,7 +229,7 @@ type FIndexKlineData struct {
 		Open   float64 `json:"open"`
 		Amount float64 `json:"amount"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FBasisData stores basis data for futures
@@ -289,27 +242,27 @@ type FBasisData struct {
 		ID            int64   `json:"id"`
 		IndexPrice    float64 `json:"index_price,string"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FUserAccountData stores user account data info for futures
 type FUserAccountData struct {
 	AccData []struct {
-		Symbol            string  `json:"symbol"`
-		MarginBalance     float64 `json:"margin_balance"`
-		MarginPosition    float64 `json:"margin_position"`
-		MarginFrozen      float64 `json:"margin_frozen"`
-		MarginAvailable   float64 `json:"margin_available"`
-		ProfitReal        float64 `json:"profit_real"`
-		ProfitUnreal      float64 `json:"profit_unreal"`
-		RiskRate          float64 `json:"risk_rate"`
-		LiquidationPrice  float64 `json:"liquidation_price"`
-		WithdrawAvailable float64 `json:"withdraw_available"`
-		LeverageRate      float64 `json:"lever_rate"`
-		AdjustFactor      float64 `json:"adjust_factor"`
-		MarginStatic      float64 `json:"margin_static"`
+		Symbol            currency.Code `json:"symbol"`
+		MarginBalance     float64       `json:"margin_balance"`
+		MarginPosition    float64       `json:"margin_position"`
+		MarginFrozen      float64       `json:"margin_frozen"`
+		MarginAvailable   float64       `json:"margin_available"`
+		ProfitReal        float64       `json:"profit_real"`
+		ProfitUnreal      float64       `json:"profit_unreal"`
+		RiskRate          float64       `json:"risk_rate"`
+		LiquidationPrice  float64       `json:"liquidation_price"`
+		WithdrawAvailable float64       `json:"withdraw_available"`
+		LeverageRate      float64       `json:"lever_rate"`
+		AdjustFactor      float64       `json:"adjust_factor"`
+		MarginStatic      float64       `json:"margin_static"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FUsersPositionsInfo stores positions data for futures
@@ -331,12 +284,12 @@ type FUsersPositionsInfo struct {
 		Direction      string  `json:"direction"`
 		LastPrice      float64 `json:"last_price"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FSubAccountAssetsInfo gets subaccounts asset data
 type FSubAccountAssetsInfo struct {
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 	Data      []struct {
 		SubUID int64 `json:"sub_uid"`
 		List   []struct {
@@ -351,21 +304,21 @@ type FSubAccountAssetsInfo struct {
 // FSingleSubAccountAssetsInfo stores futures assets info for a single subaccount
 type FSingleSubAccountAssetsInfo struct {
 	AssetsData []struct {
-		Symbol            string  `json:"symbol"`
-		MarginBalance     float64 `json:"margin_balance"`
-		MarginPosition    float64 `json:"margin_position"`
-		MarginFrozen      float64 `json:"margin_frozen"`
-		MarginAvailable   float64 `json:"margin_available"`
-		ProfitReal        float64 `json:"profit_real"`
-		ProfitUnreal      float64 `json:"profit_unreal"`
-		WithdrawAvailable float64 `json:"withdraw_available"`
-		RiskRate          float64 `json:"risk_rate"`
-		LiquidationPrice  float64 `json:"liquidation_price"`
-		AdjustFactor      float64 `json:"adjust_factor"`
-		LeverageRate      float64 `json:"lever_rate"`
-		MarginStatic      float64 `json:"margin_static"`
+		Symbol            currency.Code `json:"symbol"`
+		MarginBalance     float64       `json:"margin_balance"`
+		MarginPosition    float64       `json:"margin_position"`
+		MarginFrozen      float64       `json:"margin_frozen"`
+		MarginAvailable   float64       `json:"margin_available"`
+		ProfitReal        float64       `json:"profit_real"`
+		ProfitUnreal      float64       `json:"profit_unreal"`
+		WithdrawAvailable float64       `json:"withdraw_available"`
+		RiskRate          float64       `json:"risk_rate"`
+		LiquidationPrice  float64       `json:"liquidation_price"`
+		AdjustFactor      float64       `json:"adjust_factor"`
+		LeverageRate      float64       `json:"lever_rate"`
+		MarginStatic      float64       `json:"margin_static"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FSingleSubAccountPositionsInfo stores futures positions' info for a single subaccount
@@ -387,40 +340,40 @@ type FSingleSubAccountPositionsInfo struct {
 		Direction      string  `json:"direction"`
 		LastPrice      float64 `json:"last_price"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FFinancialRecords stores financial records data for futures
 type FFinancialRecords struct {
 	Data struct {
 		FinancialRecord []struct {
-			ID         int64   `json:"id"`
-			Timestamp  int64   `json:"ts"`
-			Symbol     string  `json:"symbol"`
-			RecordType int64   `json:"type"`
-			Amount     float64 `json:"amount"`
+			ID         int64      `json:"id"`
+			Timestamp  types.Time `json:"ts"`
+			Symbol     string     `json:"symbol"`
+			RecordType int64      `json:"type"`
+			Amount     float64    `json:"amount"`
 		} `json:"financial_record"`
 		TotalPage   int64 `json:"total_page"`
 		CurrentPage int64 `json:"current_page"`
 		TotalSize   int64 `json:"total_size"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FSettlementRecords stores user's futures settlement records
 type FSettlementRecords struct {
 	Data struct {
 		SettlementRecords []struct {
-			Symbol               string  `json:"symbol"`
-			MarginBalanceInit    float64 `json:"margin_balance_init"`
-			MarginBalance        int64   `json:"margin_balance"`
-			SettlementProfitReal float64 `json:"settlement_profit_real"`
-			SettlementTime       int64   `json:"settlement_time"`
-			Clawback             float64 `json:"clawback"`
-			DeliveryFee          float64 `json:"delivery_fee"`
-			OffsetProfitLoss     float64 `json:"offset_profitloss"`
-			Fee                  float64 `json:"fee"`
-			FeeAsset             string  `json:"fee_asset"`
+			Symbol               string     `json:"symbol"`
+			MarginBalanceInit    float64    `json:"margin_balance_init"`
+			MarginBalance        int64      `json:"margin_balance"`
+			SettlementProfitReal float64    `json:"settlement_profit_real"`
+			SettlementTime       types.Time `json:"settlement_time"`
+			Clawback             float64    `json:"clawback"`
+			DeliveryFee          float64    `json:"delivery_fee"`
+			OffsetProfitLoss     float64    `json:"offset_profitloss"`
+			Fee                  float64    `json:"fee"`
+			FeeAsset             string     `json:"fee_asset"`
 			Positions            []struct {
 				Symbol                 string  `json:"symbol"`
 				ContractCode           string  `json:"contract_code"`
@@ -438,7 +391,7 @@ type FSettlementRecords struct {
 		TotalPage   int64 `json:"total_page"`
 		TotalSize   int64 `json:"total_size"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FContractInfoOnOrderLimit stores contract info on futures order limit
@@ -454,7 +407,7 @@ type FContractInfoOnOrderLimit struct {
 			} `json:"types"`
 		} `json:"list"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FContractTradingFeeData stores contract trading fee data
@@ -468,7 +421,7 @@ type FContractTradingFeeData struct {
 		DeliveryFee   float64 `json:"delivery_fee,string"`
 		FeeAsset      string  `json:"fee_asset"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FTransferLimitData stores transfer limit data for futures
@@ -484,7 +437,7 @@ type FTransferLimitData struct {
 		NetTransferInMaxDaily  float64 `json:"net_transfer_in_max_daily"`
 		NetTransferOutMaxDaily float64 `json:"net_transfer_out_max_daily"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FPositionLimitData stores information on futures positions limit
@@ -497,7 +450,7 @@ type FPositionLimitData struct {
 			SellLimit    float64 `json:"sell_limit"`
 		} `json:"list"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FAssetsAndPositionsData stores assets and positions data for futures
@@ -517,8 +470,8 @@ type FAssetsAndPositionsData struct {
 
 // FAccountTransferData stores internal transfer data for futures
 type FAccountTransferData struct {
-	Status    string `json:"status"`
-	Timestamp int64  `json:"ts"`
+	Status    string     `json:"status"`
+	Timestamp types.Time `json:"ts"`
 	Data      struct {
 		OrderID string `json:"order_id"`
 	} `json:"data"`
@@ -526,16 +479,16 @@ type FAccountTransferData struct {
 
 // FTransferRecords gets transfer records data
 type FTransferRecords struct {
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 	Data      struct {
 		TransferRecord []struct {
-			ID             int64   `json:"id"`
-			Timestamp      int64   `json:"ts"`
-			Symbol         string  `json:"symbol"`
-			SubUID         int64   `json:"sub_uid"`
-			SubAccountName string  `json:"sub_account_name"`
-			TransferType   int64   `json:"transfer_type"`
-			Amount         float64 `json:"amount"`
+			ID             int64      `json:"id"`
+			Timestamp      types.Time `json:"ts"`
+			Symbol         string     `json:"symbol"`
+			SubUID         int64      `json:"sub_uid"`
+			SubAccountName string     `json:"sub_account_name"`
+			TransferType   int64      `json:"transfer_type"`
+			Amount         float64    `json:"amount"`
 		} `json:"transfer_record"`
 		TotalPage   int64 `json:"total_page"`
 		CurrentPage int64 `json:"current_page"`
@@ -549,7 +502,7 @@ type FAvailableLeverageData struct {
 		Symbol                string `json:"symbol"`
 		AvailableLeverageRate string `json:"available_level_rate"`
 	} `json:"data"`
-	Timestamp int64 `json:"timestamp"`
+	Timestamp types.Time `json:"timestamp"`
 }
 
 // FOrderData stores order data for futures
@@ -559,7 +512,7 @@ type FOrderData struct {
 		OrderIDStr    string `json:"order_id_str"`
 		ClientOrderID int64  `json:"client_order_id"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 type fBatchOrderData struct {
@@ -590,7 +543,7 @@ type FCancelOrderData struct {
 		} `json:"errors"`
 		Successes string `json:"successes"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FOrderInfo stores order info
@@ -622,7 +575,7 @@ type FOrderInfo struct {
 		Volume          float64 `json:"volume"`
 		LiquidationType int64   `json:"liquidation_type"`
 	} `json:"data"`
-	Timestamp int64 `json:"timestamp"`
+	Timestamp types.Time `json:"timestamp"`
 }
 
 // FOrderDetailsData stores order details for futures orders
@@ -668,7 +621,7 @@ type FOrderDetailsData struct {
 		TotalSize   int64 `json:"total_size"`
 		CurrentPage int64 `json:"current_page"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FOpenOrdersData stores open orders data for futures
@@ -702,72 +655,42 @@ type FOpenOrdersData struct {
 		CurrentPage int64 `json:"current_page"`
 		TotalSize   int64 `json:"total_size"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FOrderHistoryData stores order history data
 type FOrderHistoryData struct {
 	Data struct {
 		Orders []struct {
-			Symbol          string  `json:"symbol"`
-			ContractType    string  `json:"contract_type"`
-			ContractCode    string  `json:"contract_code"`
-			Volume          float64 `json:"volume"`
-			Price           float64 `json:"price"`
-			OrderPriceType  string  `json:"order_price_type"`
-			Direction       string  `json:"direction"`
-			Offset          string  `json:"offset"`
-			LeverageRate    float64 `json:"lever_rate"`
-			OrderID         int64   `json:"order_id"`
-			OrderIDString   string  `json:"order_id_str"`
-			OrderSource     string  `json:"order_source"`
-			CreateDate      int64   `json:"create_date"`
-			TradeVolume     float64 `json:"trade_volume"`
-			TradeTurnover   float64 `json:"trade_turnover"`
-			Fee             float64 `json:"fee"`
-			TradeAvgPrice   float64 `json:"trade_avg_price"`
-			MarginFrozen    float64 `json:"margin_frozen"`
-			Profit          float64 `json:"profit"`
-			Status          int64   `json:"status"`
-			OrderType       int64   `json:"order_type"`
-			FeeAsset        string  `json:"fee_asset"`
-			LiquidationType int64   `json:"liquidation_type"`
+			Symbol          string     `json:"symbol"`
+			ContractType    string     `json:"contract_type"`
+			ContractCode    string     `json:"contract_code"`
+			Volume          float64    `json:"volume"`
+			Price           float64    `json:"price"`
+			OrderPriceType  string     `json:"order_price_type"`
+			Direction       string     `json:"direction"`
+			Offset          string     `json:"offset"`
+			LeverageRate    float64    `json:"lever_rate"`
+			OrderID         int64      `json:"order_id"`
+			OrderIDString   string     `json:"order_id_str"`
+			OrderSource     string     `json:"order_source"`
+			CreateDate      types.Time `json:"create_date"`
+			TradeVolume     float64    `json:"trade_volume"`
+			TradeTurnover   float64    `json:"trade_turnover"`
+			Fee             float64    `json:"fee"`
+			TradeAvgPrice   float64    `json:"trade_avg_price"`
+			MarginFrozen    float64    `json:"margin_frozen"`
+			Profit          float64    `json:"profit"`
+			Status          int64      `json:"status"`
+			OrderType       int64      `json:"order_type"`
+			FeeAsset        string     `json:"fee_asset"`
+			LiquidationType int64      `json:"liquidation_type"`
 		} `json:"orders"`
 		TotalPage   int64 `json:"total_page"`
 		CurrentPage int64 `json:"current_page"`
 		TotalSize   int64 `json:"total_size"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
-}
-
-// FTradeHistoryData stores trade history data for futures
-type FTradeHistoryData struct {
-	Data struct {
-		TotalPage   int64 `json:"total_page"`
-		CurrentPage int64 `json:"current_page"`
-		TotalSize   int64 `json:"total_size"`
-		Trades      []struct {
-			ID            string  `json:"id"`
-			ContractCode  string  `json:"contract_code"`
-			ContractType  string  `json:"contract_type"`
-			CreateDate    int64   `json:"create_date"`
-			Direction     string  `json:"direction"`
-			MatchID       int64   `json:"match_id"`
-			Offset        string  `json:"offset"`
-			OffsetPNL     float64 `json:"offset_profitloss"`
-			OrderID       int64   `json:"order_id"`
-			OrderIDString string  `json:"order_id_str"`
-			Symbol        string  `json:"symbol"`
-			OrderSource   string  `json:"order_source"`
-			TradeFee      float64 `json:"trade_fee"`
-			TradePrice    float64 `json:"trade_price"`
-			TradeTurnover float64 `json:"trade_turnover"`
-			TradeVolume   float64 `json:"trade_volume"`
-			Role          string  `json:"role"`
-			FeeAsset      string  `json:"fee_asset"`
-		} `json:"trades"`
-	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FTriggerOrderData stores trigger order data
@@ -776,7 +699,7 @@ type FTriggerOrderData struct {
 		OrderID    int64  `json:"order_id"`
 		OrderIDStr string `json:"order_id_str"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FTriggerOpenOrders stores trigger open orders data
@@ -805,7 +728,7 @@ type FTriggerOpenOrders struct {
 		CurrentPage int64 `json:"current_page"`
 		TotalSize   int64 `json:"total_size"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }
 
 // FTriggerOrderHistoryData stores trigger order history for futures
@@ -841,5 +764,5 @@ type FTriggerOrderHistoryData struct {
 		CurrentPage int64 `json:"current_page"`
 		TotalSize   int64 `json:"total_size"`
 	} `json:"data"`
-	Timestamp int64 `json:"ts"`
+	Timestamp types.Time `json:"ts"`
 }

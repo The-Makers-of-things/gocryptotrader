@@ -7,8 +7,9 @@ import (
 	"io"
 	"os"
 	"strings"
+	"uuid"
 
-	"github.com/gofrs/uuid"
+	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/common/cache"
 	"github.com/thrasher-corp/gocryptotrader/database"
 	modelPSQL "github.com/thrasher-corp/gocryptotrader/database/models/postgres"
@@ -37,22 +38,22 @@ func one(in, clause string) (out Details, err error) {
 
 	whereQM := qm.Where(clause+"= ?", in)
 	if repository.GetSQLDialect() == database.DBSQLite3 {
-		ret, errS := modelSQLite.Exchanges(whereQM).One(context.Background(), database.DB.SQL)
+		ret, errS := modelSQLite.Exchanges(whereQM).One(context.TODO(), database.DB.SQL)
 		if errS != nil {
 			return out, errS
 		}
 		out.Name = ret.Name
-		out.UUID, errS = uuid.FromString(ret.ID)
+		out.UUID, errS = uuid.Parse(ret.ID)
 		if errS != nil {
 			return out, errS
 		}
 	} else {
-		ret, errS := modelPSQL.Exchanges(whereQM).One(context.Background(), database.DB.SQL)
+		ret, errS := modelPSQL.Exchanges(whereQM).One(context.TODO(), database.DB.SQL)
 		if errS != nil {
 			return out, errS
 		}
 		out.Name = ret.Name
-		out.UUID, errS = uuid.FromString(ret.ID)
+		out.UUID, errS = uuid.Parse(ret.ID)
 		if errS != nil {
 			return out, errS
 		}
@@ -67,7 +68,7 @@ func Insert(in Details) error {
 		return database.ErrDatabaseSupportDisabled
 	}
 
-	ctx := context.Background()
+	ctx := context.TODO()
 	tx, err := database.DB.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -100,7 +101,7 @@ func InsertMany(in []Details) error {
 		return database.ErrDatabaseSupportDisabled
 	}
 
-	ctx := context.Background()
+	ctx := context.TODO()
 	tx, err := database.DB.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -133,13 +134,9 @@ func InsertMany(in []Details) error {
 
 func insertSQLite(ctx context.Context, tx *sql.Tx, in []Details) (err error) {
 	for x := range in {
-		tempUUID, errUUID := uuid.NewV4()
-		if errUUID != nil {
-			return errUUID
-		}
-		var tempInsert = modelSQLite.Exchange{
+		tempInsert := modelSQLite.Exchange{
 			Name: strings.ToLower(in[x].Name),
-			ID:   tempUUID.String(),
+			ID:   uuid.NewV4().String(),
 		}
 
 		err = tempInsert.Insert(ctx, tx, boil.Infer())
@@ -157,7 +154,7 @@ func insertSQLite(ctx context.Context, tx *sql.Tx, in []Details) (err error) {
 
 func insertPostgresql(ctx context.Context, tx *sql.Tx, in []Details) (err error) {
 	for x := range in {
-		var tempInsert = modelPSQL.Exchange{
+		tempInsert := modelPSQL.Exchange{
 			Name: strings.ToLower(in[x].Name),
 		}
 
@@ -167,7 +164,7 @@ func insertPostgresql(ctx context.Context, tx *sql.Tx, in []Details) (err error)
 			if errRB != nil {
 				log.Errorln(log.DatabaseMgr, errRB)
 			}
-			return
+			return err
 		}
 	}
 	return nil
@@ -178,7 +175,11 @@ func UUIDByName(exchange string) (uuid.UUID, error) {
 	exchange = strings.ToLower(exchange)
 	v := exchangeCache.Get(exchange)
 	if v != nil {
-		return v.(uuid.UUID), nil
+		u, ok := v.(uuid.UUID)
+		if !ok {
+			return uuid.UUID{}, common.GetTypeAssertError("uuid.UUID", v)
+		}
+		return u, nil
 	}
 	ret, err := One(exchange)
 	if err != nil {

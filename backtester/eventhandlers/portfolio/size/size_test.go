@@ -1,218 +1,241 @@
 package size
 
 import (
-	"errors"
 	"testing"
+	"time"
 
-	"github.com/thrasher-corp/gocryptotrader/backtester/common"
-	"github.com/thrasher-corp/gocryptotrader/backtester/config"
+	"github.com/stretchr/testify/assert"
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventhandlers/exchange"
+	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/event"
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/order"
+	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/signal"
+	gctcommon "github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/binance"
 	gctorder "github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
 func TestSizingAccuracy(t *testing.T) {
 	t.Parallel()
-	globalMinMax := config.MinMax{
-		MinimumSize:  0,
-		MaximumSize:  1,
-		MaximumTotal: 1337,
+	globalMinMax := exchange.MinMax{
+		MaximumSize:  decimal.NewFromInt(1),
+		MaximumTotal: decimal.NewFromInt(10),
 	}
 	sizer := Size{
 		BuySide:  globalMinMax,
 		SellSide: globalMinMax,
 	}
-	price := 1338.0
-	availableFunds := 1338.0
-	feeRate := 0.02
-	var buylimit float64 = 1
-	amountWithoutFee, err := sizer.calculateBuySize(price, availableFunds, feeRate, buylimit, globalMinMax)
-	if err != nil {
-		t.Error(err)
-	}
-	totalWithFee := (price * amountWithoutFee) + (globalMinMax.MaximumTotal * feeRate)
-	if totalWithFee != globalMinMax.MaximumTotal {
-		t.Error("incorrect amount calculation")
+	price := decimal.NewFromInt(10)
+	availableFunds := decimal.NewFromInt(11)
+	feeRate := decimal.MustFromFloat(0.02)
+	buyLimit := decimal.NewFromInt(1)
+	amountWithoutFee, _, err := sizer.calculateBuySize(price, availableFunds, feeRate, buyLimit, &globalMinMax)
+	assert.NoError(t, err)
+
+	totalWithFee := price.Mul(amountWithoutFee).Add(globalMinMax.MaximumTotal.Mul(feeRate))
+	if !totalWithFee.Equal(globalMinMax.MaximumTotal) {
+		t.Errorf("expected %v received %v", globalMinMax.MaximumTotal, totalWithFee)
 	}
 }
 
 func TestSizingOverMaxSize(t *testing.T) {
 	t.Parallel()
-	globalMinMax := config.MinMax{
-		MinimumSize:  0,
-		MaximumSize:  0.5,
-		MaximumTotal: 1337,
+	globalMinMax := exchange.MinMax{
+		MaximumSize:  decimal.MustFromFloat(0.5),
+		MaximumTotal: decimal.NewFromInt(1337),
 	}
 	sizer := Size{
 		BuySide:  globalMinMax,
 		SellSide: globalMinMax,
 	}
-	price := 1338.0
-	availableFunds := 1338.0
-	feeRate := 0.02
-	var buylimit float64 = 1
-	amount, err := sizer.calculateBuySize(price, availableFunds, feeRate, buylimit, globalMinMax)
-	if err != nil {
-		t.Error(err)
-	}
-	if amount > globalMinMax.MaximumSize {
+	price := decimal.NewFromInt(1338)
+	availableFunds := decimal.NewFromInt(1338)
+	feeRate := decimal.MustFromFloat(0.02)
+	buyLimit := decimal.NewFromInt(1)
+	amount, _, err := sizer.calculateBuySize(price, availableFunds, feeRate, buyLimit, &globalMinMax)
+	assert.NoError(t, err)
+
+	if amount.GreaterThan(globalMinMax.MaximumSize) {
 		t.Error("greater than max")
 	}
 }
 
 func TestSizingUnderMinSize(t *testing.T) {
 	t.Parallel()
-	globalMinMax := config.MinMax{
-		MinimumSize:  1,
-		MaximumSize:  2,
-		MaximumTotal: 1337,
+	globalMinMax := exchange.MinMax{
+		MinimumSize:  decimal.NewFromInt(1),
+		MaximumSize:  decimal.NewFromInt(2),
+		MaximumTotal: decimal.NewFromInt(1337),
 	}
 	sizer := Size{
 		BuySide:  globalMinMax,
 		SellSide: globalMinMax,
 	}
-	price := 1338.0
-	availableFunds := 1338.0
-	feeRate := 0.02
-	var buylimit float64 = 1
-	_, err := sizer.calculateBuySize(price, availableFunds, feeRate, buylimit, globalMinMax)
-	if !errors.Is(err, errLessThanMinimum) {
-		t.Errorf("expected: %v, received %v", errLessThanMinimum, err)
-	}
+	price := decimal.NewFromInt(1338)
+	availableFunds := decimal.NewFromInt(1338)
+	feeRate := decimal.MustFromFloat(0.02)
+	buyLimit := decimal.NewFromInt(1)
+	_, _, err := sizer.calculateBuySize(price, availableFunds, feeRate, buyLimit, &globalMinMax)
+	assert.ErrorIs(t, err, errLessThanMinimum)
 }
 
 func TestMaximumBuySizeEqualZero(t *testing.T) {
 	t.Parallel()
-	globalMinMax := config.MinMax{
-		MinimumSize:  1,
-		MaximumSize:  0,
-		MaximumTotal: 1437,
+	globalMinMax := exchange.MinMax{
+		MinimumSize:  decimal.NewFromInt(1),
+		MaximumTotal: decimal.NewFromInt(1437),
 	}
 	sizer := Size{
 		BuySide:  globalMinMax,
 		SellSide: globalMinMax,
 	}
-	price := 1338.0
-	availableFunds := 13380.0
-	feeRate := 0.02
-	var buylimit float64 = 1
-	amount, err := sizer.calculateBuySize(price, availableFunds, feeRate, buylimit, globalMinMax)
-	if amount != buylimit || err != nil {
-		t.Errorf("expected: %v, received %v, err: %+v", buylimit, amount, err)
+	price := decimal.NewFromInt(1338)
+	availableFunds := decimal.NewFromInt(13380)
+	feeRate := decimal.MustFromFloat(0.02)
+	buyLimit := decimal.NewFromInt(1)
+	amount, _, err := sizer.calculateBuySize(price, availableFunds, feeRate, buyLimit, &globalMinMax)
+	if amount != buyLimit || err != nil {
+		t.Errorf("expected: %v, received %v, err: %+v", buyLimit, amount, err)
 	}
 }
+
 func TestMaximumSellSizeEqualZero(t *testing.T) {
 	t.Parallel()
-	globalMinMax := config.MinMax{
-		MinimumSize:  1,
-		MaximumSize:  0,
-		MaximumTotal: 1437,
+	globalMinMax := exchange.MinMax{
+		MinimumSize:  decimal.NewFromInt(1),
+		MaximumTotal: decimal.NewFromInt(1437),
 	}
 	sizer := Size{
 		BuySide:  globalMinMax,
 		SellSide: globalMinMax,
 	}
-	price := 1338.0
-	availableFunds := 13380.0
-	feeRate := 0.02
-	var selllimit float64 = 1
-	amount, err := sizer.calculateSellSize(price, availableFunds, feeRate, selllimit, globalMinMax)
-	if amount != selllimit || err != nil {
-		t.Errorf("expected: %v, received %v, err: %+v", selllimit, amount, err)
+	price := decimal.NewFromInt(1338)
+	availableFunds := decimal.NewFromInt(13380)
+	feeRate := decimal.MustFromFloat(0.02)
+	sellLimit := decimal.NewFromInt(1)
+	amount, _, err := sizer.calculateSellSize(price, availableFunds, feeRate, sellLimit, &globalMinMax)
+	if amount != sellLimit || err != nil {
+		t.Errorf("expected: %v, received %v, err: %+v", sellLimit, amount, err)
 	}
 }
 
 func TestSizingErrors(t *testing.T) {
 	t.Parallel()
-	globalMinMax := config.MinMax{
-		MinimumSize:  1,
-		MaximumSize:  2,
-		MaximumTotal: 1337,
+	globalMinMax := exchange.MinMax{
+		MinimumSize:  decimal.NewFromInt(1),
+		MaximumSize:  decimal.NewFromInt(2),
+		MaximumTotal: decimal.NewFromInt(1337),
 	}
 	sizer := Size{
 		BuySide:  globalMinMax,
 		SellSide: globalMinMax,
 	}
-	price := 1338.0
-	availableFunds := 0.0
-	feeRate := 0.02
-	var buylimit float64 = 1
-	_, err := sizer.calculateBuySize(price, availableFunds, feeRate, buylimit, globalMinMax)
-	if !errors.Is(err, errNoFunds) {
-		t.Errorf("expected: %v, received %v", errNoFunds, err)
-	}
+	price := decimal.NewFromInt(1338)
+	availableFunds := decimal.Zero
+	feeRate := decimal.MustFromFloat(0.02)
+	buyLimit := decimal.NewFromInt(1)
+	_, _, err := sizer.calculateBuySize(price, availableFunds, feeRate, buyLimit, &globalMinMax)
+	assert.ErrorIs(t, err, errNoFunds)
 }
 
 func TestCalculateSellSize(t *testing.T) {
 	t.Parallel()
-	globalMinMax := config.MinMax{
-		MinimumSize:  1,
-		MaximumSize:  2,
-		MaximumTotal: 1337,
+	globalMinMax := exchange.MinMax{
+		MinimumSize:  decimal.NewFromInt(1),
+		MaximumSize:  decimal.NewFromInt(2),
+		MaximumTotal: decimal.NewFromInt(1337),
 	}
 	sizer := Size{
 		BuySide:  globalMinMax,
 		SellSide: globalMinMax,
 	}
-	price := 1338.0
-	availableFunds := 0.0
-	feeRate := 0.02
-	var sellLimit float64 = 1
-	_, err := sizer.calculateSellSize(price, availableFunds, feeRate, sellLimit, globalMinMax)
-	if !errors.Is(err, errNoFunds) {
-		t.Errorf("expected: %v, received %v", errNoFunds, err)
+	price := decimal.NewFromInt(1338)
+	availableFunds := decimal.Zero
+	feeRate := decimal.MustFromFloat(0.02)
+	sellLimit := decimal.NewFromInt(1)
+	_, _, err := sizer.calculateSellSize(price, availableFunds, feeRate, sellLimit, &globalMinMax)
+	assert.ErrorIs(t, err, errNoFunds)
+
+	availableFunds = decimal.NewFromInt(1337)
+	_, _, err = sizer.calculateSellSize(price, availableFunds, feeRate, sellLimit, &globalMinMax)
+	assert.ErrorIs(t, err, errLessThanMinimum)
+
+	price = decimal.NewFromInt(12)
+	availableFunds = decimal.NewFromInt(1339)
+	amount, fee, err := sizer.calculateSellSize(price, availableFunds, feeRate, sellLimit, &globalMinMax)
+	assert.NoError(t, err)
+
+	if !amount.Equal(sellLimit) {
+		t.Errorf("received '%v' expected '%v'", amount, sellLimit)
 	}
-	availableFunds = 1337
-	_, err = sizer.calculateSellSize(price, availableFunds, feeRate, sellLimit, globalMinMax)
-	if !errors.Is(err, errLessThanMinimum) {
-		t.Errorf("expected: %v, received %v", errLessThanMinimum, err)
-	}
-	price = 12
-	availableFunds = 1339
-	_, err = sizer.calculateSellSize(price, availableFunds, feeRate, sellLimit, globalMinMax)
-	if err != nil {
-		t.Error(err)
+	if !amount.Mul(price).Mul(feeRate).Equal(fee) {
+		t.Errorf("received '%v' expected '%v'", amount.Mul(price).Mul(feeRate), fee)
 	}
 }
 
 func TestSizeOrder(t *testing.T) {
 	t.Parallel()
 	s := Size{}
-	_, err := s.SizeOrder(nil, 0, nil)
-	if !errors.Is(err, common.ErrNilArguments) {
-		t.Error(err)
-	}
-	o := &order.Order{}
-	cs := &exchange.Settings{}
-	_, err = s.SizeOrder(o, 0, cs)
-	if !errors.Is(err, errNoFunds) {
-		t.Errorf("expected: %v, received %v", errNoFunds, err)
-	}
+	_, _, err := s.SizeOrder(nil, decimal.Zero, nil)
+	assert.ErrorIs(t, err, gctcommon.ErrNilPointer)
 
-	_, err = s.SizeOrder(o, 1337, cs)
-	if !errors.Is(err, errCannotAllocate) {
-		t.Errorf("expected: %v, received %v", errCannotAllocate, err)
+	o := &order.Order{
+		Base: &event.Base{
+			Offset:         1,
+			Exchange:       "binance",
+			Time:           time.Now(),
+			CurrencyPair:   currency.NewBTCUSDT(),
+			UnderlyingPair: currency.NewBTCUSDT(),
+			AssetType:      asset.Spot,
+		},
 	}
+	cs := &exchange.Settings{}
+	_, _, err = s.SizeOrder(o, decimal.Zero, cs)
+	assert.ErrorIs(t, err, errNoFunds)
+
+	_, _, err = s.SizeOrder(o, decimal.NewFromInt(1337), cs)
+	assert.ErrorIs(t, err, errCannotAllocate)
 
 	o.Direction = gctorder.Buy
-	o.Price = 1
-	s.BuySide.MaximumSize = 1
-	s.BuySide.MinimumSize = 1
-	_, err = s.SizeOrder(o, 1337, cs)
-	if err != nil {
-		t.Error(err)
-	}
+	_, _, err = s.SizeOrder(o, decimal.NewFromInt(1337), cs)
+	assert.ErrorIs(t, err, errCannotAllocate)
 
+	o.ClosePrice = decimal.NewFromInt(1)
+	s.BuySide.MaximumSize = decimal.NewFromInt(1)
+	s.BuySide.MinimumSize = decimal.NewFromInt(1)
+	_, _, err = s.SizeOrder(o, decimal.NewFromInt(1337), cs)
+	assert.NoError(t, err)
+
+	o.Amount = decimal.NewFromInt(1)
 	o.Direction = gctorder.Sell
-	_, err = s.SizeOrder(o, 1337, cs)
-	if err != nil {
-		t.Error(err)
-	}
+	_, _, err = s.SizeOrder(o, decimal.NewFromInt(1337), cs)
+	assert.NoError(t, err)
 
-	s.SellSide.MaximumSize = 1
-	s.SellSide.MinimumSize = 1
-	_, err = s.SizeOrder(o, 1337, cs)
-	if err != nil {
-		t.Error(err)
+	s.SellSide.MaximumSize = decimal.NewFromInt(1)
+	s.SellSide.MinimumSize = decimal.NewFromInt(1)
+	_, _, err = s.SizeOrder(o, decimal.NewFromInt(1337), cs)
+	assert.NoError(t, err)
+
+	o.Direction = gctorder.ClosePosition
+	_, _, err = s.SizeOrder(o, decimal.NewFromInt(1337), cs)
+	assert.NoError(t, err)
+
+	// spot futures sizing
+	o.FillDependentEvent = &signal.Signal{
+		Base:               o.Base,
+		MatchesOrderAmount: true,
+		ClosePrice:         decimal.NewFromInt(1337),
 	}
+	exch := binance.Exchange{}
+	// TODO adjust when Binance futures wrappers are implemented
+	cs.Exchange = &exch
+	_, _, err = s.SizeOrder(o, decimal.NewFromInt(1337), cs)
+	assert.ErrorIs(t, err, gctcommon.ErrNotYetImplemented)
+
+	o.ClosePrice = decimal.NewFromInt(1000000000)
+	o.Amount = decimal.NewFromInt(1000000000)
+	_, _, err = s.SizeOrder(o, decimal.NewFromInt(1337), cs)
+	assert.ErrorIs(t, err, gctcommon.ErrNotYetImplemented)
 }

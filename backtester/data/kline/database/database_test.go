@@ -2,18 +2,17 @@ package database
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/backtester/common"
 	"github.com/thrasher-corp/gocryptotrader/config"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/database"
-	"github.com/thrasher-corp/gocryptotrader/database/drivers"
 	exchangeDB "github.com/thrasher-corp/gocryptotrader/database/repository/exchange"
 	"github.com/thrasher-corp/gocryptotrader/database/repository/trade"
 	"github.com/thrasher-corp/gocryptotrader/database/testhelpers"
@@ -28,14 +27,19 @@ const (
 	testExchange = "binance"
 )
 
+//nolint:forbidigo // TestMain reports setup and teardown failures before or after a *testing.T exists
 func TestMain(m *testing.M) {
 	if verbose {
-		testhelpers.EnableVerboseTestOutput()
+		err := testhelpers.EnableVerboseTestOutput()
+		if err != nil {
+			fmt.Printf("failed to enable verbose test output: %v", err)
+			os.Exit(1)
+		}
 	}
 	var err error
 	testhelpers.PostgresTestDatabase = testhelpers.GetConnectionDetails()
 	testhelpers.GetConnectionDetails()
-	testhelpers.TempDir, err = ioutil.TempDir("", "gct-temp")
+	testhelpers.TempDir, err = os.MkdirTemp("", "gct-temp")
 	if err != nil {
 		fmt.Printf("failed to create temp file: %v", err)
 		os.Exit(1)
@@ -54,17 +58,15 @@ func TestMain(m *testing.M) {
 func TestLoadDataCandles(t *testing.T) {
 	exch := testExchange
 	a := asset.Spot
-	p := currency.NewPair(currency.BTC, currency.USDT)
+	p := currency.NewBTCUSDT()
 	var err error
 	bot := &engine.Engine{}
 	dbConfg := database.Config{
-		Enabled: true,
-		Verbose: false,
-		Driver:  "sqlite",
-		ConnectionDetails: drivers.ConnectionDetails{
-			Host:     "localhost",
-			Database: "test",
-		},
+		Enabled:  true,
+		Verbose:  false,
+		Driver:   "sqlite",
+		Host:     "localhost",
+		Database: "test",
 	}
 	bot.Config = &config.Config{
 		Database: dbConfg,
@@ -81,20 +83,11 @@ func TestLoadDataCandles(t *testing.T) {
 	}
 	database.MigrationDir = filepath.Join("..", "..", "..", "..", "database", "migrations")
 	testhelpers.MigrationDir = filepath.Join("..", "..", "..", "..", "database", "migrations")
-	_, err = testhelpers.ConnectToDatabase(&dbConfg)
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = bot.DatabaseManager.Start(bot)
-	if err != nil {
-		t.Error(err)
-	}
+	conn, err := testhelpers.ConnectToDatabase(&dbConfg)
+	require.NoError(t, err)
 
 	err = exchangeDB.InsertMany([]exchangeDB.Details{{Name: testExchange}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	dStart := time.Date(2020, 1, 0, 0, 0, 0, 0, time.UTC)
 	dInsert := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	dEnd := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)
@@ -106,22 +99,23 @@ func TestLoadDataCandles(t *testing.T) {
 		Interval: gctkline.FifteenMin,
 		Candles: []gctkline.Candle{
 			{
-				Time:   dInsert,
-				Open:   1337,
-				High:   1337,
-				Low:    1337,
-				Close:  1337,
-				Volume: 1337,
+				Time:             dInsert,
+				Open:             1337,
+				High:             1337,
+				Low:              1337,
+				Close:            1337,
+				Volume:           1337,
+				ValidationIssues: "hello world",
 			},
 		},
 	}
 	_, err = gctkline.StoreInDatabase(data, true)
-	if err != nil {
-		t.Error(err)
-	}
+	assert.NoError(t, err)
 
-	_, err = LoadData(dStart, dEnd, gctkline.FifteenMin.Duration(), exch, common.DataCandle, p, a)
-	if err != nil {
+	_, err = LoadData(dStart, dEnd, gctkline.FifteenMin.Duration(), exch, common.DataCandle, p, a, false)
+	assert.NoError(t, err)
+
+	if err = conn.SQL.Close(); err != nil {
 		t.Error(err)
 	}
 }
@@ -129,17 +123,15 @@ func TestLoadDataCandles(t *testing.T) {
 func TestLoadDataTrades(t *testing.T) {
 	exch := testExchange
 	a := asset.Spot
-	p := currency.NewPair(currency.BTC, currency.USDT)
+	p := currency.NewBTCUSDT()
 	var err error
 	bot := &engine.Engine{}
 	dbConfg := database.Config{
-		Enabled: true,
-		Verbose: false,
-		Driver:  "sqlite",
-		ConnectionDetails: drivers.ConnectionDetails{
-			Host:     "localhost",
-			Database: "test",
-		},
+		Enabled:  true,
+		Verbose:  false,
+		Driver:   "sqlite",
+		Host:     "localhost",
+		Database: "test",
 	}
 	bot.Config = &config.Config{
 		Database: dbConfg,
@@ -156,15 +148,8 @@ func TestLoadDataTrades(t *testing.T) {
 	}
 	database.MigrationDir = filepath.Join("..", "..", "..", "..", "database", "migrations")
 	testhelpers.MigrationDir = filepath.Join("..", "..", "..", "..", "database", "migrations")
-	_, err = testhelpers.ConnectToDatabase(&dbConfg)
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = bot.DatabaseManager.Start(bot)
-	if err != nil {
-		t.Error(err)
-	}
+	conn, err := testhelpers.ConnectToDatabase(&dbConfg)
+	require.NoError(t, err)
 
 	err = exchangeDB.InsertMany([]exchangeDB.Details{{Name: testExchange}})
 	if err != nil {
@@ -174,7 +159,6 @@ func TestLoadDataTrades(t *testing.T) {
 	dInsert := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	dEnd := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)
 	err = trade.Insert(trade.Data{
-		ID:        "123",
 		TID:       "123",
 		Exchange:  exch,
 		Base:      p.Base.String(),
@@ -185,12 +169,12 @@ func TestLoadDataTrades(t *testing.T) {
 		Side:      gctorder.Buy.String(),
 		Timestamp: dInsert,
 	})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
-	_, err = LoadData(dStart, dEnd, gctkline.FifteenMin.Duration(), exch, common.DataTrade, p, a)
-	if err != nil {
+	_, err = LoadData(dStart, dEnd, gctkline.FifteenMin.Duration(), exch, common.DataTrade, p, a, false)
+	assert.NoError(t, err)
+
+	if err = conn.SQL.Close(); err != nil {
 		t.Error(err)
 	}
 }
@@ -198,11 +182,12 @@ func TestLoadDataTrades(t *testing.T) {
 func TestLoadDataInvalid(t *testing.T) {
 	exch := testExchange
 	a := asset.Spot
-	p := currency.NewPair(currency.BTC, currency.USDT)
+	p := currency.NewBTCUSDT()
 	dStart := time.Date(2020, 1, 0, 0, 0, 0, 0, time.UTC)
 	dEnd := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err := LoadData(dStart, dEnd, gctkline.FifteenMin.Duration(), exch, -1, p, a)
-	if err != nil && !strings.Contains(err.Error(), "could not retrieve database data for binance spot BTCUSDT, invalid data type received") {
-		t.Error(err)
-	}
+	_, err := LoadData(dStart, dEnd, gctkline.FifteenMin.Duration(), exch, -1, p, a, false)
+	assert.ErrorIs(t, err, common.ErrInvalidDataType)
+
+	_, err = LoadData(dStart, dEnd, gctkline.FifteenMin.Duration(), exch, -1, p, a, true)
+	assert.ErrorIs(t, err, errNoUSDData)
 }

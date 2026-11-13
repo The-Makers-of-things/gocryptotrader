@@ -6,8 +6,12 @@ import (
 	"os"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/core"
 	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/validate"
 	"github.com/thrasher-corp/gocryptotrader/portfolio"
 	"github.com/thrasher-corp/gocryptotrader/portfolio/banking"
@@ -92,17 +96,6 @@ var (
 		Type:        Crypto,
 	}
 
-	invalidCryptoNonWhiteListedAddressRequest = &Request{
-		Exchange: "Binance",
-		Crypto: CryptoRequest{
-			Address: testBTCAddress,
-		},
-		Currency:    currency.BTC,
-		Description: "Test Withdrawal",
-		Amount:      0.1,
-		Type:        Crypto,
-	}
-
 	invalidType = &Request{
 		Exchange: "test",
 		Type:     Unknown,
@@ -111,24 +104,25 @@ var (
 	}
 )
 
+//nolint:forbidigo // TestMain reports setup and teardown failures before or after a *testing.T exists
 func TestMain(m *testing.M) {
-	err := portfolio.Portfolio.AddAddress(core.BitcoinDonationAddress, "test", currency.BTC, 1500)
+	var p portfolio.Base
+	err := p.AddAddress(core.BitcoinDonationAddress, "test", currency.BTC, 1500)
 	if err != nil {
 		fmt.Printf("failed to add portfolio address with reason: %v, unable to continue tests", err)
 		os.Exit(0)
 	}
-	portfolio.Portfolio.Addresses[0].WhiteListed = true
-	portfolio.Portfolio.Addresses[0].ColdStorage = true
-	portfolio.Portfolio.Addresses[0].SupportedExchanges = "BTC Markets,Binance"
+	p.Addresses[0].WhiteListed = true
+	p.Addresses[0].ColdStorage = true
+	p.Addresses[0].SupportedExchanges = "BTC Markets,Binance"
 
-	err = portfolio.Portfolio.AddAddress(testBTCAddress, "test", currency.BTC, 1500)
+	err = p.AddAddress(testBTCAddress, "test", currency.BTC, 1500)
 	if err != nil {
 		fmt.Printf("failed to add portfolio address with reason: %v, unable to continue tests", err)
 		os.Exit(0)
 	}
-	portfolio.Portfolio.Addresses[1].SupportedExchanges = "BTC Markets,Binance"
-
-	banking.Accounts = append(banking.Accounts,
+	p.Addresses[1].SupportedExchanges = "BTC Markets,Binance"
+	banking.AppendAccounts(
 		banking.Account{
 			Enabled:             true,
 			ID:                  "test-bank-01",
@@ -163,7 +157,7 @@ func TestExchangeNameUnset(t *testing.T) {
 	r := Request{}
 	err := r.Validate()
 	if err != nil {
-		if err != ErrExchangeNameUnset {
+		if err != common.ErrExchangeNameNotSet {
 			t.Fatal(err)
 		}
 	}
@@ -175,7 +169,7 @@ func TestValidateFiat(t *testing.T) {
 		request       *Request
 		requestType   RequestType
 		bankAccountID string
-		output        interface{}
+		output        any
 		validate      validate.Checker
 	}{
 		{
@@ -238,8 +232,7 @@ func TestValidateFiat(t *testing.T) {
 		},
 	}
 
-	for _, tests := range testCases {
-		test := tests
+	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
 			if test.requestType < 3 {
 				test.request.Type = test.requestType
@@ -253,8 +246,12 @@ func TestValidateFiat(t *testing.T) {
 			}
 			err := test.request.Validate(test.validate)
 			if err != nil {
-				if test.output.(error).Error() != err.Error() {
-					t.Fatalf("Test Name %s expecting error [%s] but received [%s]", test.name, test.output.(error).Error(), err)
+				errOutput, ok := test.output.(error)
+				if !ok {
+					t.Fatalf("Test Name %s unable to type assert error", test.name)
+				}
+				if errOutput.Error() != err.Error() {
+					t.Fatalf("Test Name %s expecting error [%s] but received [%s]", test.name, errOutput.Error(), err)
 				}
 			}
 		})
@@ -265,7 +262,7 @@ func TestValidateCrypto(t *testing.T) {
 	testCases := []struct {
 		name    string
 		request *Request
-		output  interface{}
+		output  any
 	}{
 		{
 			"Valid",
@@ -286,9 +283,7 @@ func TestValidateCrypto(t *testing.T) {
 		{
 			"Invalid-Nil",
 			invalidCryptoNilRequest,
-			errors.New(ErrStrAddressNotWhiteListed + ", " +
-				ErrStrExchangeNotSupportedByAddress + ", " +
-				ErrStrAddressNotSet),
+			errors.New(ErrStrAddressNotSet),
 		},
 		{
 			"NoRequest",
@@ -304,14 +299,9 @@ func TestValidateCrypto(t *testing.T) {
 		{
 			"NoAddress",
 			invalidCryptoNoAddressRequest,
-			errors.New(ErrStrAddressNotWhiteListed + ", " +
-				ErrStrExchangeNotSupportedByAddress + ", " +
-				ErrStrAddressNotSet),
-		},
-		{
-			"NonWhiteListed",
-			invalidCryptoNonWhiteListedAddressRequest,
-			errors.New(ErrStrAddressNotWhiteListed),
+			errors.New(
+				ErrStrAddressNotSet,
+			),
 		},
 		{
 			"NegativeFee",
@@ -320,8 +310,7 @@ func TestValidateCrypto(t *testing.T) {
 		},
 	}
 
-	for _, tests := range testCases {
-		test := tests
+	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
 			err := test.request.Validate()
 			if err != nil {
@@ -334,5 +323,20 @@ func TestValidateCrypto(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRequestDoesNotMarshalSecrets(t *testing.T) {
+	t.Parallel()
+	out, err := json.Marshal(&Request{
+		Exchange:        "test",
+		TradePassword:   "hunter2",
+		OneTimePassword: 123456,
+		PIN:             9999,
+	})
+	require.NoError(t, err, "Marshal must not error")
+
+	for _, secret := range []string{"hunter2", "123456", "9999", "TradePassword", "OneTimePassword", "PIN"} {
+		assert.NotContainsf(t, string(out), secret, "the encoded request should not carry %s", secret)
 	}
 }

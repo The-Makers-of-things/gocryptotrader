@@ -1,66 +1,120 @@
 package mock
 
 import (
-	"encoding/json"
+	"bytes"
+	"io"
 	"net/http"
 	"net/url"
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 )
 
 func TestGetFilteredHeader(t *testing.T) {
-	resp := http.Response{}
-	resp.Request = &http.Request{}
-	resp.Request.Header = http.Header{}
-	resp.Request.Header.Set("Key", "RiskyVals")
-	fMap, err := GetFilteredHeader(&resp)
-	if err != nil {
-		t.Error(err)
-	}
+	t.Parallel()
+	items, err := getExcludedItems()
+	require.NoError(t, err, "getExcludedItems must not error")
 
-	if fMap.Get("Key") != "" {
-		t.Error("risky vals where not replaced correctly")
-	}
+	resp := &http.Response{Request: &http.Request{Header: http.Header{}}}
+	resp.Request.Header.Set("Key", "RiskyVals")
+	resp.Request.Header.Set("X-Mbx-Apikey", "secret-key")
+	resp.Request.Header.Set("Accept", "application/json")
+
+	fMap := GetFilteredHeader(resp, items)
+	assert.Empty(t, fMap.Get("Key"), "excluded header Key should be cleared")
+	assert.Empty(t, fMap.Get("X-Mbx-Apikey"), "excluded header X-Mbx-Apikey should be cleared")
+	assert.Equal(t, "application/json", fMap.Get("Accept"), "non-excluded header should survive")
 }
 
 func TestGetFilteredURLVals(t *testing.T) {
-	superSecretData := "Dr Seuss"
-	shadyVals := url.Values{}
-	shadyVals.Set("real_name", superSecretData)
-	cleanVals, err := GetFilteredURLVals(shadyVals)
-	if err != nil {
-		t.Error("GetFilteredURLVals error", err)
-	}
+	t.Parallel()
+	items, err := getExcludedItems()
+	require.NoError(t, err, "getExcludedItems must not error")
 
-	if strings.Contains(cleanVals, superSecretData) {
-		t.Error("Super secret data found")
-	}
+	vals := url.Values{}
+	vals.Set("real_name", "Dr Seuss")
+	vals.Set("user", "admin")
+	vals.Set("currency", "btc")
+
+	result := GetFilteredURLVals(vals, items)
+	assert.NotContains(t, result, "Dr Seuss", "excluded real_name value should be removed")
+	assert.NotContains(t, result, "admin", "excluded user value should be removed")
+	assert.Contains(t, result, "currency=btc", "non-excluded currency should survive")
+}
+
+type checkclass struct {
+	Counter int     `json:"counter,omitempty"`
+	Numbers []int   `json:"numbers,omitempty"`
+	Number  float64 `json:"number,omitempty"`
+	Name    string  `json:"name,omitempty"`
 }
 
 func TestCheckResponsePayload(t *testing.T) {
-	testbody := struct {
-		SomeJSON string `json:"stuff"`
+	t.Parallel()
+	type someJSON struct {
+		Secret      string      `json:"secret,omitempty"`
+		Data        checkclass  `json:"data"`
+		DataPointer *checkclass `json:"datapointer,omitempty"`
+		Login       int         `json:"login,omitempty"`
+		IsEvenNum   bool        `json:"pass,omitempty"`
+		Balance     float64     `json:"bsb,omitempty"`
+		RealName    string      `json:"real_name,omitempty"`
+	}
+	inputs := []struct {
+		in  any
+		exp []byte
 	}{
-		SomeJSON: "REAAAAHHHHH",
+		{
+			in: []someJSON{
+				{
+					Secret: "REAAAAHHHHH",
+					Data: checkclass{
+						Name: "the-super-secret-name",
+					},
+				},
+				{},
+			}, exp: []byte("[\n {\n  \"data\": {\n   \"name\": \"\"\n  },\n  \"secret\": \"\"\n },\n {\n  \"data\": {}\n }\n]"),
+		},
+		{
+			in: someJSON{}, exp: []byte("{\n \"data\": {}\n}"),
+		},
+		{in: []*string{}, exp: []byte(`[]`)},
+		{in: someJSON{
+			Secret:    "",
+			Login:     1234,
+			IsEvenNum: true,
+			Balance:   1234.56,
+			RealName:  "sam",
+		}, exp: []byte("{\n \"bsb\": 0,\n \"data\": {},\n \"login\": 0,\n \"pass\": true,\n \"real_name\": \"\"\n}")},
 	}
 
-	payload, err := json.Marshal(testbody)
-	if err != nil {
-		t.Fatal("json marshal error", err)
-	}
+	items, err := getExcludedItems()
+	require.NoError(t, err, "getExcludedItems must not error")
+	assert.NotNil(t, items, "getExcludedItems should not return nil")
 
-	data, err := CheckResponsePayload(payload)
-	if err != nil {
-		t.Error("CheckBody error", err)
-	}
+	for i := range inputs {
+		payload, err := json.Marshal(inputs[i].in)
+		require.NoError(t, err, "json marshal must not error")
 
-	expected := `{
- "stuff": "REAAAAHHHHH"
-}`
-
-	if string(data) != expected {
-		t.Error("unexpected returned data")
+		data, err := CheckResponsePayload(payload, items, 5)
+		assert.NoError(t, err, "CheckResponsePayload should not error")
+		assert.Equal(t, inputs[i].exp, data)
 	}
+}
+
+func TestGetExcludedItems(t *testing.T) {
+	t.Parallel()
+	exclusionList, err := getExcludedItems()
+	require.NoError(t, err, "getExcludedItems must not error")
+	assert.NotEmpty(t, exclusionList.Headers, "Headers should not be empty")
+	assert.NotEmpty(t, exclusionList.Variables, "Variables should not be empty")
+	assert.Contains(t, exclusionList.Headers, "Key", "Key should be in excluded headers")
+	assert.Contains(t, exclusionList.Variables, "real_name", "real_name should be in excluded variables")
+	assert.Contains(t, exclusionList.Variables, "user", "user should be in excluded variables")
 }
 
 type TestStructLevel0 struct {
@@ -68,7 +122,7 @@ type TestStructLevel0 struct {
 	FloatVal   float64          `json:"floatVal"`
 	IntVal     int64            `json:"intVal"`
 	StructVal  TestStructLevel1 `json:"structVal"`
-	MixedSlice []interface{}    `json:"mixedSlice"`
+	MixedSlice []any            `json:"mixedSlice"`
 }
 
 type TestStructLevel1 struct {
@@ -80,130 +134,385 @@ type TestStructLevel1 struct {
 }
 
 type TestStructLevel2 struct {
-	OkayVal   string           `json:"okayVal"`
-	OkayVal2  float64          `json:"okayVal2"`
-	BadVal    float32          `json:"name"`
-	BadVal2   int32            `json:"real_name"`
-	OtherData TestStructLevel3 `json:"moreOtherVals"`
+	OkayVal  string         `json:"okayVal"`
+	OkayVal2 float64        `json:"okayVal2"`
+	OkayVal3 map[string]any `json:"okayVal3"`
+	OkayVal4 map[string]any `json:"okayVal4"`
+	OkayVal5 []any          `json:"okayVal5"`
+	BadVal   int64          `json:"receiver_name"`
+	BadVal2  string         `json:"account_number"`
+	BadVal3  []any          `json:"secret"`
 }
 
-type TestStructLevel3 struct {
-	OkayVal  string  `json:"okayVal"`
-	OkayVal2 float64 `json:"okayVal2"`
-	BadVal   int64   `json:"receiver_name"`
-	BadVal2  string  `json:"account_number"`
+var testVal = []TestStructLevel0{
+	{
+		StringVal: "somestringstuff",
+		FloatVal:  3.14,
+		IntVal:    1337,
+		StructVal: TestStructLevel1{
+			OkayVal:  "stuff",
+			OkayVal2: 120938,
+			BadVal:   "CriticalBankingStuff",
+			BadVal2:  1337,
+			OtherData: TestStructLevel2{
+				OkayVal:  "stuff",
+				OkayVal2: 129219809899009009080980,
+				OkayVal3: map[string]any{"a": 1},
+				OkayVal4: map[string]any{},
+				OkayVal5: []any{},
+				BadVal:   1337,
+				BadVal2:  "Super Secret Password",
+				BadVal3:  []any{123, 'a'},
+			},
+		},
+		MixedSlice: []any{
+			[]map[string]any{{"id": 0}, {"id": 2}, {"id": 3}, {"id": 4}, {"id": 5}, {"id": 6}, {}},
+			[]any{float64(1586994000000), "6615.23000000", 'a', 1234, false, int64(17866372632), 0},
+			"abcd",
+		},
+	},
+	{
+		StringVal: "somestringstuff",
+		FloatVal:  3.14,
+	},
+	{
+		StringVal: "somestringstuff",
+		FloatVal:  3.14,
+		IntVal:    1337,
+	},
+	{
+		StringVal: "somestringstuff",
+		IntVal:    1337,
+	},
+	{},
+	{},
+	{},
 }
 
 func TestCheckJSON(t *testing.T) {
-	level3 := TestStructLevel3{
-		OkayVal:  "stuff",
-		OkayVal2: 129219,
-		BadVal:   1337,
-		BadVal2:  "Super Secret Password",
-	}
+	exclusionList, err := getExcludedItems()
+	require.NoError(t, err, "getExcludedItems must not error")
+	assert.NotNil(t, exclusionList, "getExcludedItems should not return nil")
 
-	level2 := TestStructLevel2{
-		OkayVal:   "stuff",
-		OkayVal2:  129219,
-		BadVal:    0.222,
-		BadVal2:   1337888888,
-		OtherData: level3,
-	}
+	data, err := json.Marshal(testVal)
+	require.NoError(t, err, "Marshal must not error")
+	require.NotNil(t, data, "Marshal must not return nil")
 
-	level1 := TestStructLevel1{
-		OkayVal:   "stuff",
-		OkayVal2:  120938,
-		BadVal:    "CritcalBankingStuff",
-		BadVal2:   1337,
-		OtherData: level2,
-	}
+	var input any
+	err = json.Unmarshal(data, &input)
+	require.NoError(t, err, "Unmarshal must not error")
 
-	sliceOfPrimitives := []interface{}{
-		[]interface{}{float64(1586994000000), "6615.23000000"},
-		[]interface{}{float64(1586994300000), "6624.74000000"},
-	}
-
-	testVal := TestStructLevel0{
-		StringVal:  "somestringstuff",
-		FloatVal:   3.14,
-		IntVal:     1337,
-		StructVal:  level1,
-		MixedSlice: sliceOfPrimitives,
-	}
-
-	exclusionList, err := GetExcludedItems()
-	if err != nil {
-		t.Error("GetExcludedItems error", err)
-	}
-
-	vals, err := CheckJSON(testVal, &exclusionList)
-	if err != nil {
-		t.Error("Check JSON error", err)
-	}
+	vals, err := CheckJSON(input, &exclusionList, 4)
+	assert.NoError(t, err, "CheckJSON should not error")
 
 	payload, err := json.Marshal(vals)
-	if err != nil {
-		t.Fatal("json marshal error", err)
-	}
+	require.NoError(t, err, "Marshal must not error")
 
-	newStruct := TestStructLevel0{}
+	newStruct := []TestStructLevel0{}
 	err = json.Unmarshal(payload, &newStruct)
-	if err != nil {
-		t.Fatal("Umarshal error", err)
+	require.NoError(t, err, "Unmarshal must not error")
+
+	assert.Len(t, newStruct, 4)
+	assert.Empty(t, newStruct[0].StructVal.BadVal, "Value not wiped correctly")
+	assert.Empty(t, newStruct[0].StructVal.BadVal2, "Value not wiped correctly")
+	assert.Empty(t, newStruct[0].StructVal.OtherData.BadVal, "BadVal should be removed")
+	assert.Empty(t, newStruct[0].StructVal.OtherData.BadVal2, "BadVal2 should be removed")
+	assert.Len(t, newStruct[0].MixedSlice[0], 4)
+	assert.Len(t, newStruct[0].MixedSlice[1], 7)
+}
+
+func TestHTTPRecord(t *testing.T) {
+	t.Parallel()
+
+	service := "mockhttprecord"
+	serviceDir := filepath.Join("..", service)
+	outputDirPath := filepath.Join("..", service, "testdata")
+	err := os.RemoveAll(serviceDir)
+	require.NoError(t, err)
+
+	err = os.MkdirAll(outputDirPath, 0o755)
+	require.NoError(t, err)
+
+	filePath := filepath.Join(outputDirPath, "http.json")
+	err = os.WriteFile(filePath, []byte(`{"routes": null}`), 0o644)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filePath)
+	require.NoError(t, err, "file not created properly")
+
+	defer func() {
+		require.NoErrorf(t, os.RemoveAll(serviceDir), "Remove test exclusion dir %q must not error", serviceDir)
+	}()
+
+	content, err := json.Marshal(testVal)
+	require.NoError(t, err, "Marshal must not error")
+	require.NotNil(t, content, "Marshal must not return nil")
+
+	makeResponse := func(method, rawURL string, body []byte) *http.Response {
+		parsed, parseErr := url.Parse(rawURL)
+		require.NoError(t, parseErr)
+		resp := &http.Response{
+			Body: io.NopCloser(bytes.NewReader(nil)),
+			Request: &http.Request{
+				Method: method,
+				URL:    parsed,
+			},
+		}
+		if body != nil {
+			resp.Request.Header = map[string][]string{
+				contentType: {applicationJSON},
+			}
+			resp.Request.Body = io.NopCloser(bytes.NewReader(body))
+			resp.Request.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(body)), nil
+			}
+		}
+		return resp
+	}
+	callRecord := func(method, rawURL string, body []byte) error {
+		resp := makeResponse(method, rawURL, body)
+		defer func() {
+			require.NoError(t, resp.Body.Close())
+		}()
+		return HTTPRecord(resp, service, content, 4)
 	}
 
-	if newStruct.StructVal.BadVal != "" {
-		t.Error("Value not wiped correctly")
+	assertRouteMethodLen := func(path, method string, expected int) {
+		finalPayload, readErr := os.ReadFile(filePath)
+		require.NoError(t, readErr, "Read final mock file must not error")
+		var finalMock VCRMock
+		readErr = json.Unmarshal(finalPayload, &finalMock)
+		require.NoError(t, readErr, "Unmarshal final mock file must not error")
+		require.Contains(t, finalMock.Routes, path)
+		assert.Len(t, finalMock.Routes[path][method], expected)
 	}
 
-	if newStruct.StructVal.BadVal2 != 0 {
-		t.Error("Value not wiped correctly")
+	// Base GET entry for route initialisation coverage.
+	err = callRecord(http.MethodGet, "https://api.abc.com/test/base", nil)
+	require.NoError(t, err)
+
+	// For write methods, repeated same request should overwrite existing record.
+	for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
+		for range 2 {
+			err = callRecord(method, "https://api.abc.com/test/payload", content)
+			require.NoError(t, err, "HTTPRecord must not error")
+		}
+		assertRouteMethodLen("/test/payload", method, 1)
 	}
 
-	if newStruct.StructVal.OtherData.BadVal != 0 {
-		t.Error("Value not wiped correctly")
-	}
+	// Shape mismatch should return an explicit error.
+	err = callRecord(http.MethodPost, "https://api.abc.com/test/mismatch", content)
+	require.NoError(t, err, "HTTPRecord must not error")
+	objectBody := []byte(`{"foo":"bar"}`)
+	err = callRecord(http.MethodPost, "https://api.abc.com/test/mismatch", objectBody)
+	require.ErrorIs(t, err, errMismatchedJSONBodyShape)
+	assertRouteMethodLen("/test/mismatch", http.MethodPost, 1)
 
-	if newStruct.StructVal.OtherData.BadVal2 != 0 {
-		t.Error("Value not wiped correctly")
+	existingMockBadParams := VCRMock{
+		Routes: map[string]map[string][]HTTPResponse{
+			"": {
+				http.MethodPost: {
+					{
+						Headers:    map[string][]string{contentType: {applicationJSON}},
+						BodyParams: `{invalid params`,
+						Data:       json.RawMessage(`{}`),
+					},
+				},
+			},
+		},
 	}
+	mockData, err := json.Marshal(existingMockBadParams)
+	require.NoError(t, err, "Marshal must not error")
+	require.NoError(t, os.WriteFile(filePath, mockData, 0o644), "WriteFile must not error")
 
-	if newStruct.StructVal.OtherData.OtherData.BadVal != 0 {
-		t.Error("Value not wiped correctly")
+	invalidBody := []byte(`{invalid json`)
+	err = callRecord(http.MethodPost, "", invalidBody)
+	require.Error(t, err, "HTTPRecord must error for invalid request body JSON")
+
+	err = callRecord(http.MethodPost, "", nil)
+	require.Error(t, err, "HTTPRecord must error for invalid stored BodyParams JSON")
+
+	existingMockBadParams.Routes[""]["ABC"] = []HTTPResponse{
+		{
+			Headers:    map[string][]string{contentType: {applicationJSON}},
+			BodyParams: `{invalid params`,
+			Data:       json.RawMessage(`{}`),
+		},
 	}
+	mockData, err = json.Marshal(existingMockBadParams)
+	require.NoError(t, err, "Marshal must not error")
+	require.NoError(t, os.WriteFile(filePath, mockData, 0o644), "WriteFile must not error")
 
-	if newStruct.StructVal.OtherData.OtherData.BadVal2 != "" {
-		t.Error("Value not wiped correctly")
+	err = callRecord("ABC", "", nil)
+	require.ErrorContains(t, err, "unhandled request method")
+
+	existingMockBadParams.Routes[""][http.MethodPost] = []HTTPResponse{
+		{
+			Headers:    map[string][]string{contentType: {"ABC"}},
+			BodyParams: `{}`,
+			Data:       json.RawMessage(`{}`),
+		},
 	}
+	mockData, err = json.Marshal(existingMockBadParams)
+	require.NoError(t, err, "Marshal must not error")
+	require.NoError(t, os.WriteFile(filePath, mockData, 0o644), "WriteFile must not error")
 
-	vals, err = CheckJSON(sliceOfPrimitives, &exclusionList)
-	if err != nil {
-		t.Error("Check JSON error", err)
+	moockResponse := &http.Response{
+		Request: &http.Request{
+			Method: http.MethodPost,
+			Header: http.Header{contentType: {"ABC"}},
+			URL:    &url.URL{},
+		},
 	}
+	err = HTTPRecord(moockResponse, service, content, 4)
+	require.ErrorContains(t, err, "unhandled content type")
 
-	payload, err = json.Marshal(vals)
-	if err != nil {
-		t.Fatal("json marshal error", err)
+	mockData, err = json.Marshal(&VCRMock{
+		Routes: map[string]map[string][]HTTPResponse{
+			"/test/unknown-shape": {
+				http.MethodPost: {{
+					Headers:    map[string][]string{contentType: {applicationJSON}},
+					BodyParams: `null`,
+					Data:       json.RawMessage(`{}`),
+				}},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filePath, mockData, 0o644))
+
+	err = callRecord(http.MethodPost, "/test/unknown-shape", []byte(`null`))
+	require.ErrorIs(t, err, errUnsupportedJSONBodyShape)
+
+	mockData, err = json.Marshal(&VCRMock{
+		Routes: map[string]map[string][]HTTPResponse{
+			"/test/array-err": {
+				http.MethodPost: {
+					{
+						Headers:    map[string][]string{contentType: {applicationJSON}},
+						BodyParams: `[invalid`,
+						Data:       json.RawMessage(`[]`),
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filePath, mockData, 0o644))
+	require.Error(t, callRecord(http.MethodPost, "/test/array-err", []byte(`[invalid`)), "HTTPRecord must error for invalid array JSON")
+
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filePath, mockData, 0o644))
+	require.Error(t, callRecord(http.MethodPost, "/test/array-err", []byte(`[{}]`)), "HTTPRecord must error for invalid array JSON")
+}
+
+func TestIsExcluded(t *testing.T) {
+	t.Parallel()
+	tcs := []struct {
+		name        string
+		key         string
+		excluded    []string
+		hasExcluded bool
+	}{
+		{name: "exact match", key: "real_name", excluded: []string{"real_name"}, hasExcluded: true},
+		{name: "case insensitive uppercase", key: "REAL_NAME", excluded: []string{"real_name"}, hasExcluded: true},
+		{name: "case insensitive mixed", key: "Real_Name", excluded: []string{"real_name"}, hasExcluded: true},
+		{name: "no match", key: "currency", excluded: []string{"real_name", "apiKey"}, hasExcluded: false},
+		{name: "empty excluded list", key: "real_name", excluded: []string{}, hasExcluded: false},
+		{name: "nil excluded list", key: "real_name", excluded: nil, hasExcluded: false},
+		{name: "match in middle of list", key: "user", excluded: []string{"bsb", "user", "name"}, hasExcluded: true},
+		{name: "empty key no match", key: "", excluded: []string{"real_name"}, hasExcluded: false},
 	}
-
-	var newSlice []interface{}
-	err = json.Unmarshal(payload, &newSlice)
-	if err != nil {
-		t.Fatal("Unmarshal error", err)
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equalf(t, tc.hasExcluded, IsExcluded(tc.key, tc.excluded), "IsExcluded should return %v for key %q", tc.hasExcluded, tc.key)
+		})
 	}
 }
 
-func TestGetExcludedItems(t *testing.T) {
-	exclusionList, err := GetExcludedItems()
-	if err != nil {
-		t.Error("GetExcludedItems error", err)
+func TestGetJSONBodyShape(t *testing.T) {
+	t.Parallel()
+	tcs := []struct {
+		name  string
+		input string
+		want  jsonBodyShape
+	}{
+		{name: "array", input: `[1,2,3]`, want: jsonBodyArray},
+		{name: "object", input: `{"a":"b"}`, want: jsonBodyObject},
+		{name: "empty string", input: "", want: jsonBodyUnknown},
+		{name: "non-json string", input: "not json", want: jsonBodyUnknown},
+		{name: "untrimmed array", input: "  [", want: jsonBodyUnknown},
+		{name: "untrimmed object", input: "  {", want: jsonBodyUnknown},
+		{name: "null literal", input: "null", want: jsonBodyUnknown},
 	}
-
-	if len(exclusionList.Headers) == 0 {
-		t.Error("Header exclusion list not popoulated")
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, getJSONBodyShape(tc.input), "getJSONBodyShape should return correct shape")
+		})
 	}
+}
 
-	if len(exclusionList.Variables) == 0 {
-		t.Error("Variable exclusion list not popoulated")
+func TestCheckResponsePayloadTrailingData(t *testing.T) {
+	t.Parallel()
+
+	items, err := getExcludedItems()
+	require.NoError(t, err, "getExcludedItems must not error")
+
+	data, err := CheckResponsePayload([]byte(`[{"symbol":"BTC_USDT"}]""`), items, 5)
+	require.NoError(t, err, "CheckResponsePayload must not error with trailing payload data")
+	assert.JSONEq(t, `[{"symbol":"BTC_USDT"}]`, string(data), "CheckResponsePayload should preserve the leading valid JSON value")
+}
+
+func TestCheckResponsePayloadUnexpectedTrailingData(t *testing.T) {
+	t.Parallel()
+
+	items, err := getExcludedItems()
+	require.NoError(t, err, "getExcludedItems must not error")
+
+	_, err = CheckResponsePayload([]byte(`[{"symbol":"BTC_USDT"}]{"extra":true}`), items, 5)
+	require.ErrorIs(t, err, errUnexpectedTrailingJSON, "CheckResponsePayload must reject unexpected trailing JSON data")
+}
+
+func TestDecodeLeadingJSONValue(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid json", func(t *testing.T) {
+		t.Parallel()
+		var v any
+		require.Error(t, decodeLeadingJSONValue([]byte(`not-json`), &v), "decodeLeadingJSONValue must return a JSON syntax error")
+	})
+
+	tcs := []struct {
+		name         string
+		input        []byte
+		wantErr      error
+		wantAnyError bool
+	}{
+		{name: "valid json no trailing", input: []byte(`[{"symbol":"BTC_USDT"}]`)},
+		{name: "trailing empty string", input: []byte(`[{"symbol":"BTC_USDT"}]""`)},
+		{name: "trailing whitespace then empty string", input: []byte(`[{"symbol":"BTC_USDT"}]   ""`)},
+		{name: "trailing non-empty string", input: []byte(`[{"symbol":"BTC_USDT"}]"extra"`), wantErr: errUnexpectedTrailingJSON},
+		{name: "trailing empty string then extra object", input: []byte(`[{"symbol":"BTC_USDT"}]""{"extra":true}`), wantErr: errUnexpectedTrailingJSON},
+		{name: "trailing empty string then malformed trailing json", input: []byte(`[{"symbol":"BTC_USDT"}]""{`), wantAnyError: true},
+		{name: "unexpected trailing object", input: []byte(`[{"symbol":"BTC_USDT"}]{"extra":true}`), wantErr: errUnexpectedTrailingJSON},
+		{name: "unexpected trailing value", input: []byte(`{"a":1}null`), wantErr: errUnexpectedTrailingJSON},
+		{name: "malformed trailing json", input: []byte(`{"a":1}{`), wantAnyError: true},
+	}
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var v any
+			err := decodeLeadingJSONValue(tc.input, &v)
+			switch {
+			case tc.wantErr != nil:
+				require.ErrorIs(t, err, tc.wantErr, "decodeLeadingJSONValue must return expected error")
+			case tc.wantAnyError:
+				require.Error(t, err, "decodeLeadingJSONValue must error")
+			default:
+				require.NoError(t, err, "decodeLeadingJSONValue must not error")
+			}
+		})
 	}
 }

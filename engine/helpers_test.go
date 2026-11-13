@@ -1,73 +1,232 @@
 package engine
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/common/file"
+	"github.com/thrasher-corp/gocryptotrader/communications"
 	"github.com/thrasher-corp/gocryptotrader/config"
 	"github.com/thrasher-corp/gocryptotrader/currency"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/account"
+	"github.com/thrasher-corp/gocryptotrader/database"
+	"github.com/thrasher-corp/gocryptotrader/dispatch"
+	"github.com/thrasher-corp/gocryptotrader/exchange/accounts"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/deposit"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/protocol"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/stats"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/ticker"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
-func CreateTestBot(t *testing.T) *Engine {
-	bot, err := NewFromSettings(&Settings{ConfigFile: config.TestFile, EnableDryRun: true}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+var testExchange = "Bitstamp"
 
-	err = bot.Config.RetrieveConfigCurrencyPairs(true, asset.Spot)
-	if err != nil {
-		t.Fatalf("Failed to retrieve config currency pairs. %s", err)
-	}
+func CreateTestBot(tb testing.TB) *Engine {
+	tb.Helper()
+	cFormat := &currency.PairFormat{Uppercase: true}
+	cp1 := currency.NewBTCUSD()
+	cp2 := currency.NewBTCUSDT()
 
-	if bot.GetExchangeByName(testExchange) == nil {
-		err = bot.LoadExchange(testExchange, false, nil)
-		if err != nil {
-			t.Fatalf("SetupTest: Failed to load exchange: %s", err)
-		}
+	pairs1 := map[asset.Item]*currency.PairStore{
+		asset.Spot: {
+			AssetEnabled: true,
+			Available:    currency.Pairs{cp1},
+			Enabled:      currency.Pairs{cp1},
+		},
 	}
-	if bot.GetExchangeByName(fakePassExchange) == nil {
-		err = addPassingFakeExchange(testExchange, bot)
-		if err != nil {
-			t.Fatalf("SetupTest: Failed to load exchange: %s", err)
-		}
+	pairs2 := map[asset.Item]*currency.PairStore{
+		asset.Spot: {
+			AssetEnabled: true,
+			Available:    currency.Pairs{cp2},
+			Enabled:      currency.Pairs{cp2},
+		},
 	}
+	bot := &Engine{
+		ExchangeManager: NewExchangeManager(),
+		Config: &config.Config{Exchanges: []config.Exchange{
+			{
+				Name:                    testExchange,
+				Enabled:                 true,
+				WebsocketTrafficTimeout: time.Second,
+				API: config.APIConfig{
+					Credentials: config.APICredentialsConfig{},
+				},
+				CurrencyPairs: &currency.PairsManager{
+					RequestFormat:   cFormat,
+					ConfigFormat:    cFormat,
+					UseGlobalFormat: true,
+					Pairs:           pairs1,
+				},
+			},
+			{
+				Name:                    "binance",
+				Enabled:                 true,
+				WebsocketTrafficTimeout: time.Second,
+				API: config.APIConfig{
+					Credentials: config.APICredentialsConfig{},
+				},
+				CurrencyPairs: &currency.PairsManager{
+					RequestFormat:   cFormat,
+					ConfigFormat:    cFormat,
+					UseGlobalFormat: true,
+					Pairs:           pairs2,
+				},
+			},
+		}},
+	}
+	err := bot.LoadExchange(testExchange)
+	assert.NoError(tb, err, "LoadExchange should not error")
+
 	return bot
 }
 
+func TestGetSubsystemsStatus(t *testing.T) {
+	assert.Len(t, (&Engine{}).GetSubsystemsStatus(), 12, "GetSubsystemStatus should return the correct number of subsystems")
+}
+
+func TestGetRPCEndpoints(t *testing.T) {
+	_, err := (&Engine{}).GetRPCEndpoints()
+	require.ErrorIs(t, err, errNilConfig)
+
+	m, err := (&Engine{Config: &config.Config{}}).GetRPCEndpoints()
+	require.NoError(t, err)
+	assert.Len(t, m, 2, "GetRPCEndpoints should return the correct number of RPC endpoints")
+}
+
+func TestSetSubsystem(t *testing.T) { //nolint // TO-DO: Fix race t.Parallel() usage
+	testCases := []struct {
+		Subsystem    string
+		Engine       *Engine
+		EnableError  error
+		DisableError error
+	}{
+		{Subsystem: "sillyBilly", EnableError: errNilBot, DisableError: errNilBot},
+		{Subsystem: "sillyBilly", Engine: &Engine{}, EnableError: errNilConfig, DisableError: errNilConfig},
+		{Subsystem: "sillyBilly", Engine: &Engine{Config: &config.Config{}}, EnableError: errSubsystemNotFound, DisableError: errSubsystemNotFound},
+		{
+			Subsystem:    CommunicationsManagerName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  communications.ErrNoRelayersEnabled,
+			DisableError: ErrNilSubsystem,
+		},
+		{
+			Subsystem:    ConnectionManagerName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  nil,
+			DisableError: nil,
+		},
+		{
+			Subsystem:    OrderManagerName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  nil,
+			DisableError: nil,
+		},
+		{
+			Subsystem:    PortfolioManagerName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  errNilExchangeManager,
+			DisableError: ErrNilSubsystem,
+		},
+		{
+			Subsystem:    NTPManagerName,
+			Engine:       &Engine{Config: &config.Config{Logging: log.Config{Enabled: new(false)}}},
+			EnableError:  errNilNTPConfigValues,
+			DisableError: ErrNilSubsystem,
+		},
+		{
+			Subsystem:    DatabaseConnectionManagerName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  database.ErrDatabaseSupportDisabled,
+			DisableError: ErrSubSystemNotStarted,
+		},
+		{
+			Subsystem:    SyncManagerName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  errNoSyncItemsEnabled,
+			DisableError: ErrNilSubsystem,
+		},
+		{
+			Subsystem:    dispatch.Name,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  nil,
+			DisableError: nil,
+		},
+		{
+			Subsystem:    grpcName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  errGRPCManagementFault,
+			DisableError: errGRPCManagementFault,
+		},
+		{
+			Subsystem:    grpcProxyName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  errGRPCManagementFault,
+			DisableError: errGRPCManagementFault,
+		},
+		{
+			Subsystem:    dataHistoryManagerName,
+			Engine:       &Engine{Config: &config.Config{}},
+			EnableError:  database.ErrNilInstance,
+			DisableError: ErrNilSubsystem,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.Subsystem, func(t *testing.T) {
+			t.Parallel()
+			err := tt.Engine.SetSubsystem(tt.Subsystem, true)
+			require.ErrorIs(t, err, tt.EnableError)
+
+			err = tt.Engine.SetSubsystem(tt.Subsystem, false)
+			require.ErrorIs(t, err, tt.DisableError)
+		})
+	}
+}
+
+func TestSetSubsystemEnableDeniedAfterShutdownRequest(t *testing.T) {
+	t.Parallel()
+	bot := &Engine{Config: &config.Config{}}
+	bot.RequestShutdown()
+
+	err := bot.SetSubsystem(ConnectionManagerName, true)
+	require.ErrorIs(t, err, errRuntimeShutdownRequest)
+}
+
 func TestGetExchangeOTPs(t *testing.T) {
+	t.Parallel()
 	bot := CreateTestBot(t)
 	_, err := bot.GetExchangeOTPs()
 	if err == nil {
 		t.Fatal("Expected err with no exchange OTP secrets set")
 	}
 
-	bfxCfg, err := bot.Config.GetExchangeConfig("Bitfinex")
+	bnCfg, err := bot.Config.GetExchangeConfig("binance")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bCfg, err := bot.Config.GetExchangeConfig("Bitstamp")
+	bCfg, err := bot.Config.GetExchangeConfig(testExchange)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	bfxCfg.API.Credentials.OTPSecret = "JBSWY3DPEHPK3PXP"
+	bnCfg.API.Credentials.OTPSecret = "JBSWY3DPEHPK3PXP"
 	bCfg.API.Credentials.OTPSecret = "JBSWY3DPEHPK3PXP"
 	result, err := bot.GetExchangeOTPs()
 	if err != nil {
@@ -77,7 +236,7 @@ func TestGetExchangeOTPs(t *testing.T) {
 		t.Fatal("Expected 2 OTP results")
 	}
 
-	bfxCfg.API.Credentials.OTPSecret = "°"
+	bnCfg.API.Credentials.OTPSecret = "°"
 	result, err = bot.GetExchangeOTPs()
 	if err != nil {
 		t.Fatal(err)
@@ -87,24 +246,25 @@ func TestGetExchangeOTPs(t *testing.T) {
 	}
 
 	// Flush settings
-	bfxCfg.API.Credentials.OTPSecret = ""
+	bnCfg.API.Credentials.OTPSecret = ""
 	bCfg.API.Credentials.OTPSecret = ""
 }
 
 func TestGetExchangeoOTPByName(t *testing.T) {
+	t.Parallel()
 	bot := CreateTestBot(t)
-	_, err := bot.GetExchangeoOTPByName("Bitstamp")
+	_, err := bot.GetExchangeOTPByName(testExchange)
 	if err == nil {
 		t.Fatal("Expected err with no exchange OTP secrets set")
 	}
 
-	bCfg, err := bot.Config.GetExchangeConfig("Bitstamp")
+	bCfg, err := bot.Config.GetExchangeConfig(testExchange)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	bCfg.API.Credentials.OTPSecret = "JBSWY3DPEHPK3PXP"
-	result, err := bot.GetExchangeoOTPByName("Bitstamp")
+	result, err := bot.GetExchangeOTPByName(testExchange)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,19 +277,38 @@ func TestGetExchangeoOTPByName(t *testing.T) {
 }
 
 func TestGetAuthAPISupportedExchanges(t *testing.T) {
+	t.Parallel()
 	e := CreateTestBot(t)
+	if result := e.GetAuthAPISupportedExchanges(); len(result) != 0 {
+		t.Fatal("Unexpected result", result)
+	}
+
+	exch, err := e.ExchangeManager.GetExchangeByName(testExchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := exch.GetBase()
+	b.API.AuthenticatedWebsocketSupport = true
+	b.SetCredentials(&accounts.Credentials{Key: "test", Secret: "test"})
 	if result := e.GetAuthAPISupportedExchanges(); len(result) != 1 {
 		t.Fatal("Unexpected result", result)
 	}
 }
 
 func TestIsOnline(t *testing.T) {
+	t.Parallel()
 	e := CreateTestBot(t)
+	var err error
+	e.connectionManager, err = setupConnectionManager(&e.Config.ConnectionMonitor)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if r := e.IsOnline(); r {
 		t.Fatal("Unexpected result")
 	}
 
-	if err := e.ConnectionManager.Start(&e.Config.ConnectionMonitor); err != nil {
+	if err = e.connectionManager.Start(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -141,7 +320,7 @@ func TestIsOnline(t *testing.T) {
 			t.Fatal("Test timeout")
 		default:
 			if e.IsOnline() {
-				if err := e.ConnectionManager.Stop(); err != nil {
+				if err := e.connectionManager.Stop(); err != nil {
 					t.Fatal("unable to shutdown connection manager")
 				}
 				return
@@ -150,243 +329,93 @@ func TestIsOnline(t *testing.T) {
 	}
 }
 
-func TestGetAvailableExchanges(t *testing.T) {
-	e := CreateTestBot(t)
-	if r := len(e.GetAvailableExchanges()); r == 0 {
-		t.Error("Expected len > 0")
-	}
-}
-
 func TestGetSpecificAvailablePairs(t *testing.T) {
+	t.Parallel()
 	e := CreateTestBot(t)
+	c := currency.Code{
+		Item: &currency.Item{
+			Role:   currency.Cryptocurrency,
+			Symbol: "usdt",
+		},
+	}
+	e.Config = &config.Config{
+		Exchanges: []config.Exchange{
+			{
+				Enabled: true,
+				Name:    testExchange,
+				CurrencyPairs: &currency.PairsManager{Pairs: map[asset.Item]*currency.PairStore{
+					asset.Spot: {
+						AssetEnabled: true,
+						Enabled:      currency.Pairs{currency.NewBTCUSD(), currency.NewPair(currency.BTC, c)},
+						Available:    currency.Pairs{currency.NewBTCUSD(), currency.NewPair(currency.BTC, c)},
+						ConfigFormat: &currency.PairFormat{
+							Uppercase: true,
+						},
+					},
+				}},
+			},
+		},
+	}
 	assetType := asset.Spot
-	result := e.GetSpecificAvailablePairs(true, true, true, false, assetType)
 
-	btsusd, err := currency.NewPairFromStrings("BTC", "USD")
-	if err != nil {
-		t.Fatal(err)
+	result := e.GetSpecificAvailablePairs(true, true, true, true, assetType)
+	btcUSD := currency.NewBTCUSD()
+	if !result.Contains(btcUSD, true) {
+		t.Error("Unexpected result")
 	}
 
-	if !result.Contains(btsusd, true) {
-		t.Fatal("Unexpected result")
-	}
-
-	btcusdt, err := currency.NewPairFromStrings("BTC", "USDT")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !result.Contains(btcusdt, false) {
-		t.Fatal("Unexpected result")
+	btcUSDT := currency.NewPair(currency.BTC, c)
+	if !result.Contains(btcUSDT, false) {
+		t.Error("Unexpected result")
 	}
 
 	result = e.GetSpecificAvailablePairs(true, true, false, false, assetType)
 
-	if result.Contains(btcusdt, false) {
-		t.Fatal("Unexpected result")
+	if result.Contains(btcUSDT, false) {
+		t.Error("Unexpected result")
 	}
 
-	ltcbtc, err := currency.NewPairFromStrings("LTC", "BTC")
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	ltcBTC := currency.NewPair(currency.LTC, currency.BTC)
 	result = e.GetSpecificAvailablePairs(true, false, false, true, assetType)
-	if !result.Contains(ltcbtc, false) {
-		t.Fatal("Unexpected result")
+	if result.Contains(ltcBTC, false) {
+		t.Error("Unexpected result")
 	}
 }
 
 func TestIsRelatablePairs(t *testing.T) {
-	CreateTestBot(t)
-	xbtusd, err := currency.NewPairFromStrings("XBT", "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
 
-	btcusd, err := currency.NewPairFromStrings("BTC", "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relational pairs with similar names
-	result := IsRelatablePairs(xbtusd, btcusd, false)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	// Test relational pairs with similar names reversed
-	result = IsRelatablePairs(btcusd, xbtusd, false)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	btcusdt, err := currency.NewPairFromStrings("BTC", "USDT")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relational pairs with similar names but with Tether support disabled
-	result = IsRelatablePairs(xbtusd, btcusdt, false)
-	if result {
-		t.Fatal("Unexpected result")
-	}
-
-	xbtusdt, err := currency.NewPairFromStrings("XBT", "USDT")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relational pairs with similar names but with Tether support enabled
-	result = IsRelatablePairs(xbtusdt, btcusd, true)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	aeusdt, err := currency.NewPairFromStrings("AE", "USDT")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	usdtae, err := currency.NewPairDelimiter("USDT-AE", "-")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relational pairs with different ordering, a delimiter and with
-	// Tether support enabled
-	result = IsRelatablePairs(aeusdt, usdtae, true)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	// Test relational pairs with different ordering, a delimiter and with
-	// Tether support disabled
-	result = IsRelatablePairs(aeusdt, usdtae, false)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	xbteur, err := currency.NewPairFromStrings("XBT", "EUR")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	btcaud, err := currency.NewPairFromStrings("BTC", "AUD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relationl pairs with similar names and different fiat currencies
-	result = IsRelatablePairs(xbteur, btcaud, false)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	usdbtc, err := currency.NewPairFromStrings("USD", "BTC")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	btceur, err := currency.NewPairFromStrings("BTC", "EUR")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relationl pairs with similar names, different fiat currencies and
-	// with different ordering
-	result = IsRelatablePairs(usdbtc, btceur, false)
-	if !result { // Is this really expected result???
-		t.Fatal("Unexpected result")
-	}
-
-	// Test relationl pairs with similar names, different fiat currencies and
-	// with Tether enabled
-	result = IsRelatablePairs(usdbtc, btcusdt, true)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	ltcbtc, err := currency.NewPairFromStrings("LTC", "BTC")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	btcltc, err := currency.NewPairFromStrings("BTC", "LTC")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relationl crypto pairs with similar names
-	result = IsRelatablePairs(ltcbtc, btcltc, false)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	ltceth, err := currency.NewPairFromStrings("LTC", "ETH")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	btceth, err := currency.NewPairFromStrings("BTC", "ETH")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relationl crypto pairs with similar different pairs
-	result = IsRelatablePairs(ltceth, btceth, false)
-	if result {
-		t.Fatal("Unexpected result")
-	}
-
-	// Test relationl crypto pairs with similar different pairs and with USDT
-	// enabled
-	usdtusd, err := currency.NewPairFromStrings("USDT", "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	result = IsRelatablePairs(usdtusd, btcusd, true)
-	if result {
-		t.Fatal("Unexpected result")
-	}
-
-	xbtltc, err := currency.NewPairFromStrings("XBT", "LTC")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relationl crypto pairs with with similar names
-	result = IsRelatablePairs(xbtltc, btcltc, false)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	ltcxbt, err := currency.NewPairFromStrings("LTC", "XBT")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test relationl crypto pairs with different ordering and similar names
-	result = IsRelatablePairs(ltcxbt, btcltc, false)
-	if !result {
-		t.Fatal("Unexpected result")
-	}
-
-	// Test edge case between two pairs when currency translations were causing
-	// non-relational pairs to be relatable
-	eurusd, err := currency.NewPairFromStrings("EUR", "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	result = IsRelatablePairs(eurusd, btcusd, false)
-	if result {
-		t.Fatal("Unexpected result")
+	for _, tc := range []struct {
+		name    string
+		p1, p2  currency.Pair
+		tether  bool
+		related bool
+	}{
+		{"similar names", currency.NewPair(currency.XBT, currency.USD), currency.NewBTCUSD(), false, true},
+		{"similar names reversed", currency.NewBTCUSD(), currency.NewPair(currency.XBT, currency.USD), false, true},
+		{"tether disabled", currency.NewPair(currency.XBT, currency.USD), currency.NewBTCUSDT(), false, false},
+		{"tether enabled", currency.NewPair(currency.XBT, currency.USDT), currency.NewBTCUSD(), true, true},
+		{"different ordering tether enabled", currency.NewPair(currency.AE, currency.USDT), currency.NewPair(currency.USDT, currency.AE), true, true},
+		{"different ordering tether disabled", currency.NewPair(currency.AE, currency.USDT), currency.NewPair(currency.USDT, currency.AE), false, true},
+		{"similar names different fiat", currency.NewPair(currency.XBT, currency.EUR), currency.NewPair(currency.BTC, currency.AUD), false, true},
+		{"different fiat different ordering", currency.NewPair(currency.USD, currency.BTC), currency.NewPair(currency.BTC, currency.EUR), false, true},
+		{"different fiat tether enabled", currency.NewPair(currency.USD, currency.BTC), currency.NewBTCUSDT(), true, true},
+		{"crypto pairs similar names", currency.NewPair(currency.LTC, currency.BTC), currency.NewPair(currency.BTC, currency.LTC), false, true},
+		{"crypto pairs different bases", currency.NewPair(currency.LTC, currency.ETH), currency.NewPair(currency.BTC, currency.ETH), false, false},
+		{"USDT/USD not relatable to BTC/USD", currency.NewPair(currency.USDT, currency.USD), currency.NewBTCUSD(), true, false},
+		{"XBT translation", currency.NewPair(currency.XBT, currency.LTC), currency.NewPair(currency.BTC, currency.LTC), false, true},
+		{"XBT translation reversed", currency.NewPair(currency.LTC, currency.XBT), currency.NewPair(currency.BTC, currency.LTC), false, true},
+		{"non-relatable fiat pair", currency.NewPair(currency.EUR, currency.USD), currency.NewBTCUSD(), false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.related, IsRelatablePairs(tc.p1, tc.p2, tc.tether))
+		})
 	}
 }
 
 func TestGetRelatableCryptocurrencies(t *testing.T) {
+	t.Parallel()
 	CreateTestBot(t)
 	btcltc, err := currency.NewPairFromStrings("BTC", "LTC")
 	if err != nil {
@@ -410,72 +439,66 @@ func TestGetRelatableCryptocurrencies(t *testing.T) {
 
 	p := GetRelatableCryptocurrencies(btcltc)
 	if p.Contains(btcltc, true) {
-		t.Fatal("Unexpected result")
+		t.Error("Unexpected result")
 	}
 	if p.Contains(btcbtc, true) {
-		t.Fatal("Unexpected result")
+		t.Error("Unexpected result")
 	}
 	if p.Contains(ltcltc, true) {
-		t.Fatal("Unexpected result")
+		t.Error("Unexpected result")
 	}
 	if !p.Contains(btceth, true) {
-		t.Fatal("Unexpected result")
+		t.Error("Unexpected result")
 	}
 
 	p = GetRelatableCryptocurrencies(btcltc)
 	if p.Contains(btcltc, true) {
-		t.Fatal("Unexpected result")
+		t.Error("Unexpected result")
 	}
 	if p.Contains(btcbtc, true) {
-		t.Fatal("Unexpected result")
+		t.Error("Unexpected result")
 	}
 	if p.Contains(ltcltc, true) {
-		t.Fatal("Unexpected result")
+		t.Error("Unexpected result")
 	}
 	if !p.Contains(btceth, true) {
-		t.Fatal("Unexpected result")
+		t.Error("Unexpected result")
 	}
 }
 
 func TestGetRelatableFiatCurrencies(t *testing.T) {
-	CreateTestBot(t)
-
-	btsusd, err := currency.NewPairFromStrings("BTC", "USD")
+	t.Parallel()
+	btcUSD, err := currency.NewPairFromStrings("BTC", "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	btceur, err := currency.NewPairFromStrings("BTC", "EUR")
+	btcEUR, err := currency.NewPairFromStrings("BTC", "EUR")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	p := GetRelatableFiatCurrencies(btsusd)
-	if !p.Contains(btceur, true) {
-		t.Fatal("Unexpected result")
+	p := GetRelatableFiatCurrencies(btcUSD)
+	if !p.Contains(btcEUR, true) {
+		t.Error("Unexpected result")
 	}
 
-	btczar, err := currency.NewPairFromStrings("BTC", "ZAR")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	p = GetRelatableFiatCurrencies(btsusd)
-	if !p.Contains(btczar, true) {
-		t.Fatal("Unexpected result")
+	if p.Contains(currency.NewPair(currency.DOGE, currency.XRP), true) {
+		t.Error("Unexpected result")
 	}
 }
 
 func TestMapCurrenciesByExchange(t *testing.T) {
+	t.Parallel()
 	e := CreateTestBot(t)
 
-	var pairs = []currency.Pair{
-		currency.NewPair(currency.BTC, currency.USD),
+	pairs := []currency.Pair{
+		currency.NewBTCUSD(),
 		currency.NewPair(currency.BTC, currency.EUR),
 	}
 
 	result := e.MapCurrenciesByExchange(pairs, true, asset.Spot)
-	pairs, ok := result["Bitstamp"]
+	pairs, ok := result[testExchange]
 	if !ok {
 		t.Fatal("Unexpected result")
 	}
@@ -486,9 +509,7 @@ func TestMapCurrenciesByExchange(t *testing.T) {
 }
 
 func TestGetExchangeNamesByCurrency(t *testing.T) {
-	e := CreateTestBot(t)
-	assetType := asset.Spot
-
+	t.Parallel()
 	btsusd, err := currency.NewPairFromStrings("BTC", "USD")
 	if err != nil {
 		t.Fatal(err)
@@ -504,17 +525,35 @@ func TestGetExchangeNamesByCurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	e := CreateTestBot(t)
+	bf := "Bitflyer"
+	e.Config.Exchanges = append(e.Config.Exchanges, config.Exchange{
+		Enabled: true,
+		Name:    bf,
+		CurrencyPairs: &currency.PairsManager{Pairs: map[asset.Item]*currency.PairStore{
+			asset.Spot: {
+				AssetEnabled: true,
+				Enabled:      currency.Pairs{btcjpy},
+				Available:    currency.Pairs{btcjpy},
+				ConfigFormat: &currency.PairFormat{
+					Uppercase: true,
+				},
+			},
+		}},
+	})
+	assetType := asset.Spot
+
 	result := e.GetExchangeNamesByCurrency(btsusd,
 		true,
 		assetType)
-	if !common.StringDataCompare(result, "Bitstamp") {
+	if !slices.Contains(result, testExchange) {
 		t.Fatal("Unexpected result")
 	}
 
 	result = e.GetExchangeNamesByCurrency(btcjpy,
 		true,
 		assetType)
-	if !common.StringDataCompare(result, "Bitflyer") {
+	if !slices.Contains(result, bf) {
 		t.Fatal("Unexpected result")
 	}
 
@@ -526,154 +565,8 @@ func TestGetExchangeNamesByCurrency(t *testing.T) {
 	}
 }
 
-func TestGetSpecificOrderbook(t *testing.T) {
-	e := CreateTestBot(t)
-
-	e.LoadExchange("Bitstamp", false, nil)
-
-	var bids []orderbook.Item
-	bids = append(bids, orderbook.Item{Price: 1000, Amount: 1})
-
-	base := orderbook.Base{
-		Pair:     currency.NewPair(currency.BTC, currency.USD),
-		Bids:     bids,
-		Exchange: "Bitstamp",
-		Asset:    asset.Spot,
-	}
-
-	err := base.Process()
-	if err != nil {
-		t.Fatal("Unexpected result", err)
-	}
-
-	btsusd, err := currency.NewPairFromStrings("BTC", "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ob, err := e.GetSpecificOrderbook(btsusd, "Bitstamp", asset.Spot)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if ob.Bids[0].Price != 1000 {
-		t.Fatal("Unexpected result")
-	}
-
-	ethltc, err := currency.NewPairFromStrings("ETH", "LTC")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = e.GetSpecificOrderbook(ethltc, "Bitstamp", asset.Spot)
-	if err == nil {
-		t.Fatal("Unexpected result")
-	}
-
-	e.UnloadExchange("Bitstamp")
-}
-
-func TestGetSpecificTicker(t *testing.T) {
-	e := CreateTestBot(t)
-
-	e.LoadExchange("Bitstamp", false, nil)
-	p, err := currency.NewPairFromStrings("BTC", "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = ticker.ProcessTicker(&ticker.Price{
-		Pair:         p,
-		Last:         1000,
-		AssetType:    asset.Spot,
-		ExchangeName: "Bitstamp"})
-	if err != nil {
-		t.Fatal("ProcessTicker error", err)
-	}
-
-	tick, err := e.GetSpecificTicker(p, "Bitstamp", asset.Spot)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if tick.Last != 1000 {
-		t.Fatal("Unexpected result")
-	}
-
-	ethltc, err := currency.NewPairFromStrings("ETH", "LTC")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = e.GetSpecificTicker(ethltc, "Bitstamp", asset.Spot)
-	if err == nil {
-		t.Fatal("Unexpected result")
-	}
-
-	e.UnloadExchange("Bitstamp")
-}
-
-func TestGetCollatedExchangeAccountInfoByCoin(t *testing.T) {
-	CreateTestBot(t)
-
-	var exchangeInfo []account.Holdings
-
-	var bitfinexHoldings account.Holdings
-	bitfinexHoldings.Exchange = "Bitfinex"
-	bitfinexHoldings.Accounts = append(bitfinexHoldings.Accounts,
-		account.SubAccount{
-			Currencies: []account.Balance{
-				{
-					CurrencyName: currency.BTC,
-					TotalValue:   100,
-					Hold:         0,
-				},
-			},
-		})
-
-	exchangeInfo = append(exchangeInfo, bitfinexHoldings)
-
-	var bitstampHoldings account.Holdings
-	bitstampHoldings.Exchange = "Bitstamp"
-	bitstampHoldings.Accounts = append(bitstampHoldings.Accounts,
-		account.SubAccount{
-			Currencies: []account.Balance{
-				{
-					CurrencyName: currency.LTC,
-					TotalValue:   100,
-					Hold:         0,
-				},
-				{
-					CurrencyName: currency.BTC,
-					TotalValue:   100,
-					Hold:         0,
-				},
-			},
-		})
-
-	exchangeInfo = append(exchangeInfo, bitstampHoldings)
-
-	result := GetCollatedExchangeAccountInfoByCoin(exchangeInfo)
-	if len(result) == 0 {
-		t.Fatal("Unexpected result")
-	}
-
-	amount, ok := result[currency.BTC]
-	if !ok {
-		t.Fatal("Expected currency was not found in result map")
-	}
-
-	if amount.TotalValue != 200 {
-		t.Fatal("Unexpected result")
-	}
-
-	_, ok = result[currency.ETH]
-	if ok {
-		t.Fatal("Unexpected result")
-	}
-}
-
 func TestGetExchangeHighestPriceByCurrencyPair(t *testing.T) {
+	t.Parallel()
 	CreateTestBot(t)
 
 	p, err := currency.NewPairFromStrings("BTC", "USD")
@@ -681,14 +574,20 @@ func TestGetExchangeHighestPriceByCurrencyPair(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats.Add("Bitfinex", p, asset.Spot, 1000, 10000)
-	stats.Add("Bitstamp", p, asset.Spot, 1337, 10000)
+	err = stats.Add("Bitfinex", p, asset.Spot, 1000, 10000)
+	if err != nil {
+		t.Error(err)
+	}
+	err = stats.Add(testExchange, p, asset.Spot, 1337, 10000)
+	if err != nil {
+		t.Error(err)
+	}
 	exchangeName, err := GetExchangeHighestPriceByCurrencyPair(p, asset.Spot)
 	if err != nil {
 		t.Error(err)
 	}
 
-	if exchangeName != "Bitstamp" {
+	if exchangeName != testExchange {
 		t.Error("Unexpected result")
 	}
 
@@ -704,6 +603,7 @@ func TestGetExchangeHighestPriceByCurrencyPair(t *testing.T) {
 }
 
 func TestGetExchangeLowestPriceByCurrencyPair(t *testing.T) {
+	t.Parallel()
 	CreateTestBot(t)
 
 	p, err := currency.NewPairFromStrings("BTC", "USD")
@@ -711,8 +611,14 @@ func TestGetExchangeLowestPriceByCurrencyPair(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats.Add("Bitfinex", p, asset.Spot, 1000, 10000)
-	stats.Add("Bitstamp", p, asset.Spot, 1337, 10000)
+	err = stats.Add("Bitfinex", p, asset.Spot, 1000, 10000)
+	if err != nil {
+		t.Error(err)
+	}
+	err = stats.Add(testExchange, p, asset.Spot, 1337, 10000)
+	if err != nil {
+		t.Error(err)
+	}
 	exchangeName, err := GetExchangeLowestPriceByCurrencyPair(p, asset.Spot)
 	if err != nil {
 		t.Error(err)
@@ -729,20 +635,191 @@ func TestGetExchangeLowestPriceByCurrencyPair(t *testing.T) {
 
 	_, err = GetExchangeLowestPriceByCurrencyPair(btcaud, asset.Spot)
 	if err == nil {
-		t.Error("Unexpected reuslt")
+		t.Error("Unexpected result")
 	}
 }
 
 func TestGetCryptocurrenciesByExchange(t *testing.T) {
+	t.Parallel()
 	e := CreateTestBot(t)
-
 	_, err := e.GetCryptocurrenciesByExchange("Bitfinex", false, false, asset.Spot)
 	if err != nil {
 		t.Fatalf("Err %s", err)
 	}
 }
 
+type fakeDepositExchangeOpts struct {
+	SupportsAuth             bool
+	SupportsMultiChain       bool
+	RequiresChainSet         bool
+	ReturnMultipleChains     bool
+	ThrowPairError           bool
+	ThrowTransferChainError  bool
+	ThrowDepositAddressError bool
+}
+
+type fakeDepositExchange struct {
+	exchange.IBotExchange
+	*fakeDepositExchangeOpts
+}
+
+func (f fakeDepositExchange) GetName() string {
+	return "fake"
+}
+
+func (f fakeDepositExchange) GetBase() *exchange.Base {
+	return &exchange.Base{
+		Features: exchange.Features{Supports: exchange.FeaturesSupported{
+			RESTCapabilities: protocol.Features{
+				MultiChainDeposits:                f.SupportsMultiChain,
+				MultiChainDepositRequiresChainSet: f.RequiresChainSet,
+			},
+		}},
+	}
+}
+
+func (f fakeDepositExchange) IsRESTAuthenticationSupported() bool {
+	return f.SupportsAuth
+}
+
+func (f fakeDepositExchange) GetAvailableTransferChains(_ context.Context, c currency.Code) ([]string, error) {
+	if f.ThrowTransferChainError {
+		return nil, errors.New("unable to get available transfer chains")
+	}
+	if c.Equal(currency.XRP) {
+		return nil, nil
+	}
+	if c.Equal(currency.USDT) {
+		return []string{"sol", "btc", "usdt", ""}, nil
+	}
+	return []string{"BITCOIN"}, nil
+}
+
+func (f fakeDepositExchange) GetDepositAddress(_ context.Context, _ currency.Code, _, _ string) (*deposit.Address, error) {
+	if f.ThrowDepositAddressError {
+		return nil, errors.New("unable to get deposit address")
+	}
+	return &deposit.Address{Address: "fakeaddr"}, nil
+}
+
+func createDepositEngine(opts *fakeDepositExchangeOpts) *Engine {
+	ps := currency.PairStore{
+		AssetEnabled: true,
+		Enabled: currency.Pairs{
+			currency.NewBTCUSDT(),
+			currency.NewPair(currency.XRP, currency.USDT),
+		},
+		Available: currency.Pairs{
+			currency.NewBTCUSDT(),
+			currency.NewPair(currency.XRP, currency.USDT),
+		},
+	}
+	if opts.ThrowPairError {
+		ps.Available = nil
+	}
+	return &Engine{
+		Settings: Settings{CoreSettings: CoreSettings{Verbose: true}},
+		Config: &config.Config{
+			Exchanges: []config.Exchange{
+				{
+					Name:    "fake",
+					Enabled: true,
+					CurrencyPairs: &currency.PairsManager{
+						UseGlobalFormat: true,
+						ConfigFormat:    &currency.EMPTYFORMAT,
+						Pairs: map[asset.Item]*currency.PairStore{
+							asset.Spot: &ps,
+						},
+					},
+				},
+			},
+		},
+		ExchangeManager: &ExchangeManager{
+			exchanges: map[string]exchange.IBotExchange{
+				"fake": fakeDepositExchange{
+					fakeDepositExchangeOpts: opts,
+				},
+			},
+		},
+	}
+}
+
+func TestGetCryptocurrencyDepositAddressesByExchange(t *testing.T) {
+	t.Parallel()
+	const exchName = "fake"
+	e := createDepositEngine(&fakeDepositExchangeOpts{SupportsAuth: true, SupportsMultiChain: true})
+	_, err := e.GetCryptocurrencyDepositAddressesByExchange(exchName)
+	assert.NoError(t, err, "GetCryptocurrencyDepositAddressesByExchange should not error")
+	_, err = e.GetCryptocurrencyDepositAddressesByExchange("non-existent")
+	assert.ErrorIs(t, err, ErrExchangeNotFound)
+
+	e.DepositAddressManager = SetupDepositAddressManager()
+	_, err = e.GetCryptocurrencyDepositAddressesByExchange(exchName)
+	if err == nil {
+		t.Error("expected error")
+	}
+	if err = e.DepositAddressManager.Sync(e.GetAllExchangeCryptocurrencyDepositAddresses()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.GetCryptocurrencyDepositAddressesByExchange(exchName)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestGetExchangeCryptocurrencyDepositAddress(t *testing.T) {
+	t.Parallel()
+	e := createDepositEngine(&fakeDepositExchangeOpts{SupportsAuth: true, SupportsMultiChain: true})
+	_, err := e.GetExchangeCryptocurrencyDepositAddress(t.Context(), "non-existent", "", "", currency.BTC, false)
+	assert.ErrorIs(t, err, ErrExchangeNotFound)
+
+	const exchName = "fake"
+	r, err := e.GetExchangeCryptocurrencyDepositAddress(t.Context(), exchName, "", "", currency.BTC, false)
+	require.NoError(t, err, "GetExchangeCryptocurrencyDepositAddress must not error")
+	assert.Equal(t, "fakeaddr", r.Address, "Should return the correct r.Address")
+	e.DepositAddressManager = SetupDepositAddressManager()
+	err = e.DepositAddressManager.Sync(e.GetAllExchangeCryptocurrencyDepositAddresses())
+	assert.NoError(t, err, "Sync should not error")
+	_, err = e.GetExchangeCryptocurrencyDepositAddress(t.Context(), "meow", "", "", currency.BTC, false)
+	assert.ErrorIs(t, err, ErrExchangeNotFound)
+	_, err = e.GetExchangeCryptocurrencyDepositAddress(t.Context(), exchName, "", "", currency.BTC, false)
+	assert.NoError(t, err, "GetExchangeCryptocurrencyDepositAddress should not error")
+}
+
+func TestGetAllExchangeCryptocurrencyDepositAddresses(t *testing.T) {
+	t.Parallel()
+	e := createDepositEngine(&fakeDepositExchangeOpts{})
+	if r := e.GetAllExchangeCryptocurrencyDepositAddresses(); len(r) > 0 {
+		t.Error("should have no addresses returned for an unauthenticated exchange")
+	}
+	e = createDepositEngine(&fakeDepositExchangeOpts{SupportsAuth: true, ThrowPairError: true})
+	if r := e.GetAllExchangeCryptocurrencyDepositAddresses(); len(r) > 0 {
+		t.Error("should have no cryptos returned for no enabled pairs")
+	}
+	e = createDepositEngine(&fakeDepositExchangeOpts{SupportsAuth: true, SupportsMultiChain: true, ThrowTransferChainError: true})
+	if r := e.GetAllExchangeCryptocurrencyDepositAddresses(); len(r["fake"]) != 0 {
+		t.Error("should have returned no deposit addresses for a fake exchange with transfer error")
+	}
+	e = createDepositEngine(&fakeDepositExchangeOpts{SupportsAuth: true, SupportsMultiChain: true, ThrowDepositAddressError: true})
+	if r := e.GetAllExchangeCryptocurrencyDepositAddresses(); len(r["fake"]["btc"]) != 0 {
+		t.Error("should have returned no deposit addresses for fake exchange with deposit error, with multichain support enabled")
+	}
+	e = createDepositEngine(&fakeDepositExchangeOpts{SupportsAuth: true, SupportsMultiChain: true, RequiresChainSet: true})
+	if r := e.GetAllExchangeCryptocurrencyDepositAddresses(); len(r["fake"]["btc"]) == 0 {
+		t.Error("should of returned a BTC address")
+	}
+	e = createDepositEngine(&fakeDepositExchangeOpts{SupportsAuth: true, SupportsMultiChain: true})
+	if r := e.GetAllExchangeCryptocurrencyDepositAddresses(); len(r["fake"]["btc"]) == 0 {
+		t.Error("should of returned a BTC address")
+	}
+	e = createDepositEngine(&fakeDepositExchangeOpts{SupportsAuth: true})
+	if r := e.GetAllExchangeCryptocurrencyDepositAddresses(); len(r["fake"]["xrp"]) == 0 {
+		t.Error("should have returned a XRP address")
+	}
+}
+
 func TestGetExchangeNames(t *testing.T) {
+	t.Parallel()
 	bot := CreateTestBot(t)
 	if e := bot.GetExchangeNames(true); len(e) == 0 {
 		t.Error("exchange names should be populated")
@@ -750,11 +827,25 @@ func TestGetExchangeNames(t *testing.T) {
 	if err := bot.UnloadExchange(testExchange); err != nil {
 		t.Fatal(err)
 	}
-	if e := bot.GetExchangeNames(true); common.StringDataCompare(e, testExchange) {
+	if e := bot.GetExchangeNames(true); slices.Contains(e, testExchange) {
 		t.Error("Bitstamp should be missing")
 	}
+	if e := bot.GetExchangeNames(false); len(e) != 0 {
+		t.Errorf("Expected %v Received %v", len(e), 0)
+	}
+
+	for i := range bot.Config.Exchanges {
+		exch, err := bot.ExchangeManager.NewExchangeByName(bot.Config.Exchanges[i].Name)
+		require.Truef(t, err == nil || errors.Is(err, ErrExchangeAlreadyLoaded),
+			"%s NewExchangeByName must not error: %s", bot.Config.Exchanges[i].Name, err)
+		if exch != nil {
+			exch.SetDefaults()
+			err = bot.ExchangeManager.Add(exch)
+			require.NoError(t, err)
+		}
+	}
 	if e := bot.GetExchangeNames(false); len(e) != len(bot.Config.Exchanges) {
-		t.Errorf("Expected %v Received %v", len(e), len(bot.Config.Exchanges))
+		t.Errorf("Expected %v Received %v", len(bot.Config.Exchanges), len(e))
 	}
 }
 
@@ -879,7 +970,7 @@ func TestCheckAndGenCerts(t *testing.T) {
 	}
 
 	defer cleanup()
-	if err := checkCerts(tempDir); err != nil {
+	if err := CheckCerts(tempDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -888,11 +979,11 @@ func TestCheckAndGenCerts(t *testing.T) {
 	if err := os.Remove(certFile); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkCerts(tempDir); err != nil {
+	if err := CheckCerts(tempDir); err != nil {
 		t.Fatal(err)
 	}
 
-	// Now call checkCerts to test an expired cert
+	// Now call CheckCerts to test an expired cert
 	certData, err := mockCert("", time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -901,7 +992,77 @@ func TestCheckAndGenCerts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = checkCerts(tempDir); err != nil {
+	if err = CheckCerts(tempDir); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestNewSupportedExchangeByName(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range exchange.Exchanges {
+		exch, err := NewSupportedExchangeByName(name)
+		require.NoErrorf(t, err, "NewSupportedExchangeByName must not error for %s", name)
+		require.NotNilf(t, exch, "NewSupportedExchangeByName must return an exchange for %s", name)
+	}
+
+	for _, name := range []string{"", "Bitmex"} {
+		_, err := NewSupportedExchangeByName(name)
+		assert.ErrorIsf(t, err, ErrExchangeNotFound, "NewSupportedExchangeByName should reject %q", name)
+	}
+}
+
+func TestNewExchangeByNameWithDefaults(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewExchangeByNameWithDefaults(t.Context(), "moarunlikelymeow")
+	assert.ErrorIs(t, err, ErrExchangeNotFound, "Invalid exchange name should error")
+	for x := range exchange.Exchanges {
+		name := exchange.Exchanges[x]
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if isCITest() && slices.Contains(blockedCIExchanges, name) {
+				t.Skipf("skipping %s due to CI test restrictions", name)
+			}
+			if slices.Contains(unsupportedDefaultConfigExchanges, name) {
+				t.Skipf("skipping %s unsupported", name)
+			}
+			exch, err := NewExchangeByNameWithDefaults(t.Context(), name)
+			if assert.NoError(t, err, "NewExchangeByNameWithDefaults should not error") {
+				assert.Equal(t, name, strings.ToLower(exch.GetName()), "Should get correct exchange name")
+			}
+		})
+	}
+}
+
+func TestResolvePPROFListenAddress(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, defaultPPROFListenAddress, resolvePPROFListenAddress(""), "Empty listen address should default to localhost:8085")
+	assert.Equal(t, "127.0.0.1:0", resolvePPROFListenAddress("127.0.0.1:0"), "Explicit listen address should be preserved")
+}
+
+func TestStartPPROF(t *testing.T) {
+	t.Parallel()
+	assert.NoError(t, StartPPROF(t.Context(), &config.Profiler{Enabled: false}), "StartPPROF with a disabled config should not error")
+	var listenCfg net.ListenConfig
+	freeAddr, err := listenCfg.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err, "Finding a free port must not error")
+	listenAddr := freeAddr.Addr().String()
+	require.NoError(t, freeAddr.Close(), "Releasing temporary listener must not error")
+
+	pprofConfig := &config.Profiler{
+		Enabled:              true,
+		ListenAddress:        listenAddr,
+		MutexProfileFraction: 1,
+		BlockProfileRate:     1,
+	}
+	require.NoError(t, StartPPROF(t.Context(), pprofConfig), "StartPPROF with a valid config must not error")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+listenAddr+"/debug/pprof/mutex", http.NoBody)
+	require.NoError(t, err, "NewRequestWithContext must not error")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "Do must not error")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "Get response status must be OK")
+	resp.Body.Close()
+	assert.Error(t, StartPPROF(t.Context(), pprofConfig), "StartPPROF with a valid config on already used port should error")
 }

@@ -3,80 +3,58 @@ package log
 import (
 	"errors"
 	"fmt"
-	"io"
-	"time"
 )
 
-func newLogger(c *Config) *Logger {
-	return &Logger{
-		Timestamp:         c.AdvancedSettings.TimeStampFormat,
-		Spacer:            c.AdvancedSettings.Spacer,
-		ErrorHeader:       c.AdvancedSettings.Headers.Error,
-		InfoHeader:        c.AdvancedSettings.Headers.Info,
-		WarnHeader:        c.AdvancedSettings.Headers.Warn,
-		DebugHeader:       c.AdvancedSettings.Headers.Debug,
-		ShowLogSystemName: *c.AdvancedSettings.ShowLogSystemName,
-	}
-}
+var (
+	errEmptyLoggerName = errors.New("cannot have empty logger name")
+	// ErrSubLoggerAlreadyRegistered Returned when a sublogger is registered multiple times
+	ErrSubLoggerAlreadyRegistered = errors.New("sub logger already registered")
+)
 
-func (l *Logger) newLogEvent(data, header, slName string, w io.Writer) error {
-	if w == nil {
-		return errors.New("io.Writer not set")
+func newLogger(c *Config, botName string) Logger {
+	return Logger{
+		TimestampFormat:               c.AdvancedSettings.TimeStampFormat,
+		Spacer:                        c.AdvancedSettings.Spacer,
+		ErrorHeader:                   c.AdvancedSettings.Headers.Error,
+		InfoHeader:                    c.AdvancedSettings.Headers.Info,
+		WarnHeader:                    c.AdvancedSettings.Headers.Warn,
+		DebugHeader:                   c.AdvancedSettings.Headers.Debug,
+		ShowLogSystemName:             c.AdvancedSettings.ShowLogSystemName != nil && *c.AdvancedSettings.ShowLogSystemName,
+		BypassJobChannelFilledWarning: c.AdvancedSettings.BypassJobChannelFilledWarning,
+		botName:                       botName,
 	}
-
-	e := eventPool.Get().(*Event)
-	e.output = w
-	e.data = append(e.data, []byte(header)...)
-	if l.ShowLogSystemName {
-		e.data = append(e.data, l.Spacer...)
-		e.data = append(e.data, slName...)
-	}
-	e.data = append(e.data, l.Spacer...)
-	if l.Timestamp != "" {
-		e.data = time.Now().AppendFormat(e.data, l.Timestamp)
-	}
-	e.data = append(e.data, l.Spacer...)
-	e.data = append(e.data, []byte(data)...)
-	if data == "" || data[len(data)-1] != '\n' {
-		e.data = append(e.data, '\n')
-	}
-	_, err := e.output.Write(e.data)
-
-	e.data = e.data[:0]
-	eventPool.Put(e)
-
-	return err
 }
 
 // CloseLogger is called on shutdown of application
 func CloseLogger() error {
-	return GlobalLogFile.Close()
+	ch := make(chan struct{})
+	mu.Lock()
+	defer mu.Unlock()
+	globalLogConfig.Enabled = new(false)
+	jobsChannel <- &job{Passback: ch}
+	<-ch
+	return globalLogFile.Close()
 }
 
-func validSubLogger(s string) (bool, *subLogger) {
-	if v, found := subLoggers[s]; found {
-		return true, v
-	}
-	return false, nil
-}
-
-// Level retries the current sublogger levels
-func Level(s string) (*Levels, error) {
-	found, logger := validSubLogger(s)
+// Level retrieves the current sublogger levels
+func Level(name string) (Levels, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	subLogger, found := SubLoggers[name]
 	if !found {
-		return nil, fmt.Errorf("logger %v not found", s)
+		return Levels{}, fmt.Errorf("logger %s not found", name)
 	}
-
-	return &logger.Levels, nil
+	return subLogger.levels, nil
 }
 
 // SetLevel sets sublogger levels
-func SetLevel(s, level string) (*Levels, error) {
-	found, logger := validSubLogger(s)
+func SetLevel(s, level string) (Levels, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	subLogger, found := SubLoggers[s]
 	if !found {
-		return nil, fmt.Errorf("logger %v not found", s)
+		return Levels{}, fmt.Errorf("sub logger %v not found", s)
 	}
-	logger.Levels = splitLevel(level)
-
-	return &logger.Levels, nil
+	subLogger.setLevels(splitLevel(level))
+	return subLogger.levels, nil
 }

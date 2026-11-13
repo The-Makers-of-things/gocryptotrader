@@ -1,13 +1,15 @@
 package currency
 
 import (
-	"encoding/json"
+	"slices"
 	"strings"
+
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 )
 
 // NewCurrenciesFromStringArray returns a Currencies object from strings
 func NewCurrenciesFromStringArray(currencies []string) Currencies {
-	var list Currencies
+	list := make(Currencies, 0, len(currencies))
 	for i := range currencies {
 		if currencies[i] == "" {
 			continue
@@ -20,46 +22,44 @@ func NewCurrenciesFromStringArray(currencies []string) Currencies {
 // Currencies define a range of supported currency codes
 type Currencies []Code
 
+// Add adds a currency to the list if it doesn't exist
+func (c Currencies) Add(a Code) Currencies {
+	if !c.Contains(a) {
+		c = append(c, a)
+	}
+	return c
+}
+
 // Strings returns an array of currency strings
 func (c Currencies) Strings() []string {
-	var list []string
+	list := make([]string, len(c))
 	for i := range c {
-		list = append(list, c[i].String())
+		list[i] = c[i].String()
 	}
 	return list
 }
 
 // Contains checks to see if a currency code is contained in the currency list
-func (c Currencies) Contains(cc Code) bool {
+func (c Currencies) Contains(check Code) bool {
 	for i := range c {
-		if c[i].Item == cc.Item {
+		if c[i].Equal(check) {
 			return true
 		}
 	}
 	return false
 }
 
-// Join returns a comma serparated string
+// Join returns a comma separated string
 func (c Currencies) Join() string {
 	return strings.Join(c.Strings(), ",")
 }
 
-// UnmarshalJSON comforms type to the umarshaler interface
+// UnmarshalJSON conforms type to the unmarshaler interface
 func (c *Currencies) UnmarshalJSON(d []byte) error {
-	var configCurrencies string
-	err := json.Unmarshal(d, &configCurrencies)
-	if err != nil {
-		return err
+	if d[0] != '[' {
+		d = []byte(`[` + string(d) + `]`)
 	}
-
-	var allTheCurrencies Currencies
-	curr := strings.Split(configCurrencies, ",")
-	for i := range curr {
-		allTheCurrencies = append(allTheCurrencies, NewCode(curr[i]))
-	}
-
-	*c = allTheCurrencies
-	return nil
+	return json.Unmarshal(d, (*[]Code)(c))
 }
 
 // MarshalJSON conforms type to the marshaler interface
@@ -72,15 +72,10 @@ func (c Currencies) Match(other Currencies) bool {
 	if len(c) != len(other) {
 		return false
 	}
-
-match:
 	for x := range c {
-		for y := range other {
-			if c[x] == other[y] {
-				continue match
-			}
+		if !slices.ContainsFunc(other, c[x].Equal) {
+			return false
 		}
-		return false
 	}
 	return true
 }

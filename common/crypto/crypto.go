@@ -1,15 +1,12 @@
 package crypto
 
-// nolint:gosec // md5/sha1 hash functions used by some exchanges
 import (
 	"crypto/hmac"
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // Used for exchanges
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // Used for exchanges
 	"crypto/sha256"
 	"crypto/sha512"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"hash"
 	"io"
@@ -23,25 +20,6 @@ const (
 	HashSHA512_384
 	HashMD5
 )
-
-// HexEncodeToString takes in a hexadecimal byte array and returns a string
-func HexEncodeToString(input []byte) string {
-	return hex.EncodeToString(input)
-}
-
-// Base64Decode takes in a Base64 string and returns a byte array and an error
-func Base64Decode(input string) ([]byte, error) {
-	result, err := base64.StdEncoding.DecodeString(input)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// Base64Encode takes in a byte array then returns an encoded base64 string
-func Base64Encode(input []byte) string {
-	return base64.StdEncoding.EncodeToString(input)
-}
 
 // GetRandomSalt returns a random salt
 func GetRandomSalt(input []byte, saltLen int) ([]byte, error) {
@@ -61,30 +39,9 @@ func GetRandomSalt(input []byte, saltLen int) ([]byte, error) {
 	return result, nil
 }
 
-// GetMD5 returns a MD5 hash of a byte array
-func GetMD5(input []byte) []byte {
-	m := md5.New() // nolint:gosec // hash function used by some exchanges
-	m.Write(input)
-	return m.Sum(nil)
-}
-
-// GetSHA512 returns a SHA512 hash of a byte array
-func GetSHA512(input []byte) []byte {
-	sha := sha512.New()
-	sha.Write(input)
-	return sha.Sum(nil)
-}
-
-// GetSHA256 returns a SHA256 hash of a byte array
-func GetSHA256(input []byte) []byte {
-	sha := sha256.New()
-	sha.Write(input)
-	return sha.Sum(nil)
-}
-
 // GetHMAC returns a keyed-hash message authentication code using the desired
 // hashtype
-func GetHMAC(hashType int, input, key []byte) []byte {
+func GetHMAC(hashType int, input, key []byte) ([]byte, error) {
 	var hasher func() hash.Hash
 
 	switch hashType {
@@ -101,14 +58,6 @@ func GetHMAC(hashType int, input, key []byte) []byte {
 	}
 
 	h := hmac.New(hasher, key)
-	h.Write(input)
-	return h.Sum(nil)
-}
-
-// Sha1ToHex takes a string, sha1 hashes it and return a hex string of the
-// result
-func Sha1ToHex(data string) string {
-	h := sha1.New() // nolint:gosec // hash function used by some exchanges
-	h.Write([]byte(data))
-	return hex.EncodeToString(h.Sum(nil))
+	_, err := h.Write(input)
+	return h.Sum(nil), err
 }

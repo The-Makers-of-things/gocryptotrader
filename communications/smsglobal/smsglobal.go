@@ -2,15 +2,16 @@
 package smsglobal
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/communications/base"
-	"github.com/thrasher-corp/gocryptotrader/config"
 	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
@@ -33,8 +34,8 @@ type SMSGlobal struct {
 }
 
 // Setup takes in a SMSGlobal configuration, sets username, password and
-// and recipient list
-func (s *SMSGlobal) Setup(cfg *config.CommunicationsConfig) {
+// recipient list
+func (s *SMSGlobal) Setup(cfg *base.CommunicationsConfig) {
 	s.Name = cfg.SMSGlobalConfig.Name
 	s.Enabled = cfg.SMSGlobalConfig.Enabled
 	s.Verbose = cfg.SMSGlobalConfig.Verbose
@@ -42,15 +43,13 @@ func (s *SMSGlobal) Setup(cfg *config.CommunicationsConfig) {
 	s.Password = cfg.SMSGlobalConfig.Password
 	s.SendFrom = cfg.SMSGlobalConfig.From
 
-	var contacts []Contact
+	contacts := make([]Contact, len(cfg.SMSGlobalConfig.Contacts))
 	for x := range cfg.SMSGlobalConfig.Contacts {
-		contacts = append(contacts,
-			Contact{
-				Name:    cfg.SMSGlobalConfig.Contacts[x].Name,
-				Number:  cfg.SMSGlobalConfig.Contacts[x].Number,
-				Enabled: cfg.SMSGlobalConfig.Contacts[x].Enabled,
-			},
-		)
+		contacts[x] = Contact{
+			Name:    cfg.SMSGlobalConfig.Contacts[x].Name,
+			Number:  cfg.SMSGlobalConfig.Contacts[x].Number,
+			Enabled: cfg.SMSGlobalConfig.Contacts[x].Enabled,
+		}
 		log.Debugf(log.CommunicationMgr, "SMSGlobal: SMS Contact: %s. Number: %s. Enabled: %v\n",
 			cfg.SMSGlobalConfig.Contacts[x].Name,
 			cfg.SMSGlobalConfig.Contacts[x].Number,
@@ -139,7 +138,7 @@ func (s *SMSGlobal) RemoveContact(contact Contact) error {
 
 	for x := range s.Contacts {
 		if s.Contacts[x].Name == contact.Name && s.Contacts[x].Number == contact.Number {
-			s.Contacts = append(s.Contacts[:x], s.Contacts[x+1:]...)
+			s.Contacts = slices.Delete(s.Contacts, x, x+1)
 			return nil
 		}
 	}
@@ -180,15 +179,17 @@ func (s *SMSGlobal) SendMessage(to, message string) error {
 	headers := make(map[string]string)
 	headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-	resp, err := common.SendHTTPRequest(http.MethodPost,
+	resp, err := common.SendHTTPRequest(context.TODO(),
+		http.MethodPost,
 		smsGlobalAPIURL,
 		headers,
-		strings.NewReader(values.Encode()))
+		strings.NewReader(values.Encode()),
+		s.Verbose)
 	if err != nil {
 		return err
 	}
 
-	if !strings.Contains(resp, "OK: 0; Sent queued message") {
+	if !strings.Contains(string(resp), "OK: 0; Sent queued message") {
 		return errSMSNotSent
 	}
 	return nil

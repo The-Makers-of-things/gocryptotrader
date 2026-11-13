@@ -3,15 +3,15 @@ package withdraw
 import (
 	"errors"
 	"time"
+	"uuid"
 
-	"github.com/gofrs/uuid"
 	"github.com/thrasher-corp/gocryptotrader/common/cache"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/portfolio/banking"
 )
 
 // RequestType used for easy matching of int type to Word
-type RequestType uint8
+type RequestType int64
 
 const (
 	// Crypto request type
@@ -25,8 +25,6 @@ const (
 const (
 	// ErrStrAmountMustBeGreaterThanZero message to return when requested amount is less than 0
 	ErrStrAmountMustBeGreaterThanZero = "amount must be greater than 0"
-	// ErrStrAddressisInvalid message to return when address is invalid for crypto request
-	ErrStrAddressisInvalid = "address is not valid"
 	// ErrStrAddressNotSet message to return when address is empty
 	ErrStrAddressNotSet = "address cannot be empty"
 	// ErrStrNoCurrencySet message to return when no currency is set
@@ -37,31 +35,30 @@ const (
 	ErrStrCurrencyNotFiat = "requested currency is not fiat"
 	// ErrStrFeeCannotBeNegative message to return when fee amount is negative
 	ErrStrFeeCannotBeNegative = "fee amount cannot be negative"
-	// ErrStrAddressNotWhiteListed message to return when attempting to withdraw to non-whitelisted address
-	ErrStrAddressNotWhiteListed = "address is not whitelisted for withdrawals"
-	// ErrStrExchangeNotSupportedByAddress message to return when attemptign to withdraw to an unsupported exchange
-	ErrStrExchangeNotSupportedByAddress = "address is not supported by exchange"
 )
 
 var (
 	// ErrRequestCannotBeNil message to return when a request is nil
 	ErrRequestCannotBeNil = errors.New("request cannot be nil")
-	// ErrExchangeNameUnset message to return when an exchange name is unset
-	ErrExchangeNameUnset = errors.New("exchange name unset")
 	// ErrInvalidRequest message to return when a request type is invalid
 	ErrInvalidRequest = errors.New("invalid request type")
+	// ErrStrAddressNotWhiteListed occurs when a withdrawal attempts to withdraw from a non-whitelisted address
+	ErrStrAddressNotWhiteListed = errors.New("address is not whitelisted for withdrawals")
+	// ErrStrExchangeNotSupportedByAddress message to return when attemptign to withdraw to an unsupported exchange
+	ErrStrExchangeNotSupportedByAddress = errors.New("address is not supported by exchange")
 	// CacheSize cache size to use for withdrawal request history
 	CacheSize uint64 = 25
 	// Cache LRU cache for recent requests
 	Cache = cache.New(CacheSize)
 	// DryRunID uuid to use for dryruns
-	DryRunID, _ = uuid.FromString("3e7e2c25-5a0b-429b-95a1-0960079dce56")
+	DryRunID = uuid.MustParse("3e7e2c25-5a0b-429b-95a1-0960079dce56")
 )
 
 // CryptoRequest stores the info required for a crypto withdrawal request
 type CryptoRequest struct {
 	Address    string
 	AddressTag string
+	Chain      string
 	FeeAmount  float64
 }
 
@@ -84,6 +81,27 @@ type FiatRequest struct {
 	WireCurrency                  string
 }
 
+// TravelAddress holds the address information required for travel rule compliance
+type TravelAddress struct {
+	Address1   string
+	Address2   string
+	Address3   string
+	City       string
+	State      string
+	Country    string
+	PostalCode string
+}
+
+// TravelRule stores the information that may need to be provided to comply with local regulations
+type TravelRule struct {
+	BeneficiaryWalletType           string
+	IsSelf                          bool
+	BeneficiaryName                 string
+	BeneficiaryAddress              TravelAddress
+	BeneficiaryFinancialInstitution string
+	TransferPurpose                 string
+}
+
 // Request holds complete details for request
 type Request struct {
 	Exchange    string        `json:"exchange"`
@@ -92,12 +110,23 @@ type Request struct {
 	Amount      float64       `json:"amount"`
 	Type        RequestType   `json:"type"`
 
-	TradePassword   string
-	OneTimePassword int64
-	PIN             int64
+	ClientOrderID string `json:"clientID"`
 
-	Crypto CryptoRequest `json:",omitempty"`
-	Fiat   FiatRequest   `json:",omitempty"`
+	WalletID string `json:"walletID"`
+
+	// Used exclusively in OKX to classify internal represented by '3' or on chain represented by '4'
+	InternalTransfer bool
+
+	TradePassword   string `json:"-"`
+	OneTimePassword int64  `json:"-"`
+	PIN             int64  `json:"-"`
+
+	Crypto CryptoRequest `json:"crypto"`
+	Fiat   FiatRequest   `json:"fiat"`
+
+	Travel TravelRule `json:"travel_rule"`
+
+	IdempotencyToken string
 }
 
 // Response holds complete details for Response

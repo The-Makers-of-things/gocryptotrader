@@ -3,6 +3,7 @@ package request
 import (
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/common/timedmutex"
@@ -11,30 +12,29 @@ import (
 
 // Const vars for rate limiter
 const (
-	DefaultMaxRequestJobs   int32 = 50
-	DefaultMaxRetryAttempts       = 3
-	DefaultMutexLockTimeout       = 50 * time.Millisecond
-	drainBodyLimit                = 100000
-	proxyTLSTimeout               = 15 * time.Second
-	userAgent                     = "User-Agent"
+	DefaultMaxRetryAttempts = 3
+	DefaultMutexLockTimeout = 50 * time.Millisecond
+	drainBodyLimit          = 100000
+	proxyTLSTimeout         = 15 * time.Second
+	userAgent               = "User-Agent"
 )
 
 // Vars for rate limiter
 var (
-	MaxRequestJobs   = DefaultMaxRequestJobs
 	MaxRetryAttempts = DefaultMaxRetryAttempts
+	globalReporter   Reporter
 )
 
 // Requester struct for the request client
 type Requester struct {
-	HTTPClient         *http.Client
-	limiter            Limiter
-	Name               string
-	UserAgent          string
+	_HTTPClient        *client
+	limiter            RateLimitDefinitions
+	reporter           Reporter
+	name               string
+	userAgent          string
 	maxRetries         int
-	jobs               int32
 	Nonce              nonce.Nonce
-	disableRateLimiter int32
+	disableRateLimiter atomic.Bool
 	backoff            Backoff
 	retryPolicy        RetryPolicy
 	timedLock          *timedmutex.TimedMutex
@@ -42,21 +42,20 @@ type Requester struct {
 
 // Item is a temp item for requests
 type Item struct {
-	Method        string
-	Path          string
-	Headers       map[string]string
-	Body          io.Reader
-	Result        interface{}
-	AuthRequest   bool
-	NonceEnabled  bool
-	Verbose       bool
-	HTTPDebugging bool
-	HTTPRecording bool
-	IsReserved    bool
+	Method                 string
+	Path                   string
+	Headers                map[string]string
+	Body                   io.Reader
+	Result                 any
+	NonceEnabled           bool
+	Verbose                bool
+	HTTPDebugging          bool
+	HTTPRecording          bool
+	HTTPMockDataSliceLimit int // Limits slices per HTTP record to reduce mock data size.
+	IsReserved             bool
 	// HeaderResponse for inspection of header contents package side useful for
 	// pagination
 	HeaderResponse *http.Header
-	Endpoint       EndpointLimit
 }
 
 // Backoff determines how long to wait between request attempts.
@@ -67,3 +66,9 @@ type RetryPolicy func(resp *http.Response, err error) (bool, error)
 
 // RequesterOption is a function option that can be applied to configure a Requester when creating it.
 type RequesterOption func(*Requester)
+
+// Generate defines a closure for functionality outside the requester to
+// generate a new *http.Request on every attempt. This minimises the chance of
+// being outside the receive window if application rate limiting reduces outbound
+// requests.
+type Generate func() (*Item, error)

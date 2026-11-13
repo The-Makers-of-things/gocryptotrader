@@ -2,7 +2,7 @@ package testhelpers
 
 import (
 	"database/sql"
-	"os"
+	"fmt"
 	"path/filepath"
 	"reflect"
 
@@ -11,7 +11,6 @@ import (
 	psqlConn "github.com/thrasher-corp/gocryptotrader/database/drivers/postgres"
 	sqliteConn "github.com/thrasher-corp/gocryptotrader/database/drivers/sqlite3"
 	"github.com/thrasher-corp/gocryptotrader/database/repository"
-	"github.com/thrasher-corp/gocryptotrader/log"
 	"github.com/thrasher-corp/goose"
 	"github.com/thrasher-corp/sqlboiler/boil"
 )
@@ -27,38 +26,6 @@ var (
 
 // GetConnectionDetails returns connection details for CI or test db instances
 func GetConnectionDetails() *database.Config {
-	_, exists := os.LookupEnv("TRAVIS")
-	if exists {
-		return &database.Config{
-			Enabled: true,
-			Driver:  "postgres",
-			ConnectionDetails: drivers.ConnectionDetails{
-				Host:     "localhost",
-				Port:     5432,
-				Username: "postgres",
-				Password: "",
-				Database: "gct_dev_ci",
-				SSLMode:  "",
-			},
-		}
-	}
-
-	_, exists = os.LookupEnv("APPVEYOR")
-	if exists {
-		return &database.Config{
-			Enabled: true,
-			Driver:  "postgres",
-			ConnectionDetails: drivers.ConnectionDetails{
-				Host:     "localhost",
-				Port:     5432,
-				Username: "postgres",
-				Password: "Password12!",
-				Database: "gct_dev_ci",
-				SSLMode:  "",
-			},
-		}
-	}
-
 	return &database.Config{
 		Enabled:           true,
 		Driver:            "postgres",
@@ -75,26 +42,30 @@ func GetConnectionDetails() *database.Config {
 
 // ConnectToDatabase opens connection to database and returns pointer to instance of database.DB
 func ConnectToDatabase(conn *database.Config) (dbConn *database.Instance, err error) {
-	database.DB.Config = conn
-	if conn.Driver == database.DBPostgreSQL {
-		dbConn, err = psqlConn.Connect()
-		if err != nil {
-			return nil, err
-		}
-	} else if conn.Driver == database.DBSQLite3 || conn.Driver == database.DBSQLite {
-		database.DB.DataPath = TempDir
-		dbConn, err = sqliteConn.Connect()
-		if err != nil {
-			return nil, err
-		}
+	if err := database.DB.SetConfig(conn); err != nil {
+		return nil, err
 	}
 
-	err = migrateDB(database.DB.SQL)
+	switch conn.Driver {
+	case database.DBPostgreSQL:
+		dbConn, err = psqlConn.Connect(conn)
+	case database.DBSQLite3, database.DBSQLite:
+		database.DB.DataPath = TempDir
+		dbConn, err = sqliteConn.Connect(conn.Database)
+	default:
+		return nil, fmt.Errorf("unsupported database driver: %q", conn.Driver)
+	}
+
 	if err != nil {
 		return nil, err
 	}
 
-	return
+	if err := migrateDB(database.DB.SQL); err != nil {
+		return nil, err
+	}
+
+	database.DB.SetConnected(true)
+	return dbConn, err
 }
 
 // CloseDatabase closes database connection
@@ -115,14 +86,8 @@ func migrateDB(db *sql.DB) error {
 }
 
 // EnableVerboseTestOutput enables debug output for SQL queries
-func EnableVerboseTestOutput() {
-	c := log.GenDefaultSettings()
-	log.RWM.Lock()
-	log.GlobalLogConfig = &c
-	log.RWM.Unlock()
-	log.SetupGlobalLogger()
-
-	DBLogger := database.Logger{}
+func EnableVerboseTestOutput() error {
 	boil.DebugMode = true
-	boil.DebugWriter = DBLogger
+	boil.DebugWriter = database.Logger{}
+	return nil
 }

@@ -1,6 +1,7 @@
 package connchecker
 
 import (
+	"context"
 	"net"
 	"strings"
 	"sync"
@@ -47,8 +48,7 @@ func New(dnsList, domainList []string, checkInterval time.Duration) (*Checker, e
 		c.CheckInterval = checkInterval
 	}
 
-	err := c.initialCheck()
-	if err != nil {
+	if err := c.initialCheck(); err != nil {
 		return nil, err
 	}
 
@@ -74,11 +74,12 @@ type Checker struct {
 	shutdown      chan struct{}
 	wg            sync.WaitGroup
 	connected     bool
-	sync.Mutex
+	mu            sync.Mutex
 }
 
 // Shutdown cleanly shutsdown monitor routine
 func (c *Checker) Shutdown() {
+	c.connected = false
 	close(c.shutdown)
 	c.wg.Wait()
 }
@@ -129,18 +130,18 @@ func (c *Checker) initialCheck() error {
 	return nil
 }
 
-// ConnectionTest determines if a connection to the internet is available by
+// connectionTest determines if a connection to the internet is available by
 // iterating over a set list of dns ip and popular domains
 func (c *Checker) connectionTest() {
 	for i := range c.DNSList {
 		err := c.CheckDNS(c.DNSList[i])
 		if err == nil {
-			c.Lock()
+			c.mu.Lock()
 			if !c.connected {
 				log.Debugln(log.Global, ConnRe)
 				c.connected = true
 			}
-			c.Unlock()
+			c.mu.Unlock()
 			return
 		}
 	}
@@ -148,40 +149,44 @@ func (c *Checker) connectionTest() {
 	for i := range c.DomainList {
 		err := c.CheckHost(c.DomainList[i])
 		if err == nil {
-			c.Lock()
+			c.mu.Lock()
 			if !c.connected {
 				log.Debugln(log.Global, ConnRe)
 				c.connected = true
 			}
-			c.Unlock()
+			c.mu.Unlock()
 			return
 		}
 	}
 
-	c.Lock()
+	c.mu.Lock()
 	if c.connected {
 		log.Warnln(log.Global, ConnLost)
 		c.connected = false
 	}
-	c.Unlock()
+	c.mu.Unlock()
 }
 
 // CheckDNS checks current dns for connectivity
 func (c *Checker) CheckDNS(dns string) error {
-	_, err := net.LookupAddr(dns)
+	ctx, cancel := context.WithTimeout(context.Background(), c.CheckInterval)
+	defer cancel()
+	_, err := net.DefaultResolver.LookupAddr(ctx, dns)
 	return err
 }
 
 // CheckHost checks current host name for connectivity
 func (c *Checker) CheckHost(host string) error {
-	_, err := net.LookupHost(host)
+	ctx, cancel := context.WithTimeout(context.Background(), c.CheckInterval)
+	defer cancel()
+	_, err := net.DefaultResolver.LookupHost(ctx, host)
 	return err
 }
 
 // IsConnected returns if there is internet connectivity
 func (c *Checker) IsConnected() bool {
-	c.Lock()
+	c.mu.Lock()
 	isConnected := c.connected
-	c.Unlock()
+	c.mu.Unlock()
 	return isConnected
 }

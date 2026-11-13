@@ -1,15 +1,14 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"text/template"
@@ -18,17 +17,24 @@ import (
 	"github.com/thrasher-corp/gocryptotrader/common/file"
 	"github.com/thrasher-corp/gocryptotrader/config"
 	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 	"github.com/thrasher-corp/gocryptotrader/engine"
+	"github.com/thrasher-corp/gocryptotrader/exchange/accounts"
 	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/account"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/collateral"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/deposit"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/fundingrate"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/futures"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/kline"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/margin"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/ticker"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/trade"
 	"github.com/thrasher-corp/gocryptotrader/portfolio/banking"
 	"github.com/thrasher-corp/gocryptotrader/portfolio/withdraw"
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
 func main() {
@@ -40,10 +46,11 @@ func main() {
 		log.Fatalf("Failed to initialise engine. Err: %s", err)
 	}
 	engine.Bot = bot
+	bot.ExchangeManager = engine.NewExchangeManager()
 
 	bot.Settings = engine.Settings{
-		DisableExchangeAutoPairUpdates: true,
 		Verbose:                        verboseOverride,
+		DisableExchangeAutoPairUpdates: true,
 		EnableExchangeHTTPRateLimiter:  true,
 	}
 
@@ -59,25 +66,22 @@ func main() {
 	log.Println("Loading exchanges..")
 
 	var wg sync.WaitGroup
-	for x := range exchange.Exchanges {
-		name := exchange.Exchanges[x]
+	for i := range exchange.Exchanges {
+		name := exchange.Exchanges[i]
 		if _, ok := wrapperConfig.Exchanges[name]; !ok {
 			wrapperConfig.Exchanges[strings.ToLower(name)] = &config.APICredentialsConfig{}
 		}
 		if shouldLoadExchange(name) {
-			err = bot.LoadExchange(name, true, &wg)
-			if err != nil {
-				log.Printf("Failed to load exchange %s. Err: %s", name, err)
-				continue
-			}
+			wg.Go(func() {
+				if err := bot.LoadExchange(name); err != nil {
+					log.Printf("Failed to load exchange %s. Err: %s", name, err)
+				}
+			})
 		}
 	}
 	wg.Wait()
 	log.Println("Done.")
 
-	if withdrawAddressOverride != "" {
-		wrapperConfig.WalletAddress = withdrawAddressOverride
-	}
 	if orderTypeOverride != "LIMIT" {
 		wrapperConfig.OrderSubmission.OrderType = orderTypeOverride
 	}
@@ -93,6 +97,7 @@ func main() {
 
 	log.Println("Testing exchange wrappers..")
 	var exchangeResponses []ExchangeResponses
+	var mtx sync.Mutex
 
 	exchs := bot.GetExchanges()
 	for x := range exchs {
@@ -106,32 +111,29 @@ func main() {
 		base.Verbose = verboseOverride
 		base.HTTPDebugging = false
 		base.Config.HTTPDebugging = false
-		wg.Add(1)
-
-		go func(num int) {
-			name := exchs[num].GetName()
+		wg.Go(func() {
+			name := exchs[x].GetName()
 			authenticated := setExchangeAPIKeys(name, wrapperConfig.Exchanges, base)
 			wrapperResult := ExchangeResponses{
-				ID:                 fmt.Sprintf("Exchange%v", num),
+				ID:                 fmt.Sprintf("Exchange%v", x),
 				ExchangeName:       name,
 				APIKeysSet:         authenticated,
-				AssetPairResponses: testWrappers(exchs[num], base, &wrapperConfig),
+				AssetPairResponses: testWrappers(exchs[x], base, &wrapperConfig),
 			}
 			for i := range wrapperResult.AssetPairResponses {
 				wrapperResult.ErrorCount += wrapperResult.AssetPairResponses[i].ErrorCount
 			}
+			mtx.Lock()
 			exchangeResponses = append(exchangeResponses, wrapperResult)
-			wg.Done()
-		}(x)
+			mtx.Unlock()
+		})
 	}
 	wg.Wait()
 
 	log.Println("Done.")
 	log.Println()
 
-	sort.Slice(exchangeResponses, func(i, j int) bool {
-		return exchangeResponses[i].ExchangeName < exchangeResponses[j].ExchangeName
-	})
+	slices.SortFunc(exchangeResponses, func(a, b ExchangeResponses) int { return strings.Compare(a.ExchangeName, b.ExchangeName) })
 
 	if strings.EqualFold(outputOverride, "Console") {
 		outputToConsole(exchangeResponses)
@@ -147,7 +149,7 @@ func main() {
 }
 
 func parseCLFlags() {
-	flag.StringVar(&exchangesToUseOverride, "exchanges", "", "a + delimited list of exchange names to run tests against eg -exchanges=bitfinex+okex")
+	flag.StringVar(&exchangesToUseOverride, "exchanges", "", "a + delimited list of exchange names to run tests against eg -exchanges=bitfinex+okx")
 	flag.StringVar(&exchangesToExcludeOverride, "excluded-exchanges", "", "a + delimited list of exchange names to ignore when they're being temperamental eg -exchangesToExlude=lbank")
 	flag.StringVar(&assetTypeOverride, "asset", "", "the asset type to run tests against (where applicable)")
 	flag.StringVar(&currencyPairOverride, "currency", "", "the currency to run tests against (where applicable)")
@@ -199,41 +201,50 @@ func shouldLoadExchange(name string) bool {
 func setExchangeAPIKeys(name string, keys map[string]*config.APICredentialsConfig, base *exchange.Base) bool {
 	lowerExchangeName := strings.ToLower(name)
 
-	if base.API.CredentialsValidator.RequiresKey && keys[lowerExchangeName].Key == "" {
-		keys[lowerExchangeName].Key = config.DefaultAPIKey
-	}
-	if base.API.CredentialsValidator.RequiresSecret && keys[lowerExchangeName].Secret == "" {
-		keys[lowerExchangeName].Secret = config.DefaultAPISecret
-	}
-	if base.API.CredentialsValidator.RequiresPEM && keys[lowerExchangeName].PEMKey == "" {
-		keys[lowerExchangeName].PEMKey = "PEM"
-	}
-	if base.API.CredentialsValidator.RequiresClientID && keys[lowerExchangeName].ClientID == "" {
-		keys[lowerExchangeName].ClientID = config.DefaultAPIClientID
-	}
-	if keys[lowerExchangeName].OTPSecret == "" {
-		keys[lowerExchangeName].OTPSecret = "-" // Ensure OTP is available for use
+	creds, ok := keys[lowerExchangeName]
+	if !ok {
+		log.Printf("%s credentials not found in keys map\n", name)
+		return false
 	}
 
-	base.API.Credentials.Key = keys[lowerExchangeName].Key
-	base.Config.API.Credentials.Key = keys[lowerExchangeName].Key
-
-	base.API.Credentials.Secret = keys[lowerExchangeName].Secret
-	base.Config.API.Credentials.Secret = keys[lowerExchangeName].Secret
-
-	base.API.Credentials.ClientID = keys[lowerExchangeName].ClientID
-	base.Config.API.Credentials.ClientID = keys[lowerExchangeName].ClientID
-
-	if keys[lowerExchangeName].OTPSecret != "-" {
-		base.Config.API.Credentials.OTPSecret = keys[lowerExchangeName].OTPSecret
+	if base.API.CredentialsValidator.RequiresKey && creds.Key == "" {
+		creds.Key = config.DefaultAPIKey
 	}
+	if base.API.CredentialsValidator.RequiresSecret && creds.Secret == "" {
+		creds.Secret = config.DefaultAPISecret
+	}
+	if base.API.CredentialsValidator.RequiresPEM && creds.PEMKey == "" {
+		creds.PEMKey = "PEM"
+	}
+	if base.API.CredentialsValidator.RequiresClientID && creds.ClientID == "" {
+		creds.ClientID = config.DefaultAPIClientID
+	}
+	if creds.OTPSecret == "" {
+		creds.OTPSecret = "-" // Ensure OTP is available for use
+	}
+
+	base.SetCredentials(&accounts.Credentials{
+		Key:             creds.Key,
+		Secret:          creds.Secret,
+		ClientID:        creds.ClientID,
+		SubAccount:      creds.Subaccount,
+		PEMKey:          creds.PEMKey,
+		OneTimePassword: creds.OTPSecret,
+	})
+
+	base.Config.API.Credentials.Key = creds.Key
+	base.Config.API.Credentials.Secret = creds.Secret
+	base.Config.API.Credentials.ClientID = creds.ClientID
+	base.Config.API.Credentials.Subaccount = creds.Subaccount
+	base.Config.API.Credentials.PEMKey = creds.PEMKey
+	base.Config.API.Credentials.OTPSecret = creds.OTPSecret
 
 	base.API.AuthenticatedSupport = true
 	base.API.AuthenticatedWebsocketSupport = true
 	base.Config.API.AuthenticatedSupport = true
 	base.Config.API.AuthenticatedWebsocketSupport = true
 
-	return base.ValidateAPICredentials()
+	return base.VerifyAPICredentials(base.GetDefaultCredentials()) == nil
 }
 
 func parseOrderSide(orderSide string) order.Side {
@@ -262,8 +273,6 @@ func parseOrderType(orderType string) order.Type {
 		return order.Limit
 	case order.Market.String():
 		return order.Market
-	case order.ImmediateOrCancel.String():
-		return order.ImmediateOrCancel
 	case order.Stop.String():
 		return order.Stop
 	case order.TrailingStop.String():
@@ -277,11 +286,11 @@ func parseOrderType(orderType string) order.Type {
 	}
 }
 
-func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) []ExchangeAssetPairResponses {
-	var response []ExchangeAssetPairResponses
-	testOrderSide := parseOrderSide(config.OrderSubmission.OrderSide)
-	testOrderType := parseOrderType(config.OrderSubmission.OrderType)
-	assetTypes := base.GetAssetTypes()
+func testWrappers(e exchange.IBotExchange, base *exchange.Base, cfg *Config) []ExchangeAssetPairResponses {
+	response := make([]ExchangeAssetPairResponses, 0)
+	testOrderSide := parseOrderSide(cfg.OrderSubmission.OrderSide)
+	testOrderType := parseOrderType(cfg.OrderSubmission.OrderType)
+	assetTypes := base.GetAssetTypes(false)
 	if assetTypeOverride != "" {
 		a, err := asset.New(assetTypeOverride)
 		if err != nil {
@@ -293,31 +302,31 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 	for i := range assetTypes {
 		var msg string
 		log.Printf("%v %v", base.GetName(), assetTypes[i])
-		if _, ok := base.Config.CurrencyPairs.Pairs[assetTypes[i]]; !ok {
+		storedPairs, ok := base.Config.CurrencyPairs.Pairs[assetTypes[i]]
+		if !ok {
 			continue
 		}
 
 		var p currency.Pair
+		var err error
 		switch {
 		case currencyPairOverride != "":
-			var err error
 			p, err = currency.NewPairFromString(currencyPairOverride)
-			if err != nil {
-				log.Printf("%v Encountered error: '%v'", base.GetName(), err)
-				continue
+		case len(storedPairs.Enabled) == 0:
+			if len(storedPairs.Available) == 0 {
+				err = fmt.Errorf("%v has no enabled or available currencies. Skipping", base.GetName())
+				break
 			}
-		case len(base.Config.CurrencyPairs.Pairs[assetTypes[i]].Enabled) == 0:
-			if len(base.Config.CurrencyPairs.Pairs[assetTypes[i]].Available) == 0 {
-				log.Printf("%v has no enabled or available currencies. Skipping",
-					base.GetName())
-				continue
-			}
-			p = base.Config.CurrencyPairs.Pairs[assetTypes[i]].Available.GetRandomPair()
+			p, err = storedPairs.Available.GetRandomPair()
 		default:
-			p = base.Config.CurrencyPairs.Pairs[assetTypes[i]].Enabled.GetRandomPair()
+			p, err = storedPairs.Enabled.GetRandomPair()
 		}
 
-		var err error
+		if err != nil {
+			log.Printf("%v Encountered error: '%v'", base.GetName(), err)
+			continue
+		}
+
 		p, err = disruptFormatting(p)
 		if err != nil {
 			log.Println("failed to disrupt currency pair formatting:", err)
@@ -336,120 +345,120 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 		log.Printf("Executing wrappers for %v %v %v", base.GetName(), assetTypes[i], p)
 
 		if !authenticatedOnly {
-			var fetchTickerResponse *ticker.Price
-			fetchTickerResponse, err = e.FetchTicker(p, assetTypes[i])
-			msg = ""
-			if err != nil {
-				msg = err.Error()
-				responseContainer.ErrorCount++
-			}
-			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{p, assetTypes[i]}),
-				Function:   "FetchTicker",
-				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{fetchTickerResponse}),
-			})
-
 			var updateTickerResponse *ticker.Price
-			updateTickerResponse, err = e.UpdateTicker(p, assetTypes[i])
+			updateTickerResponse, err = e.UpdateTicker(context.TODO(), p, assetTypes[i])
 			msg = ""
 			if err != nil {
 				msg = err.Error()
 				responseContainer.ErrorCount++
 			}
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{p, assetTypes[i]}),
+				SentParams: jsonifyInterface([]any{p, assetTypes[i]}),
 				Function:   "UpdateTicker",
 				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{updateTickerResponse}),
+				Response:   jsonifyInterface([]any{updateTickerResponse}),
 			})
 
-			var fetchOrderbookResponse *orderbook.Base
-			fetchOrderbookResponse, err = e.FetchOrderbook(p, assetTypes[i])
+			var GetCachedTickerResponse *ticker.Price
+			GetCachedTickerResponse, err = e.GetCachedTicker(p, assetTypes[i])
 			msg = ""
 			if err != nil {
 				msg = err.Error()
 				responseContainer.ErrorCount++
 			}
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{p, assetTypes[i]}),
-				Function:   "FetchOrderbook",
+				SentParams: jsonifyInterface([]any{p, assetTypes[i]}),
+				Function:   "GetCachedTicker",
 				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{fetchOrderbookResponse}),
+				Response:   jsonifyInterface([]any{GetCachedTickerResponse}),
 			})
 
-			var updateOrderbookResponse *orderbook.Base
-			updateOrderbookResponse, err = e.UpdateOrderbook(p, assetTypes[i])
+			var updateOrderbookResponse *orderbook.Book
+			updateOrderbookResponse, err = e.UpdateOrderbook(context.TODO(), p, assetTypes[i])
 			msg = ""
 			if err != nil {
 				msg = err.Error()
 				responseContainer.ErrorCount++
 			}
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{p, assetTypes[i]}),
+				SentParams: jsonifyInterface([]any{p, assetTypes[i]}),
 				Function:   "UpdateOrderbook",
 				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{updateOrderbookResponse}),
+				Response:   jsonifyInterface([]any{updateOrderbookResponse}),
 			})
 
-			var fetchTradablePairsResponse []string
-			fetchTradablePairsResponse, err = e.FetchTradablePairs(assetTypes[i])
+			var GetCachedOrderbookResponse *orderbook.Book
+			GetCachedOrderbookResponse, err = e.GetCachedOrderbook(p, assetTypes[i])
 			msg = ""
 			if err != nil {
 				msg = err.Error()
 				responseContainer.ErrorCount++
 			}
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{assetTypes[i]}),
+				SentParams: jsonifyInterface([]any{p, assetTypes[i]}),
+				Function:   "GetCachedOrderbook",
+				Error:      msg,
+				Response:   jsonifyInterface([]any{GetCachedOrderbookResponse}),
+			})
+
+			var fetchTradablePairsResponse []currency.Pair
+			fetchTradablePairsResponse, err = e.FetchTradablePairs(context.TODO(), assetTypes[i])
+			msg = ""
+			if err != nil {
+				msg = err.Error()
+				responseContainer.ErrorCount++
+			}
+			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+				SentParams: jsonifyInterface([]any{assetTypes[i]}),
 				Function:   "FetchTradablePairs",
 				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{fetchTradablePairsResponse}),
+				Response:   jsonifyInterface([]any{fetchTradablePairsResponse}),
 			})
 			// r6
-			err = e.UpdateTradablePairs(false)
+			err = e.UpdateTradablePairs(context.TODO())
 			msg = ""
 			if err != nil {
 				msg = err.Error()
 				responseContainer.ErrorCount++
 			}
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{false}),
+				SentParams: jsonifyInterface([]any{false}),
 				Function:   "UpdateTradablePairs",
 				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{nil}),
+				Response:   jsonifyInterface([]any{nil}),
 			})
 
 			var getHistoricTradesResponse []trade.Data
-			getHistoricTradesResponse, err = e.GetHistoricTrades(p, assetTypes[i], time.Now().Add(-time.Hour), time.Now())
+			getHistoricTradesResponse, err = e.GetHistoricTrades(context.TODO(), p, assetTypes[i], time.Now().Add(-time.Hour), time.Now())
 			msg = ""
 			if err != nil {
 				msg = err.Error()
 				responseContainer.ErrorCount++
 			}
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{p, assetTypes[i], time.Now().Add(-time.Hour), time.Now()}),
+				SentParams: jsonifyInterface([]any{p, assetTypes[i], time.Now().Add(-time.Hour), time.Now()}),
 				Function:   "GetHistoricTrades",
 				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{getHistoricTradesResponse}),
+				Response:   jsonifyInterface([]any{getHistoricTradesResponse}),
 			})
 
 			var getRecentTradesResponse []trade.Data
-			getRecentTradesResponse, err = e.GetRecentTrades(p, assetTypes[i])
+			getRecentTradesResponse, err = e.GetRecentTrades(context.TODO(), p, assetTypes[i])
 			msg = ""
 			if err != nil {
 				msg = err.Error()
 				responseContainer.ErrorCount++
 			}
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{p, assetTypes[i]}),
+				SentParams: jsonifyInterface([]any{p, assetTypes[i]}),
 				Function:   "GetRecentTrades",
 				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{getRecentTradesResponse}),
+				Response:   jsonifyInterface([]any{getRecentTradesResponse}),
 			})
 
-			var getHistoricCandlesResponse kline.Item
+			var getHistoricCandlesResponse *kline.Item
 			startTime, endTime := time.Now().AddDate(0, 0, -1), time.Now()
-			getHistoricCandlesResponse, err = e.GetHistoricCandles(p, assetTypes[i], startTime, endTime, kline.OneDay)
+			getHistoricCandlesResponse, err = e.GetHistoricCandles(context.TODO(), p, assetTypes[i], kline.OneDay, startTime, endTime)
 			msg = ""
 			if err != nil {
 				msg = err.Error()
@@ -459,11 +468,11 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 				Function:   "GetHistoricCandles",
 				Error:      msg,
 				Response:   getHistoricCandlesResponse,
-				SentParams: jsonifyInterface([]interface{}{p, assetTypes[i], startTime, endTime, kline.OneDay}),
+				SentParams: jsonifyInterface([]any{p, assetTypes[i], startTime, endTime, kline.OneDay}),
 			})
 
-			var getHisotirCandlesExtendedResponse kline.Item
-			getHisotirCandlesExtendedResponse, err = e.GetHistoricCandlesExtended(p, assetTypes[i], startTime, endTime, kline.OneDay)
+			var getHistoricCandlesExtendedResponse *kline.Item
+			getHistoricCandlesExtendedResponse, err = e.GetHistoricCandlesExtended(context.TODO(), p, assetTypes[i], kline.OneDay, startTime, endTime)
 			msg = ""
 			if err != nil {
 				msg = err.Error()
@@ -472,11 +481,25 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
 				Function:   "GetHistoricCandlesExtended",
 				Error:      msg,
-				Response:   getHisotirCandlesExtendedResponse,
-				SentParams: jsonifyInterface([]interface{}{p, assetTypes[i], startTime, endTime, kline.OneDay}),
+				Response:   getHistoricCandlesExtendedResponse,
+				SentParams: jsonifyInterface([]any{p, assetTypes[i], startTime, endTime, kline.OneDay}),
 			})
 
-			err = e.UpdateOrderExecutionLimits(assetTypes[i])
+			var getServerTimeResponse time.Time
+			getServerTimeResponse, err = e.GetServerTime(context.TODO(), assetTypes[i])
+			msg = ""
+			if err != nil {
+				msg = err.Error()
+				responseContainer.ErrorCount++
+			}
+			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+				Function:   "GetServerTime",
+				Error:      msg,
+				Response:   getServerTimeResponse,
+				SentParams: jsonifyInterface([]any{assetTypes[i]}),
+			})
+
+			err = e.UpdateOrderExecutionLimits(context.TODO(), assetTypes[i])
 			msg = ""
 			if err != nil {
 				msg = err.Error()
@@ -484,99 +507,135 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 			}
 
 			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-				SentParams: jsonifyInterface([]interface{}{assetTypes[i]}),
+				SentParams: jsonifyInterface([]any{assetTypes[i]}),
 				Function:   "UpdateOrderExecutionLimits",
 				Error:      msg,
-				Response:   jsonifyInterface([]interface{}{""}),
+				Response:   jsonifyInterface([]any{""}),
+			})
+
+			fundingRateRequest := &fundingrate.HistoricalRatesRequest{
+				Asset:     assetTypes[i],
+				Pair:      p,
+				StartDate: time.Now().Add(-time.Hour),
+				EndDate:   time.Now(),
+			}
+			var fundingRateResponse *fundingrate.HistoricalRates
+			fundingRateResponse, err = e.GetHistoricalFundingRates(context.TODO(), fundingRateRequest)
+			msg = ""
+			if err != nil {
+				msg = err.Error()
+				responseContainer.ErrorCount++
+			}
+
+			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+				SentParams: jsonifyInterface([]any{fundingRateRequest}),
+				Function:   "GetFundingRates",
+				Error:      msg,
+				Response:   jsonifyInterface([]any{fundingRateResponse}),
+			})
+
+			var isPerpetualFutures bool
+			isPerpetualFutures, err = e.IsPerpetualFutureCurrency(assetTypes[i], p)
+			msg = ""
+			if err != nil {
+				msg = err.Error()
+				responseContainer.ErrorCount++
+			}
+			responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+				SentParams: jsonifyInterface([]any{assetTypes[i], p}),
+				Function:   "IsPerpetualFutureCurrency",
+				Error:      msg,
+				Response:   jsonifyInterface([]any{isPerpetualFutures}),
 			})
 		}
 
-		var fetchAccountInfoResponse account.Holdings
-		fetchAccountInfoResponse, err = e.FetchAccountInfo(assetTypes[i])
+		var GetCachedSubAccountsResponse accounts.SubAccounts
+		GetCachedSubAccountsResponse, err = e.GetCachedSubAccounts(context.TODO(), assetTypes[i])
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			Function: "FetchAccountInfo",
+			Function: "GetCachedSubAccounts",
 			Error:    msg,
-			Response: jsonifyInterface([]interface{}{fetchAccountInfoResponse}),
+			Response: jsonifyInterface([]any{GetCachedSubAccountsResponse}),
 		})
 
-		var getFundingHistoryResponse []exchange.FundHistory
-		getFundingHistoryResponse, err = e.GetFundingHistory()
+		var getFundingHistoryResponse []exchange.FundingHistory
+		getFundingHistoryResponse, err = e.GetAccountFundingHistory(context.TODO())
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			Function: "GetFundingHistory",
+			Function: "GetAccountFundingHistory",
 			Error:    msg,
-			Response: jsonifyInterface([]interface{}{getFundingHistoryResponse}),
+			Response: jsonifyInterface([]any{getFundingHistoryResponse}),
 		})
 
 		feeType := exchange.FeeBuilder{
 			FeeType:       exchange.CryptocurrencyTradeFee,
 			Pair:          p,
-			PurchasePrice: config.OrderSubmission.Price,
-			Amount:        config.OrderSubmission.Amount,
+			PurchasePrice: cfg.OrderSubmission.Price,
+			Amount:        cfg.OrderSubmission.Amount,
 		}
 		var getFeeByTypeResponse float64
-		getFeeByTypeResponse, err = e.GetFeeByType(&feeType)
+		getFeeByTypeResponse, err = e.GetFeeByType(context.TODO(), &feeType)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{feeType}),
+			SentParams: jsonifyInterface([]any{feeType}),
 			Function:   "GetFeeByType-Trade",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{getFeeByTypeResponse}),
+			Response:   jsonifyInterface([]any{getFeeByTypeResponse}),
 		})
 
 		s := &order.Submit{
+			Exchange:  e.GetName(),
 			Pair:      p,
 			Side:      testOrderSide,
 			Type:      testOrderType,
-			Amount:    config.OrderSubmission.Amount,
-			Price:     config.OrderSubmission.Price,
-			ClientID:  config.OrderSubmission.OrderID,
+			Amount:    cfg.OrderSubmission.Amount,
+			Price:     cfg.OrderSubmission.Price,
+			ClientID:  cfg.OrderSubmission.OrderID,
 			AssetType: assetTypes[i],
 		}
-		var submitOrderResponse order.SubmitResponse
-		submitOrderResponse, err = e.SubmitOrder(s)
+		var submitOrderResponse *order.SubmitResponse
+		submitOrderResponse, err = e.SubmitOrder(context.TODO(), s)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{*s}),
+			SentParams: jsonifyInterface([]any{*s}),
 			Function:   "SubmitOrder",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{submitOrderResponse}),
+			Response:   jsonifyInterface([]any{submitOrderResponse}),
 		})
 
 		modifyRequest := order.Modify{
-			ID:     config.OrderSubmission.OrderID,
-			Type:   testOrderType,
-			Side:   testOrderSide,
-			Pair:   p,
-			Price:  config.OrderSubmission.Price,
-			Amount: config.OrderSubmission.Amount,
+			OrderID:   cfg.OrderSubmission.OrderID,
+			Type:      testOrderType,
+			Side:      testOrderSide,
+			Pair:      p,
+			Price:     cfg.OrderSubmission.Price,
+			Amount:    cfg.OrderSubmission.Amount,
+			AssetType: assetTypes[i],
 		}
-		var modifyOrderResponse string
-		modifyOrderResponse, err = e.ModifyOrder(&modifyRequest)
+		modifyOrderResponse, err := e.ModifyOrder(context.TODO(), &modifyRequest)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{modifyRequest}),
+			SentParams: jsonifyInterface([]any{modifyRequest}),
 			Function:   "ModifyOrder",
 			Error:      msg,
 			Response:   modifyOrderResponse,
@@ -585,119 +644,121 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 		cancelRequest := order.Cancel{
 			Side:      testOrderSide,
 			Pair:      p,
-			ID:        config.OrderSubmission.OrderID,
+			OrderID:   cfg.OrderSubmission.OrderID,
 			AssetType: assetTypes[i],
 		}
-		err = e.CancelOrder(&cancelRequest)
+		err = e.CancelOrder(context.TODO(), &cancelRequest)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{cancelRequest}),
+			SentParams: jsonifyInterface([]any{cancelRequest}),
 			Function:   "CancelOrder",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{nil}),
+			Response:   jsonifyInterface([]any{nil}),
 		})
 
-		var request []order.Cancel
-		request = append(request, order.Cancel{
+		cancelBatchOrdersResponse, err := e.CancelBatchOrders(context.TODO(), []order.Cancel{{
 			Side:      testOrderSide,
 			Pair:      p,
-			ID:        config.OrderSubmission.OrderID,
+			OrderID:   cfg.OrderSubmission.OrderID,
 			AssetType: assetTypes[i],
-		})
-
-		var CancelBatchOrdersResponse order.CancelBatchResponse
-		CancelBatchOrdersResponse, err = e.CancelBatchOrders(request)
+		}})
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{cancelRequest}),
+			SentParams: jsonifyInterface([]any{cancelRequest}),
 			Function:   "CancelBatchOrders",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{CancelBatchOrdersResponse}),
+			Response:   jsonifyInterface([]any{cancelBatchOrdersResponse}),
 		})
 
 		var cancellAllOrdersResponse order.CancelAllResponse
-		cancellAllOrdersResponse, err = e.CancelAllOrders(&cancelRequest)
+		cancellAllOrdersResponse, err = e.CancelAllOrders(context.TODO(), &cancelRequest)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{cancelRequest}),
+			SentParams: jsonifyInterface([]any{cancelRequest}),
 			Function:   "CancelAllOrders",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{cancellAllOrdersResponse}),
+			Response:   jsonifyInterface([]any{cancellAllOrdersResponse}),
 		})
 
-		var r15 order.Detail
-		r15, err = e.GetOrderInfo(config.OrderSubmission.OrderID, p, assetTypes[i])
+		var r15 *order.Detail
+		r15, err = e.GetOrderInfo(context.TODO(), cfg.OrderSubmission.OrderID, p, assetTypes[i])
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{config.OrderSubmission.OrderID}),
+			SentParams: jsonifyInterface([]any{cfg.OrderSubmission.OrderID, p, assetTypes[i]}),
 			Function:   "GetOrderInfo",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{r15}),
+			Response:   jsonifyInterface([]any{r15}),
 		})
 
-		historyRequest := order.GetOrdersRequest{
-			Type:  testOrderType,
-			Side:  testOrderSide,
-			Pairs: []currency.Pair{p},
+		historyRequest := order.MultiOrderRequest{
+			Type:      testOrderType,
+			Side:      testOrderSide,
+			Pairs:     []currency.Pair{p},
+			AssetType: assetTypes[i],
+			StartTime: time.Now().Add(-time.Hour),
+			EndTime:   time.Now(),
 		}
 		var getOrderHistoryResponse []order.Detail
-		getOrderHistoryResponse, err = e.GetOrderHistory(&historyRequest)
+		getOrderHistoryResponse, err = e.GetOrderHistory(context.TODO(), &historyRequest)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{historyRequest}),
+			SentParams: jsonifyInterface([]any{historyRequest}),
 			Function:   "GetOrderHistory",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{getOrderHistoryResponse}),
+			Response:   jsonifyInterface([]any{getOrderHistoryResponse}),
 		})
 
-		orderRequest := order.GetOrdersRequest{
-			Type:  testOrderType,
-			Side:  testOrderSide,
-			Pairs: []currency.Pair{p},
+		orderRequest := order.MultiOrderRequest{
+			Type:      testOrderType,
+			Side:      testOrderSide,
+			Pairs:     []currency.Pair{p},
+			AssetType: assetTypes[i],
+			StartTime: time.Now().Add(-time.Hour),
+			EndTime:   time.Now(),
 		}
 		var getActiveOrdersResponse []order.Detail
-		getActiveOrdersResponse, err = e.GetActiveOrders(&orderRequest)
+		getActiveOrdersResponse, err = e.GetActiveOrders(context.TODO(), &orderRequest)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{orderRequest}),
+			SentParams: jsonifyInterface([]any{orderRequest}),
 			Function:   "GetActiveOrders",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{getActiveOrdersResponse}),
+			Response:   jsonifyInterface([]any{getActiveOrdersResponse}),
 		})
 
-		var getDepositAddressResponse string
-		getDepositAddressResponse, err = e.GetDepositAddress(p.Base, "")
+		var getDepositAddressResponse *deposit.Address
+		getDepositAddressResponse, err = e.GetDepositAddress(context.TODO(), p.Base, "", "")
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{p.Base, ""}),
+			SentParams: jsonifyInterface([]any{p.Base, ""}),
 			Function:   "GetDepositAddress",
 			Error:      msg,
 			Response:   getDepositAddressResponse,
@@ -706,21 +767,21 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 		feeType = exchange.FeeBuilder{
 			FeeType:       exchange.CryptocurrencyWithdrawalFee,
 			Pair:          p,
-			PurchasePrice: config.OrderSubmission.Price,
-			Amount:        config.OrderSubmission.Amount,
+			PurchasePrice: cfg.OrderSubmission.Price,
+			Amount:        cfg.OrderSubmission.Amount,
 		}
 		var GetFeeByTypeResponse float64
-		GetFeeByTypeResponse, err = e.GetFeeByType(&feeType)
+		GetFeeByTypeResponse, err = e.GetFeeByType(context.TODO(), &feeType)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{feeType}),
+			SentParams: jsonifyInterface([]any{feeType}),
 			Function:   "GetFeeByType-Crypto-Withdraw",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{GetFeeByTypeResponse}),
+			Response:   jsonifyInterface([]any{GetFeeByTypeResponse}),
 		})
 
 		withdrawRequest := withdraw.Request{
@@ -728,17 +789,21 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 			Crypto: withdraw.CryptoRequest{
 				Address: withdrawAddressOverride,
 			},
-			Amount: config.OrderSubmission.Amount,
+			Amount: cfg.OrderSubmission.Amount,
 		}
-		var withdrawCryptocurrencyFundsResponse *withdraw.ExchangeResponse
-		withdrawCryptocurrencyFundsResponse, err = e.WithdrawCryptocurrencyFunds(&withdrawRequest)
 		msg = ""
+		err = withdrawRequest.Validate()
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
+		withdrawCryptocurrencyFundsResponse, err := e.WithdrawCryptocurrencyFunds(context.TODO(), &withdrawRequest)
+		if err != nil {
+			msg += ", " + err.Error()
+			responseContainer.ErrorCount++
+		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{withdrawRequest}),
+			SentParams: jsonifyInterface([]any{withdrawRequest}),
 			Function:   "WithdrawCryptocurrencyFunds",
 			Error:      msg,
 			Response:   withdrawCryptocurrencyFundsResponse,
@@ -747,106 +812,232 @@ func testWrappers(e exchange.IBotExchange, base *exchange.Base, config *Config) 
 		feeType = exchange.FeeBuilder{
 			FeeType:             exchange.InternationalBankWithdrawalFee,
 			Pair:                p,
-			PurchasePrice:       config.OrderSubmission.Price,
-			Amount:              config.OrderSubmission.Amount,
+			PurchasePrice:       cfg.OrderSubmission.Price,
+			Amount:              cfg.OrderSubmission.Amount,
 			FiatCurrency:        currency.AUD,
 			BankTransactionType: exchange.WireTransfer,
 		}
 		var getFeeByTypeFiatResponse float64
-		getFeeByTypeFiatResponse, err = e.GetFeeByType(&feeType)
+		getFeeByTypeFiatResponse, err = e.GetFeeByType(context.TODO(), &feeType)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{feeType}),
+			SentParams: jsonifyInterface([]any{feeType}),
 			Function:   "GetFeeByType-FIAT-Withdraw",
 			Error:      msg,
-			Response:   jsonifyInterface([]interface{}{getFeeByTypeFiatResponse}),
+			Response:   jsonifyInterface([]any{getFeeByTypeFiatResponse}),
 		})
 
 		withdrawRequestFiat := withdraw.Request{
 			Currency: p.Quote,
-			Amount:   config.OrderSubmission.Amount,
+			Amount:   cfg.OrderSubmission.Amount,
 			Fiat: withdraw.FiatRequest{
 				Bank: banking.Account{
-					AccountName:    config.BankDetails.BankAccountName,
-					AccountNumber:  config.BankDetails.BankAccountNumber,
-					SWIFTCode:      config.BankDetails.SwiftCode,
-					IBAN:           config.BankDetails.Iban,
-					BankPostalCity: config.BankDetails.BankCity,
-					BankName:       config.BankDetails.BankName,
-					BankAddress:    config.BankDetails.BankAddress,
-					BankCountry:    config.BankDetails.BankCountry,
-					BankPostalCode: config.BankDetails.BankPostalCode,
-					BankCode:       config.BankDetails.BankCode,
+					AccountName:    cfg.BankDetails.BankAccountName,
+					AccountNumber:  cfg.BankDetails.BankAccountNumber,
+					SWIFTCode:      cfg.BankDetails.SwiftCode,
+					IBAN:           cfg.BankDetails.Iban,
+					BankPostalCity: cfg.BankDetails.BankCity,
+					BankName:       cfg.BankDetails.BankName,
+					BankAddress:    cfg.BankDetails.BankAddress,
+					BankCountry:    cfg.BankDetails.BankCountry,
+					BankPostalCode: cfg.BankDetails.BankPostalCode,
+					BankCode:       cfg.BankDetails.BankCode,
 				},
 
-				IsExpressWire:                 config.BankDetails.IsExpressWire,
-				RequiresIntermediaryBank:      config.BankDetails.RequiresIntermediaryBank,
-				IntermediaryBankName:          config.BankDetails.IntermediaryBankName,
-				IntermediaryBankAccountNumber: config.BankDetails.IntermediaryBankAccountNumber,
-				IntermediarySwiftCode:         config.BankDetails.IntermediarySwiftCode,
-				IntermediaryIBAN:              config.BankDetails.IntermediaryIban,
-				IntermediaryBankCity:          config.BankDetails.IntermediaryBankCity,
-				IntermediaryBankAddress:       config.BankDetails.IntermediaryBankAddress,
-				IntermediaryBankCountry:       config.BankDetails.IntermediaryBankCountry,
-				IntermediaryBankPostalCode:    config.BankDetails.IntermediaryBankPostalCode,
-				IntermediaryBankCode:          config.BankDetails.IntermediaryBankCode,
+				IsExpressWire:                 cfg.BankDetails.IsExpressWire,
+				RequiresIntermediaryBank:      cfg.BankDetails.RequiresIntermediaryBank,
+				IntermediaryBankName:          cfg.BankDetails.IntermediaryBankName,
+				IntermediaryBankAccountNumber: cfg.BankDetails.IntermediaryBankAccountNumber,
+				IntermediarySwiftCode:         cfg.BankDetails.IntermediarySwiftCode,
+				IntermediaryIBAN:              cfg.BankDetails.IntermediaryIban,
+				IntermediaryBankCity:          cfg.BankDetails.IntermediaryBankCity,
+				IntermediaryBankAddress:       cfg.BankDetails.IntermediaryBankAddress,
+				IntermediaryBankCountry:       cfg.BankDetails.IntermediaryBankCountry,
+				IntermediaryBankPostalCode:    cfg.BankDetails.IntermediaryBankPostalCode,
+				IntermediaryBankCode:          cfg.BankDetails.IntermediaryBankCode,
 			},
 		}
-		var withdrawFiatFundsResponse *withdraw.ExchangeResponse
-		withdrawFiatFundsResponse, err = e.WithdrawFiatFunds(&withdrawRequestFiat)
+		withdrawFiatFundsResponse, err := e.WithdrawFiatFunds(context.TODO(), &withdrawRequestFiat)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{withdrawRequestFiat}),
+			SentParams: jsonifyInterface([]any{withdrawRequestFiat}),
 			Function:   "WithdrawFiatFunds",
 			Error:      msg,
 			Response:   withdrawFiatFundsResponse,
 		})
 
-		var withdrawFiatFundsInternationalResponse *withdraw.ExchangeResponse
-		withdrawFiatFundsInternationalResponse, err = e.WithdrawFiatFundsToInternationalBank(&withdrawRequestFiat)
+		withdrawFiatFundsInternationalResponse, err := e.WithdrawFiatFundsToInternationalBank(context.TODO(), &withdrawRequestFiat)
 		msg = ""
 		if err != nil {
 			msg = err.Error()
 			responseContainer.ErrorCount++
 		}
 		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
-			SentParams: jsonifyInterface([]interface{}{withdrawRequestFiat}),
+			SentParams: jsonifyInterface([]any{withdrawRequestFiat}),
 			Function:   "WithdrawFiatFundsToInternationalBank",
 			Error:      msg,
 			Response:   withdrawFiatFundsInternationalResponse,
 		})
+
+		marginRateHistoryRequest := &margin.RateHistoryRequest{
+			Exchange:           e.GetName(),
+			Asset:              assetTypes[i],
+			Currency:           p.Base,
+			StartDate:          time.Now().Add(-time.Hour * 24),
+			EndDate:            time.Now(),
+			GetPredictedRate:   true,
+			GetLendingPayments: true,
+			GetBorrowRates:     true,
+			GetBorrowCosts:     true,
+		}
+		marginRateHistoryResponse, err := e.GetMarginRatesHistory(context.TODO(), marginRateHistoryRequest)
+		msg = ""
+		if err != nil {
+			msg = err.Error()
+			responseContainer.ErrorCount++
+		}
+		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+			SentParams: jsonifyInterface([]any{marginRateHistoryRequest}),
+			Function:   "GetMarginRatesHistory",
+			Error:      msg,
+			Response:   marginRateHistoryResponse,
+		})
+
+		positionSummaryRequest := &futures.PositionSummaryRequest{
+			Asset: assetTypes[i],
+			Pair:  p,
+		}
+		var positionSummaryResponse *futures.PositionSummary
+		positionSummaryResponse, err = e.GetPositionSummary(context.TODO(), positionSummaryRequest)
+		msg = ""
+		if err != nil {
+			msg = err.Error()
+			responseContainer.ErrorCount++
+		}
+		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+			SentParams: jsonifyInterface([]any{positionSummaryRequest}),
+			Function:   "GetFuturesPositionSummary",
+			Error:      msg,
+			Response:   jsonifyInterface([]any{positionSummaryResponse}),
+		})
+
+		calculatePNLRequest := &futures.PNLCalculatorRequest{
+			Pair:             p,
+			Underlying:       p.Base,
+			Asset:            assetTypes[i],
+			EntryPrice:       decimal.NewFromInt(1337),
+			OpeningDirection: testOrderSide,
+			OrderDirection:   testOrderSide,
+			Time:             time.Now(),
+			Exposure:         decimal.NewFromInt(1337),
+			EntryAmount:      decimal.NewFromInt(1337),
+			PreviousPrice:    decimal.NewFromInt(1337),
+		}
+		var calculatePNLResponse *futures.PNLResult
+		calculatePNLResponse, err = e.CalculatePNL(context.TODO(), calculatePNLRequest)
+		msg = ""
+		if err != nil {
+			msg = err.Error()
+			responseContainer.ErrorCount++
+		}
+		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+			SentParams: jsonifyInterface([]any{calculatePNLRequest}),
+			Function:   "CalculatePNL",
+			Error:      msg,
+			Response:   jsonifyInterface([]any{calculatePNLResponse}),
+		})
+
+		collateralCalculator := &futures.CollateralCalculator{
+			CollateralCurrency: p.Quote,
+			Asset:              assetTypes[i],
+			Side:               testOrderSide,
+			USDPrice:           decimal.NewFromInt(1337),
+			FreeCollateral:     decimal.NewFromInt(1337),
+			LockedCollateral:   decimal.NewFromInt(1337),
+			UnrealisedPNL:      decimal.NewFromInt(1337),
+		}
+		var scaleCollateralResponse *collateral.ByCurrency
+		scaleCollateralResponse, err = e.ScaleCollateral(context.TODO(), collateralCalculator)
+		msg = ""
+		if err != nil {
+			msg = err.Error()
+			responseContainer.ErrorCount++
+		}
+		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+			SentParams: jsonifyInterface([]any{collateralCalculator}),
+			Function:   "ScaleCollateral",
+			Error:      msg,
+			Response:   jsonifyInterface([]any{scaleCollateralResponse}),
+		})
+
+		totalCollateralCalculator := &futures.TotalCollateralCalculator{
+			CollateralAssets: []futures.CollateralCalculator{*collateralCalculator},
+		}
+		var calculateTotalCollateralResponse *futures.TotalCollateralResponse
+		calculateTotalCollateralResponse, err = e.CalculateTotalCollateral(context.TODO(), totalCollateralCalculator)
+		msg = ""
+		if err != nil {
+			msg = err.Error()
+			responseContainer.ErrorCount++
+		}
+		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+			SentParams: jsonifyInterface([]any{totalCollateralCalculator}),
+			Function:   "CalculateTotalCollateral",
+			Error:      msg,
+			Response:   jsonifyInterface([]any{calculateTotalCollateralResponse}),
+		})
+
+		var futuresPositionsResponse []futures.PositionResponse
+		futuresPositionsRequest := &futures.PositionsRequest{
+			Asset:     assetTypes[i],
+			Pairs:     currency.Pairs{p},
+			StartDate: time.Now().Add(-time.Hour),
+		}
+		futuresPositionsResponse, err = e.GetFuturesPositionOrders(context.TODO(), futuresPositionsRequest)
+		msg = ""
+		if err != nil {
+			msg = err.Error()
+			responseContainer.ErrorCount++
+		}
+		responseContainer.EndpointResponses = append(responseContainer.EndpointResponses, EndpointResponse{
+			SentParams: jsonifyInterface([]any{futuresPositionsRequest}),
+			Function:   "GetFuturesPositionOrders",
+			Error:      msg,
+			Response:   jsonifyInterface([]any{futuresPositionsResponse}),
+		})
+
 		response = append(response, responseContainer)
 	}
 	return response
 }
 
-func jsonifyInterface(params []interface{}) json.RawMessage {
+func jsonifyInterface(params []any) json.RawMessage {
 	response, _ := json.MarshalIndent(params, "", " ")
 	return response
 }
 
 func loadConfig() (Config, error) {
-	var config Config
-	keys, err := ioutil.ReadFile("wrapperconfig.json")
+	var cfg Config
+	keys, err := os.ReadFile("wrapperconfig.json")
 	if err != nil {
-		return config, err
+		return cfg, err
 	}
 
-	err = json.Unmarshal(keys, &config)
-	return config, err
+	err = json.Unmarshal(keys, &cfg)
+	return cfg, err
 }
 
-func saveConfig(config *Config) {
+func saveConfig(cfg *Config) {
 	log.Println("JSONifying config...")
-	jsonOutput, err := json.MarshalIndent(config, "", " ")
+	jsonOutput, err := json.MarshalIndent(cfg, "", " ")
 	if err != nil {
 		log.Fatalf("Encountered error encoding JSON: %v", err)
 	}
@@ -901,17 +1092,20 @@ func outputToHTML(exchangeResponses []ExchangeResponses) {
 	}
 
 	log.Printf("Outputting to: %v", filepath.Join(dir, fmt.Sprintf("%v.html", outputFileName)))
-	file, err := os.Create(filepath.Join(dir, fmt.Sprintf("%v.html", outputFileName)))
+	f, err := os.Create(filepath.Join(dir, fmt.Sprintf("%v.html", outputFileName)))
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	err = tmpl.Execute(file, exchangeResponses)
+	err = tmpl.Execute(f, exchangeResponses)
 	if err != nil {
 		log.Print(err)
 	}
-	file.Close()
+	err = f.Close()
+	if err != nil {
+		log.Print(err)
+	}
 }
 
 func outputToConsole(exchangeResponses []ExchangeResponses) {
@@ -944,15 +1138,10 @@ func outputToConsole(exchangeResponses []ExchangeResponses) {
 // disruptFormatting adds in an unused delimiter and strange casing features to
 // ensure format currency pair is used throughout the code base.
 func disruptFormatting(p currency.Pair) (currency.Pair, error) {
-	base := p.Base.String()
-	if base == "" {
-		return currency.Pair{}, errors.New("cannot disrupt formatting as base is not populated")
+	if p.Base.IsEmpty() {
+		return currency.EMPTYPAIR, errors.New("cannot disrupt formatting as base is not populated")
 	}
-	quote := p.Quote.String()
-	if quote == "" {
-		return currency.Pair{}, errors.New("cannot disrupt formatting as quote is not populated")
-	}
-
+	// NOTE: Quote can be empty for margin funding
 	return currency.Pair{
 		Base:      p.Base.Upper(),
 		Quote:     p.Quote.Lower(),

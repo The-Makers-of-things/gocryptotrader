@@ -1,14 +1,22 @@
 package ticker
 
 import (
+	"errors"
+	"fmt"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/common/key"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/dispatch"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
@@ -28,19 +36,20 @@ func TestMain(m *testing.M) {
 var cpyMux *dispatch.Mux
 
 func TestSubscribeTicker(t *testing.T) {
-	_, err := SubscribeTicker("", currency.Pair{}, asset.Item(""))
+	_, err := SubscribeTicker("", currency.EMPTYPAIR, asset.Empty)
 	if err == nil {
 		t.Error("error cannot be nil")
 	}
 
-	p := currency.NewPair(currency.BTC, currency.USD)
+	p := currency.NewBTCUSD()
 
 	// force error
 	service.mux = nil
 	err = ProcessTicker(&Price{
 		Pair:         p,
 		ExchangeName: "subscribetest",
-		AssetType:    asset.Spot})
+		AssetType:    asset.Spot,
+	})
 	if err == nil {
 		t.Error("error cannot be nil")
 	}
@@ -50,7 +59,8 @@ func TestSubscribeTicker(t *testing.T) {
 	err = ProcessTicker(&Price{
 		Pair:         sillyP,
 		ExchangeName: "subscribetest",
-		AssetType:    asset.Spot})
+		AssetType:    asset.Spot,
+	})
 	if err == nil {
 		t.Error("error cannot be nil")
 	}
@@ -59,7 +69,8 @@ func TestSubscribeTicker(t *testing.T) {
 	err = ProcessTicker(&Price{
 		Pair:         sillyP,
 		ExchangeName: "subscribetest",
-		AssetType:    asset.Spot})
+		AssetType:    asset.Spot,
+	})
 	if err == nil {
 		t.Error("error cannot be nil")
 	}
@@ -67,7 +78,7 @@ func TestSubscribeTicker(t *testing.T) {
 	err = ProcessTicker(&Price{
 		Pair:         sillyP,
 		ExchangeName: "subscribetest",
-		AssetType:    "silly",
+		AssetType:    asset.DownsideProfitContract,
 	})
 	if err == nil {
 		t.Error("error cannot be nil")
@@ -78,9 +89,10 @@ func TestSubscribeTicker(t *testing.T) {
 	err = ProcessTicker(&Price{
 		Pair:         p,
 		ExchangeName: "subscribetest",
-		AssetType:    asset.Spot})
+		AssetType:    asset.Spot,
+	})
 	if err != nil {
-		t.Error("error cannot be nil")
+		t.Fatal(err)
 	}
 
 	_, err = SubscribeTicker("subscribetest", p, asset.Spot)
@@ -95,12 +107,13 @@ func TestSubscribeToExchangeTickers(t *testing.T) {
 		t.Error("error cannot be nil")
 	}
 
-	p := currency.NewPair(currency.BTC, currency.USD)
+	p := currency.NewBTCUSD()
 
 	err = ProcessTicker(&Price{
 		Pair:         p,
 		ExchangeName: "subscribeExchangeTest",
-		AssetType:    asset.Spot})
+		AssetType:    asset.Spot,
+	})
 	if err != nil {
 		t.Error(err)
 	}
@@ -123,8 +136,7 @@ func TestGetTicker(t *testing.T) {
 		Low:          1148,
 		Bid:          1195,
 		Ask:          1220,
-		Volume:       5,
-		PriceATH:     1337,
+		BaseVolume:   5,
 		ExchangeName: "bitfinex",
 		AssetType:    asset.Spot,
 	}
@@ -163,29 +175,24 @@ func TestGetTicker(t *testing.T) {
 		t.Fatal("TestGetTicker returned ticker for invalid second currency")
 	}
 
-	priceStruct.PriceATH = 9001
 	priceStruct.Pair.Base = currency.ETH
-	priceStruct.AssetType = "futures_3m"
+	priceStruct.AssetType = asset.DownsideProfitContract
 	err = ProcessTicker(&priceStruct)
 	if err != nil {
 		t.Fatal("ProcessTicker error", err)
 	}
 
-	tickerPrice, err = GetTicker("bitfinex", newPair, "futures_3m")
+	_, err = GetTicker("bitfinex", newPair, asset.DownsideProfitContract)
 	if err != nil {
 		t.Errorf("Ticker GetTicker init error: %s", err)
 	}
 
-	if tickerPrice.PriceATH != 9001 {
-		t.Error("ticker tickerPrice.PriceATH value is incorrect")
-	}
-
-	_, err = GetTicker("bitfinex", newPair, "meowCats")
+	_, err = GetTicker("bitfinex", newPair, asset.UpsideProfitContract)
 	if err == nil {
 		t.Error("Ticker GetTicker error cannot be nil")
 	}
 
-	priceStruct.AssetType = "meowCats"
+	priceStruct.AssetType = asset.UpsideProfitContract
 	err = ProcessTicker(&priceStruct)
 	if err != nil {
 		t.Fatal("ProcessTicker error", err)
@@ -198,6 +205,25 @@ func TestGetTicker(t *testing.T) {
 	}
 }
 
+func TestFindLast(t *testing.T) {
+	cp := currency.NewPair(currency.BTC, currency.XRP)
+	_, err := FindLast(cp, asset.Spot)
+	assert.ErrorIs(t, err, ErrTickerNotFound)
+
+	err = service.update(&Price{Last: 0, ExchangeName: "testerinos", Pair: cp, AssetType: asset.Spot})
+	require.NoError(t, err, "service update must not error")
+
+	_, err = FindLast(cp, asset.Spot)
+	assert.ErrorIs(t, err, errInvalidTicker)
+
+	err = service.update(&Price{Last: 1337, ExchangeName: "testerinos", Pair: cp, AssetType: asset.Spot})
+	require.NoError(t, err, "service update must not error")
+
+	last, err := FindLast(cp, asset.Spot)
+	assert.NoError(t, err)
+	assert.Equal(t, 1337.0, last)
+}
+
 func TestProcessTicker(t *testing.T) { // non-appending function to tickers
 	exchName := "bitstamp"
 	newPair, err := currency.NewPairFromStrings("BTC", "USD")
@@ -206,13 +232,12 @@ func TestProcessTicker(t *testing.T) { // non-appending function to tickers
 	}
 
 	priceStruct := Price{
-		Last:     1200,
-		High:     1298,
-		Low:      1148,
-		Bid:      1195,
-		Ask:      1220,
-		Volume:   5,
-		PriceATH: 1337,
+		Last:       1200,
+		High:       1298,
+		Low:        1148,
+		Bid:        1195,
+		Ask:        1220,
+		BaseVolume: 5,
 	}
 
 	err = ProcessTicker(&priceStruct)
@@ -247,6 +272,33 @@ func TestProcessTicker(t *testing.T) { // non-appending function to tickers
 	if !result.Pair.Equal(newPair) {
 		t.Fatal("TestProcessTicker pair mismatch")
 	}
+
+	err = ProcessTicker(&Price{
+		ExchangeName: "Bitfinex",
+		Pair:         currency.NewBTCUSD(),
+		AssetType:    asset.Margin,
+		Bid:          1337,
+		Ask:          1337,
+	})
+	assert.ErrorIs(t, err, ErrBidEqualsAsk, "ProcessTicker should error locked market")
+
+	err = ProcessTicker(&Price{
+		ExchangeName: "Bitfinex",
+		Pair:         currency.NewBTCUSD(),
+		AssetType:    asset.Margin,
+		Bid:          1338,
+		Ask:          1336,
+	})
+	assert.ErrorIs(t, err, errBidGreaterThanAsk)
+
+	err = ProcessTicker(&Price{
+		ExchangeName: "Bitfinex",
+		Pair:         currency.NewBTCUSD(),
+		AssetType:    asset.MarginFunding,
+		Bid:          1338,
+		Ask:          1336,
+	})
+	assert.NoError(t, err)
 
 	// now test for processing a pair with a different quote currency
 	newPair, err = currency.NewPairFromStrings("BTC", "AUD")
@@ -296,30 +348,27 @@ func TestProcessTicker(t *testing.T) { // non-appending function to tickers
 
 	var testArray []quick
 
-	_ = rand.NewSource(time.Now().Unix())
-
 	var wg sync.WaitGroup
 	var sm sync.Mutex
 
 	var catastrophicFailure bool
-	for i := 0; i < 500; i++ {
+	for range 500 {
 		if catastrophicFailure {
 			break
 		}
 
-		wg.Add(1)
-		go func() {
-			// nolint:gosec // no need to import crypo/rand for testing
-			newName := "Exchange" + strconv.FormatInt(rand.Int63(), 10)
-			newPairs, err := currency.NewPairFromStrings("BTC"+strconv.FormatInt(rand.Int63(), 10), // nolint:gosec // no need to import crypo/rand for testing
-				"USD"+strconv.FormatInt(rand.Int63(), 10)) // nolint:gosec // no need to import crypo/rand for testing
+		wg.Go(func() {
+			//nolint:gosec // no need to import crypto/rand for testing
+			newName := "Exchange" + strconv.FormatInt(rand.Int64(), 10)
+			newPairs, err := currency.NewPairFromStrings("BTC"+strconv.FormatInt(rand.Int64(), 10), //nolint:gosec // no need to import crypto/rand for testing
+				"USD"+strconv.FormatInt(rand.Int64(), 10)) //nolint:gosec // no need to import crypto/rand for testing
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			tp := Price{
 				Pair:         newPairs,
-				Last:         rand.Float64(), // nolint:gosec // no need to import crypo/rand for testing
+				Last:         rand.Float64(), //nolint:gosec // no need to import crypto/rand for testing
 				ExchangeName: newName,
 				AssetType:    asset.Spot,
 			}
@@ -334,8 +383,7 @@ func TestProcessTicker(t *testing.T) { // non-appending function to tickers
 
 			testArray = append(testArray, quick{Name: newName, P: newPairs, TP: tp})
 			sm.Unlock()
-			wg.Done()
-		}()
+		})
 	}
 
 	if catastrophicFailure {
@@ -344,66 +392,236 @@ func TestProcessTicker(t *testing.T) { // non-appending function to tickers
 
 	wg.Wait()
 
+	var e common.ErrorCollector
 	for _, test := range testArray {
-		wg.Add(1)
-		fatalErr := false
-		go func(test quick) {
+		e.Go(func() error {
 			result, err := GetTicker(test.Name, test.P, asset.Spot)
 			if err != nil {
-				fatalErr = true
-				return
+				return fmt.Errorf("TestProcessTicker failed to retrieve new ticker: %w", err)
 			}
 
 			if result.Last != test.TP.Last {
-				t.Error("TestProcessTicker failed bad values")
+				return errors.New("TestProcessTicker failed bad values")
 			}
-
-			wg.Done()
-		}(test)
-
-		if fatalErr {
-			t.Fatal("TestProcessTicker failed to retrieve new ticker")
-		}
+			return nil
+		})
 	}
-	wg.Wait()
+	require.NoError(t, e.Collect())
 }
 
-func TestSetItemID(t *testing.T) {
-	err := service.SetItemID(nil, "")
-	if err == nil {
-		t.Error("error cannot be nil")
+func TestProcessBatch(t *testing.T) {
+	t.Parallel()
+
+	processed, err := ProcessBatch(nil)
+	require.NoError(t, err, "ProcessBatch must not error for empty input")
+	assert.Empty(t, processed, "empty input should produce no tickers")
+
+	exchName := strings.ReplaceAll(t.Name(), "/", "-")
+	pairOne := currency.NewBTCUSD()
+	pairTwo := currency.NewPair(currency.ETH, currency.USD)
+	processed, err = ProcessBatch([]Price{
+		{
+			ExchangeName: exchName,
+			Pair:         pairOne,
+			AssetType:    asset.Spot,
+			Last:         100,
+		},
+		{
+			ExchangeName: exchName,
+			Pair:         pairTwo,
+			AssetType:    asset.Spot,
+			Last:         200,
+		},
+	})
+	require.NoError(t, err, "ProcessBatch must not error for valid ticker batches")
+	require.Len(t, processed, 2, "ProcessBatch must return both valid tickers")
+
+	_, err = GetTicker(exchName, pairOne, asset.Spot)
+	require.NoError(t, err, "GetTicker must not error after ProcessBatch stores the first ticker")
+	_, err = GetTicker(exchName, pairTwo, asset.Spot)
+	require.NoError(t, err, "GetTicker must not error after ProcessBatch stores the second ticker")
+
+	pairThree := currency.NewPair(currency.LTC, currency.USD)
+	processed, err = ProcessBatch([]Price{
+		{
+			Pair:      pairOne,
+			AssetType: asset.Spot,
+			Last:      1,
+		},
+		{
+			ExchangeName: exchName,
+			Pair:         pairTwo,
+			AssetType:    asset.Spot,
+			Bid:          2,
+			Ask:          1,
+		},
+		{
+			ExchangeName: exchName,
+			Pair:         pairThree,
+			AssetType:    asset.Spot,
+			Last:         300,
+		},
+	})
+	assert.ErrorIs(t, err, common.ErrExchangeNameNotSet, "ProcessBatch should retain the first batch error")
+	assert.ErrorIs(t, err, errBidGreaterThanAsk, "ProcessBatch should combine subsequent batch errors")
+	require.Len(t, processed, 1, "ProcessBatch must return only the valid ticker")
+	assert.Equal(t, pairThree, processed[0].Pair, "ProcessBatch should return the successful ticker")
+	_, err = GetTicker(exchName, pairThree, asset.Spot)
+	require.NoError(t, err, "ProcessBatch must continue processing valid entries after errors")
+
+	processed, err = ProcessBatch([]Price{
+		{ExchangeName: exchName, Pair: pairOne, AssetType: asset.Spot, Last: 400},
+		{ExchangeName: exchName, Pair: pairOne, AssetType: asset.Spot, Last: 500},
+	})
+	require.NoError(t, err, "ProcessBatch must update repeated pairs in order")
+	require.Len(t, processed, 2, "ProcessBatch must return both updates for a repeated pair")
+	assert.Equal(t, 400.0, processed[0].Last, "first processed ticker should retain its value")
+	assert.Equal(t, 500.0, processed[1].Last, "second processed ticker should retain its value")
+	stored, err := GetTicker(exchName, pairOne, asset.Spot)
+	require.NoError(t, err, "GetTicker must find the repeated pair")
+	assert.Equal(t, 500.0, stored.Last, "the last update in the batch should remain in the store")
+
+	t.Run("dispatch failure", func(t *testing.T) {
+		t.Parallel()
+		pipe, err := SubscribeTicker(exchName, pairTwo, asset.Spot)
+		require.NoError(t, err, "the later ticker must have a subscriber")
+		t.Cleanup(func() {
+			assert.NoError(t, pipe.Release(), "the subscriber should be released")
+		})
+
+		mapKey := key.NewExchangeAssetPair(strings.ToLower(exchName), asset.Spot, pairOne)
+		service.mu.Lock()
+		badTicker := service.Tickers[mapKey]
+		originalAssociations := badTicker.Assoc
+		badTicker.Assoc = []uuid.UUID{uuid.Nil()}
+		service.mu.Unlock()
+		t.Cleanup(func() {
+			service.mu.Lock()
+			badTicker.Assoc = originalAssociations
+			service.mu.Unlock()
+		})
+
+		processed, err := ProcessBatch([]Price{
+			{ExchangeName: exchName, Pair: pairOne, AssetType: asset.Spot, Last: 600},
+			{ExchangeName: exchName, Pair: pairTwo, AssetType: asset.Spot, Last: 700},
+		})
+		require.ErrorContains(t, err, "id not set", "the failed publication must be reported")
+		require.Len(t, processed, 1, "the failed publication must be omitted")
+		assert.Equal(t, pairTwo, processed[0].Pair, "a later ticker should still succeed")
+		select {
+		case data := <-pipe.Channel():
+			published, ok := data.(*Price)
+			require.True(t, ok, "the subscriber must receive a ticker")
+			assert.Equal(t, 700.0, published.Last, "the later ticker should be published")
+		case <-time.After(time.Second):
+			t.Fatal("the later ticker was not published")
+		}
+	})
+}
+
+func TestValidateTicker(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		price   *Price
+		wantErr error
+	}{
+		{name: "nil", wantErr: errNilTickerPrice},
+		{name: "missing exchange", price: &Price{Pair: currency.NewBTCUSD(), AssetType: asset.Spot}, wantErr: common.ErrExchangeNameNotSet},
+		{name: "missing pair", price: &Price{ExchangeName: "test", AssetType: asset.Spot}, wantErr: errPairNotSet},
+		{name: "locked book", price: &Price{ExchangeName: "test", Pair: currency.NewBTCUSD(), AssetType: asset.Spot, Bid: 1, Ask: 1}, wantErr: ErrBidEqualsAsk},
+		{name: "crossed book", price: &Price{ExchangeName: "test", Pair: currency.NewBTCUSD(), AssetType: asset.Spot, Bid: 2, Ask: 1}, wantErr: errBidGreaterThanAsk},
+		{name: "missing asset", price: &Price{ExchangeName: "test", Pair: currency.NewBTCUSD()}, wantErr: errAssetTypeNotSet},
+		{name: "Bitfinex funding exception", price: &Price{ExchangeName: "Bitfinex", Pair: currency.NewBTCUSD(), AssetType: asset.MarginFunding, Bid: 2, Ask: 1}},
+		{name: "valid", price: &Price{ExchangeName: "test", Pair: currency.NewBTCUSD(), AssetType: asset.Spot}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateTicker(tc.price)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr, "validation must return the expected error")
+				return
+			}
+			require.NoError(t, err, "a valid ticker must pass validation")
+			assert.False(t, tc.price.LastUpdated.IsZero(), "validation should set the receipt time")
+		})
 	}
+}
 
-	err = service.SetItemID(&Price{}, "")
-	if err == nil {
-		t.Error("error cannot be nil")
+func TestServiceStore(t *testing.T) {
+	t.Parallel()
+	s := &Service{
+		Tickers:  make(map[key.ExchangeAssetPair]*Ticker),
+		Exchange: make(map[string]uuid.UUID),
+		mux:      dispatch.GetNewMux(nil),
 	}
+	p := &Price{ExchangeName: t.Name(), Pair: currency.NewBTCUSD(), AssetType: asset.Spot, Last: 100}
+	s.mu.Lock()
+	ids, err := s.store(p)
+	s.mu.Unlock()
+	require.NoError(t, err, "store must create a ticker")
+	assert.Empty(t, ids, "a newly created ticker should not publish")
 
-	p := currency.NewPair(currency.CYC, currency.CYG)
+	p.Last = 200
+	s.mu.Lock()
+	ids, err = s.store(p)
+	s.mu.Unlock()
+	require.NoError(t, err, "store must update an existing ticker")
+	require.Len(t, ids, 2, "an existing ticker must publish to its exchange and pair IDs")
+	mapKey := key.NewExchangeAssetPair(strings.ToLower(t.Name()), asset.Spot, p.Pair)
+	assert.Equal(t, 200.0, s.Tickers[mapKey].Last, "store should retain the updated price")
 
-	service.mux = nil
-	err = service.SetItemID(&Price{Pair: p, ExchangeName: "SetItemID"}, "setitemid")
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	service.mux = cpyMux
+	failed := &Service{Tickers: make(map[key.ExchangeAssetPair]*Ticker), Exchange: make(map[string]uuid.UUID)}
+	failed.mu.Lock()
+	_, err = failed.store(p)
+	failed.mu.Unlock()
+	assert.ErrorIs(t, err, common.ErrNilPointer, "store should report an ID allocation failure")
 }
 
 func TestGetAssociation(t *testing.T) {
-	_, err := service.GetAssociations(nil, "")
-	if err == nil {
-		t.Error("error cannot be nil")
-	}
-
-	p := currency.NewPair(currency.CYC, currency.CYG)
+	_, err := service.getAssociations("")
+	assert.ErrorIs(t, err, common.ErrExchangeNameNotSet)
 
 	service.mux = nil
 
-	_, err = service.GetAssociations(&Price{Pair: p, ExchangeName: "GetAssociation"}, "getassociation")
+	_, err = service.getAssociations("getassociation")
 	if err == nil {
 		t.Error("error cannot be nil")
 	}
 
 	service.mux = cpyMux
+}
+
+func TestGetExchangeTickersPublic(t *testing.T) {
+	_, err := GetExchangeTickers("")
+	assert.ErrorIs(t, err, common.ErrExchangeNameNotSet)
+}
+
+func TestGetExchangeTickers(t *testing.T) {
+	t.Parallel()
+	s := Service{
+		Tickers:  make(map[key.ExchangeAssetPair]*Ticker),
+		Exchange: make(map[string]uuid.UUID),
+	}
+
+	_, err := s.getExchangeTickers("")
+	assert.ErrorIs(t, err, common.ErrExchangeNameNotSet)
+
+	_, err = s.getExchangeTickers("test")
+	assert.ErrorIs(t, err, errExchangeNotFound)
+
+	s.Tickers[key.NewExchangeAssetPair("test", asset.Spot, currency.NewPair(currency.XBT, currency.DOGE))] = &Ticker{
+		Pair:         currency.NewPair(currency.XBT, currency.DOGE),
+		ExchangeName: "test",
+		AssetType:    asset.Futures,
+		OpenInterest: 1337,
+	}
+	s.Exchange["test"] = uuid.NewV4()
+
+	resp, err := s.getExchangeTickers("test")
+	assert.NoError(t, err)
+	if len(resp) != 1 {
+		t.Fatal("unexpected length")
+	}
+	assert.Equal(t, 1337.0, resp[0].OpenInterest)
 }

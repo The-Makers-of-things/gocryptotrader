@@ -2,19 +2,21 @@ package trade
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
+	"strconv"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/gofrs/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/database"
-	"github.com/thrasher-corp/gocryptotrader/database/drivers"
 	"github.com/thrasher-corp/gocryptotrader/database/repository/exchange"
 	"github.com/thrasher-corp/gocryptotrader/database/testhelpers"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/kline"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
 )
 
@@ -30,21 +32,50 @@ var (
 	}
 )
 
+//nolint:forbidigo // TestMain reports setup and teardown failures before or after a *testing.T exists
 func TestMain(m *testing.M) {
 	if verbose {
-		testhelpers.EnableVerboseTestOutput()
+		err := testhelpers.EnableVerboseTestOutput()
+		if err != nil {
+			fmt.Printf("failed to enable verbose test output: %v", err)
+			os.Exit(1)
+		}
 	}
 	var err error
 	testhelpers.PostgresTestDatabase = testhelpers.GetConnectionDetails()
-	testhelpers.TempDir, err = ioutil.TempDir("", "gct-temp")
+	testhelpers.TempDir, err = os.MkdirTemp("", "gct-temp")
 	if err != nil {
 		log.Fatal(err)
 	}
-	os.Exit(m.Run())
+
+	exitCode := m.Run()
+	if err = os.RemoveAll(testhelpers.TempDir); err != nil {
+		fmt.Printf("failed to remove temp dir: %s", err)
+	}
+	os.Exit(exitCode)
+}
+
+func TestInsertRejectsNonUUIDID(t *testing.T) {
+	t.Parallel()
+	// SQLite stores the ID column as unrestricted text, so a bad ID would write a row that
+	// trade.SQLDataToTrade can no longer read back
+	err := Insert(Data{
+		ID:        "not-a-uuid",
+		Exchange:  testExchanges[0].Name,
+		Base:      currency.BTC.String(),
+		Quote:     currency.USD.String(),
+		AssetType: asset.Spot.String(),
+		Price:     1337,
+		Amount:    1337,
+		Side:      order.Buy.String(),
+		Timestamp: time.Now(),
+	})
+	assert.ErrorIs(t, err, errInvalidTradeID, "Insert should reject a non-UUID ID")
 }
 
 func TestTrades(t *testing.T) {
-	testCases := []struct {
+	t.Parallel()
+	for _, tc := range []struct {
 		name   string
 		config *database.Config
 		seedDB func() error
@@ -59,50 +90,40 @@ func TestTrades(t *testing.T) {
 		{
 			name: "SQLite",
 			config: &database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb",
 			},
 			seedDB: seedDB,
 		},
-	}
-
-	for x := range testCases {
-		test := testCases[x]
-
-		t.Run(test.name, func(t *testing.T) {
-			if !testhelpers.CheckValidConfig(&test.config.ConnectionDetails) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if !testhelpers.CheckValidConfig(&tc.config.ConnectionDetails) {
 				t.Skip("database not configured skipping test")
 			}
 
-			dbConn, err := testhelpers.ConnectToDatabase(test.config)
-			if err != nil {
-				t.Fatal(err)
-			}
+			dbConn, err := testhelpers.ConnectToDatabase(tc.config)
+			require.NoError(t, err)
 
-			if test.seedDB != nil {
-				err = test.seedDB()
-				if err != nil {
-					t.Error(err)
-				}
+			if tc.seedDB != nil {
+				require.NoError(t, tc.seedDB())
 			}
 
 			tradeSQLTester(t)
-			err = testhelpers.CloseDatabase(dbConn)
-			if err != nil {
-				t.Error(err)
-			}
+			assert.NoError(t, testhelpers.CloseDatabase(dbConn))
 		})
 	}
 }
 
 func tradeSQLTester(t *testing.T) {
-	var trades, trades2 []Data
-
-	for i := 0; i < 20; i++ {
-		uu, _ := uuid.NewV4()
-		trades = append(trades, Data{
+	t.Helper()
+	trades := make([]Data, 20)
+	firstTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := range 20 {
+		uu := uuid.NewV4()
+		trades[i] = Data{
 			ID:        uu.String(),
-			Timestamp: time.Now(),
+			Timestamp: firstTime.Add(time.Minute * time.Duration(i+1)),
 			Exchange:  testExchanges[0].Name,
 			Base:      currency.BTC.String(),
 			Quote:     currency.USD.String(),
@@ -110,19 +131,21 @@ func tradeSQLTester(t *testing.T) {
 			Price:     float64(i * (i + 3)),
 			Amount:    float64(i * (i + 2)),
 			Side:      order.Buy.String(),
-			TID:       fmt.Sprintf("%v", i),
-		})
+			TID:       strconv.Itoa(i),
+		}
 	}
 	err := Insert(trades...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// insert the same trades to test conflict resolution
-	for i := 0; i < 20; i++ {
-		uu, _ := uuid.NewV4()
-		trades2 = append(trades2, Data{
+
+	trades2 := make([]Data, 20)
+	for i := range 20 {
+		uu := uuid.NewV4()
+		trades2[i] = Data{
 			ID:        uu.String(),
-			Timestamp: time.Now(),
+			Timestamp: firstTime.Add(time.Minute * time.Duration(i+1)),
 			Exchange:  testExchanges[0].Name,
 			Base:      currency.BTC.String(),
 			Quote:     currency.USD.String(),
@@ -130,8 +153,8 @@ func tradeSQLTester(t *testing.T) {
 			Price:     float64(i * (i + 3)),
 			Amount:    float64(i * (i + 2)),
 			Side:      order.Buy.String(),
-			TID:       fmt.Sprintf("%v", i),
-		})
+			TID:       strconv.Itoa(i),
+		}
 	}
 	err = Insert(trades2...)
 	if err != nil {
@@ -142,8 +165,8 @@ func tradeSQLTester(t *testing.T) {
 		asset.Spot.String(),
 		currency.BTC.String(),
 		currency.USD.String(),
-		time.Now().Add(-time.Hour),
-		time.Now().Add(time.Hour),
+		firstTime.Add(-time.Hour),
+		firstTime.Add(time.Hour),
 	)
 	if err != nil {
 		t.Error(err)
@@ -157,8 +180,8 @@ func tradeSQLTester(t *testing.T) {
 		asset.Spot.String(),
 		currency.BTC.String(),
 		currency.USD.String(),
-		time.Now().Add(-time.Hour),
-		time.Now().Add(time.Hour))
+		firstTime.Add(-time.Hour),
+		firstTime.Add(time.Hour))
 	if err != nil {
 		t.Error(err)
 	}
@@ -166,11 +189,23 @@ func tradeSQLTester(t *testing.T) {
 		t.Error("Bad get!")
 	}
 
-	err = DeleteTrades(trades...)
+	ranges, err := kline.CalculateCandleDateRanges(firstTime, firstTime.Add(20*time.Minute), kline.OneMin, 100)
+	if err != nil {
+		t.Error(err)
+	}
+	err = VerifyTradeInIntervals(testExchanges[0].Name,
+		asset.Spot.String(),
+		currency.BTC.String(),
+		currency.USD.String(),
+		ranges)
 	if err != nil {
 		t.Error(err)
 	}
 
+	err = DeleteTrades(trades...)
+	if err != nil {
+		t.Error(err)
+	}
 	err = DeleteTrades(trades2...)
 	if err != nil {
 		t.Error(err)
@@ -187,7 +222,7 @@ func tradeSQLTester(t *testing.T) {
 		t.Error(err)
 	}
 	if len(v) != 0 {
-		t.Errorf("should all be ded %v", v)
+		t.Errorf("should all be dead %v", v)
 	}
 }
 

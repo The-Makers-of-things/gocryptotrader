@@ -9,15 +9,31 @@ import (
 )
 
 func TestSimulate(t *testing.T) {
-	b := bitstamp.Bitstamp{}
+	b := bitstamp.Exchange{}
 	b.SetDefaults()
-	o, err := b.FetchOrderbook(currency.NewPair(currency.BTC, currency.USD), asset.Spot)
-	if err != nil {
-		t.Error(err)
+	b.Verbose = false
+	b.CurrencyPairs = currency.PairsManager{
+		UseGlobalFormat: true,
+		RequestFormat: &currency.PairFormat{
+			Uppercase: true,
+		},
+		Pairs: map[asset.Item]*currency.PairStore{
+			asset.Spot: {
+				AssetEnabled: true,
+			},
+		},
 	}
-
-	r := o.SimulateOrder(10000000, true)
-	t.Log(r.Status)
-	r = o.SimulateOrder(2171, false)
-	t.Log(r.Status)
+	o, err := b.UpdateOrderbook(t.Context(),
+		currency.NewBTCUSD(), asset.Spot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = o.SimulateOrder(10000000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = o.SimulateOrder(2171, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 }

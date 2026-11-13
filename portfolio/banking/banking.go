@@ -8,14 +8,35 @@ import (
 	"github.com/thrasher-corp/gocryptotrader/currency"
 )
 
+// SetAccounts safely overwrites bank account slice
+func SetAccounts(accs ...Account) {
+	m.Lock()
+	defer m.Unlock()
+	accounts = accs
+}
+
+// AppendAccounts safely adds to bank account slice
+func AppendAccounts(accs ...Account) {
+	m.Lock()
+	defer m.Unlock()
+accountRange:
+	for j := range accs {
+		for i := range accounts {
+			if accounts[i].AccountNumber == accs[j].AccountNumber {
+				continue accountRange
+			}
+		}
+		accounts = append(accounts, accs[j])
+	}
+}
+
 // GetBankAccountByID Returns a bank account based on its ID
 func GetBankAccountByID(id string) (*Account, error) {
 	m.Lock()
 	defer m.Unlock()
-
-	for x := range Accounts {
-		if strings.EqualFold(Accounts[x].ID, id) {
-			return &Accounts[x], nil
+	for x := range accounts {
+		if strings.EqualFold(accounts[x].ID, id) {
+			return &accounts[x], nil
 		}
 	}
 	return nil, fmt.Errorf(ErrBankAccountNotFound, id)
@@ -24,7 +45,7 @@ func GetBankAccountByID(id string) (*Account, error) {
 // ExchangeSupported Checks if exchange is supported by bank account
 func (b *Account) ExchangeSupported(exchange string) bool {
 	exchList := strings.Split(b.SupportedExchanges, ",")
-	return common.StringDataCompareInsensitive(exchList, exchange)
+	return common.StringSliceCompareInsensitive(exchList, exchange)
 }
 
 // Validate validates bank account settings
@@ -77,18 +98,18 @@ func (b *Account) ValidateForWithdrawal(exchange string, cur currency.Code) (err
 		err = append(err, ErrAccountCannotBeEmpty)
 	}
 
-	if !common.StringDataCompareInsensitive(strings.Split(b.SupportedCurrencies, ","), cur.String()) {
+	if !common.StringSliceCompareInsensitive(strings.Split(b.SupportedCurrencies, ","), cur.String()) {
 		err = append(err, ErrCurrencyNotSupportedByAccount)
 	}
 
-	if cur.Upper() == currency.AUD {
+	if cur.Equal(currency.AUD) {
 		if b.BSBNumber == "" {
-			err = append(err, ErrBSBRequiredforAUD)
+			err = append(err, ErrBSBRequiredForAUD)
 		}
 	} else {
 		if b.IBAN == "" && b.SWIFTCode == "" {
 			err = append(err, ErrIBANSwiftNotSet)
 		}
 	}
-	return
+	return err
 }

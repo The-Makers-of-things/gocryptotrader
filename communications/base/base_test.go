@@ -2,13 +2,12 @@ package base
 
 import (
 	"testing"
+	"time"
 )
 
-var (
-	b Base
-)
+var b Base
 
-func TestStart(t *testing.T) {
+func TestStart(_ *testing.T) {
 	b = Base{
 		Name:      "test",
 		Enabled:   true,
@@ -35,13 +34,26 @@ func TestGetName(t *testing.T) {
 	}
 }
 
+func TestSetServiceStarted(t *testing.T) {
+	b = Base{}
+	tt := time.Now()
+	if b.ServiceStarted.Equal(tt) {
+		t.Errorf("expected '%v', received '%v'", time.Time{}, tt)
+	}
+	b.SetServiceStarted(tt)
+	if !b.ServiceStarted.Equal(tt) {
+		t.Errorf("expected '%v', received '%v'", tt, b.ServiceStarted)
+	}
+}
+
 type CommunicationProvider struct {
 	ICommunicate
 
-	isEnabled       bool
-	isConnected     bool
-	ConnectCalled   bool
-	PushEventCalled bool
+	isEnabled        bool
+	isConnected      bool
+	ConnectCalled    bool
+	PushEventCalled  bool
+	ServiceStartTime time.Time
 }
 
 func (p *CommunicationProvider) IsEnabled() bool {
@@ -57,7 +69,7 @@ func (p *CommunicationProvider) Connect() error {
 	return nil
 }
 
-func (p *CommunicationProvider) PushEvent(e Event) error {
+func (p *CommunicationProvider) PushEvent(_ Event) error {
 	p.PushEventCalled = true
 	return nil
 }
@@ -66,8 +78,11 @@ func (p *CommunicationProvider) GetName() string {
 	return "someTestProvider"
 }
 
+func (p *CommunicationProvider) SetServiceStarted(t time.Time) {
+	p.ServiceStartTime = t
+}
+
 func TestSetup(t *testing.T) {
-	var ic IComm
 	testConfigs := []struct {
 		isEnabled           bool
 		isConnected         bool
@@ -79,10 +94,12 @@ func TestSetup(t *testing.T) {
 		{true, true, false, nil},
 		{true, false, true, nil},
 	}
+	ic := make(IComm, 0, len(testConfigs))
 	for _, config := range testConfigs {
 		config.provider = &CommunicationProvider{
 			isEnabled:   config.isEnabled,
-			isConnected: config.isConnected}
+			isConnected: config.isConnected,
+		}
 		ic = append(ic, config.provider)
 	}
 
@@ -90,15 +107,17 @@ func TestSetup(t *testing.T) {
 
 	for idx, provider := range ic {
 		exp := testConfigs[idx].shouldConnectCalled
-		act := provider.(*CommunicationProvider).ConnectCalled
-		if exp != act {
+		act, ok := provider.(*CommunicationProvider)
+		if !ok {
+			t.Fatal("unable to type assert provider")
+		}
+		if exp != act.ConnectCalled {
 			t.Fatalf("provider should be enabled and not be connected: exp=%v, act=%v", exp, act)
 		}
 	}
 }
 
 func TestPushEvent(t *testing.T) {
-	var ic IComm
 	testConfigs := []struct {
 		Enabled         bool
 		Connected       bool
@@ -110,10 +129,12 @@ func TestPushEvent(t *testing.T) {
 		{true, false, false, nil},
 		{true, true, true, nil},
 	}
+	ic := make(IComm, 0, len(testConfigs))
 	for _, config := range testConfigs {
 		config.provider = &CommunicationProvider{
 			isEnabled:   config.Enabled,
-			isConnected: config.Connected}
+			isConnected: config.Connected,
+		}
 		ic = append(ic, config.provider)
 	}
 
@@ -121,8 +142,11 @@ func TestPushEvent(t *testing.T) {
 
 	for idx, provider := range ic {
 		exp := testConfigs[idx].PushEventCalled
-		act := provider.(*CommunicationProvider).PushEventCalled
-		if exp != act {
+		act, ok := provider.(*CommunicationProvider)
+		if !ok {
+			t.Fatal("unable to type assert provider")
+		}
+		if exp != act.PushEventCalled {
 			t.Fatalf("provider should be enabled and connected: exp=%v, act=%v", exp, act)
 		}
 	}

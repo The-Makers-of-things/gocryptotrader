@@ -1,16 +1,25 @@
 package kline
 
 import (
+	"github.com/thrasher-corp/gocryptotrader/backtester/data"
 	"github.com/thrasher-corp/gocryptotrader/backtester/eventtypes/event"
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
 // Kline holds kline data and an event to be processed as
-// a common.DataEventHandler type
+// a common.Event type
 type Kline struct {
-	event.Base
-	Open   float64
-	Close  float64
-	Low    float64
-	High   float64
-	Volume float64
+	*event.Base
+	Open             decimal.Decimal
+	Close            decimal.Decimal
+	Low              decimal.Decimal
+	High             decimal.Decimal
+	Volume           decimal.Decimal
+	ValidationIssues string
+}
+
+// Event is a kline data event
+type Event interface {
+	data.Event
+	IsKline() bool
 }

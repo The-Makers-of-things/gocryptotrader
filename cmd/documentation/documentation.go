@@ -1,21 +1,32 @@
 package main
 
 import (
-	"encoding/json"
+	"bytes"
+	"cmp"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"html/template"
-	"io/ioutil"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/common/file"
 	"github.com/thrasher-corp/gocryptotrader/core"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 const (
@@ -31,11 +42,14 @@ const (
 
 	// ContributorFile defines contributor file
 	ContributorFile = "CONTRIBUTORS"
+
+	defaultGithubAPIPerPageLimit = 100
 )
 
 var (
 	// DefaultExcludedDirectories defines the basic directory exclusion list for GCT
-	DefaultExcludedDirectories = []string{".github",
+	DefaultExcludedDirectories = []string{
+		".github",
 		".git",
 		"node_modules",
 		".vscode",
@@ -63,7 +77,9 @@ var (
 	repoDir string
 	// is a broken down version of the documentation tool dir for cross platform
 	// checking
-	ref = []string{"gocryptotrader", "cmd", "documentation"}
+	ref          = []string{"gocryptotrader", "cmd", "documentation"}
+	engineFolder = "engine"
+	githubToken  = os.Getenv("GITHUB_TOKEN") // Overridden by the ghtoken flag when set
 )
 
 // Contributor defines an account associated with this code base by doing
@@ -72,6 +88,12 @@ type Contributor struct {
 	Login         string `json:"login"`
 	URL           string `json:"html_url"`
 	Contributions int    `json:"contributions"`
+}
+
+// ghError defines a GitHub error response
+type ghError struct {
+	Message string `json:"message"`
+	Status  string `json:"status"`
 }
 
 // Config defines the running config to deploy documentation across a github
@@ -104,6 +126,7 @@ type Attributes struct {
 	Name            string
 	Contributors    []Contributor
 	NameURL         string
+	RepoRoot        string
 	Year            int
 	CapitalName     string
 	DonationAddress string
@@ -112,6 +135,7 @@ type Attributes struct {
 func main() {
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
 	flag.StringVar(&toolDir, "tooldir", "", "Pass in the documentation tool directory if outside tool folder")
+	flag.StringVar(&githubToken, "ghtoken", githubToken, "Github authentication token to use when fetching the contributors list")
 	flag.Parse()
 
 	wd, err := os.Getwd()
@@ -121,8 +145,8 @@ func main() {
 	}
 
 	if strings.Contains(wd, filepath.Join(ref...)) {
-		rootdir := filepath.Dir(filepath.Dir(wd))
-		repoDir = rootdir
+		rootDir := filepath.Dir(filepath.Dir(wd))
+		repoDir = rootDir
 		toolDir = wd
 	} else {
 		if toolDir == "" {
@@ -132,7 +156,7 @@ func main() {
 		repoDir = wd
 	}
 
-	fmt.Println(core.Banner)
+	fmt.Print(core.Banner)
 	fmt.Println("This will update and regenerate documentation for the different packages in your repo.")
 	fmt.Println()
 
@@ -161,29 +185,13 @@ func main() {
 		if verbose {
 			fmt.Println("Fetching repository contributor list...")
 		}
-		contributors, err = GetContributorList(config.GithubRepo)
+		contributors, err = GetContributorList(context.TODO(), config.GithubRepo, verbose)
 		if err != nil {
-			log.Fatalf("Documentation Generation Tool - GetContributorList error %s",
-				err)
+			log.Fatalf("Documentation Generation Tool - GetContributorList error: %s", err)
 		}
 
-		// Github API missing contributors
+		// Github API missing/deleted user contributors
 		contributors = append(contributors, []Contributor{
-			{
-				Login:         "daniel-cohen",
-				URL:           "https://github.com/daniel-cohen",
-				Contributions: 1,
-			},
-			{
-				Login:         "DirectX",
-				URL:           "https://github.com/DirectX",
-				Contributions: 1,
-			},
-			{
-				Login:         "frankzougc",
-				URL:           "https://github.com/frankzougc",
-				Contributions: 1,
-			},
 			// idoall's contributors were forked and merged, so his contributions
 			// aren't automatically retrievable
 			{
@@ -192,61 +200,13 @@ func main() {
 				Contributions: 1,
 			},
 			{
-				Login:         "mattkanwisher",
-				URL:           "https://github.com/mattkanwisher",
-				Contributions: 1,
-			},
-			{
-				Login:         "mKurrels",
-				URL:           "https://github.com/mKurrels",
-				Contributions: 1,
-			},
-			{
-				Login:         "m1kola",
-				URL:           "https://github.com/m1kola",
-				Contributions: 1,
-			},
-			{
-				Login:         "cavapoo2",
-				URL:           "https://github.com/cavapoo2",
-				Contributions: 1,
-			},
-			{
-				Login:         "zeldrinn",
-				URL:           "https://github.com/zeldrinn",
-				Contributions: 1,
-			},
-			{
 				Login:         "starit",
 				URL:           "https://github.com/starit",
 				Contributions: 1,
 			},
-			{
-				Login:         "Jimexist",
-				URL:           "https://github.com/Jimexist",
-				Contributions: 1,
-			},
-			{
-				Login:         "lookfirst",
-				URL:           "https://github.com/lookfirst",
-				Contributions: 1,
-			},
-			{
-				Login:         "merkeld",
-				URL:           "https://github.com/merkeld",
-				Contributions: 1,
-			},
-			{
-				Login:         "CodeLingoTeam",
-				URL:           "https://github.com/CodeLingoTeam",
-				Contributions: 1,
-			},
-			{
-				Login:         "Daanikus",
-				URL:           "https://github.com/Daanikus",
-				Contributions: 1,
-			},
 		}...)
+
+		slices.SortFunc(contributors, func(a, b Contributor) int { return cmp.Compare(b.Contributions, a.Contributions) })
 
 		if verbose {
 			fmt.Println("Contributor List Fetched")
@@ -272,15 +232,12 @@ func main() {
 		fmt.Println("All core systems fetched, updating documentation...")
 	}
 
-	err = UpdateDocumentation(DocumentationDetails{
+	UpdateDocumentation(DocumentationDetails{
 		dirList,
 		tmpl,
 		contributors,
-		&config})
-	if err != nil {
-		log.Fatalf("Documentation Generation Tool - UpdateDocumentation error %s",
-			err)
-	}
+		&config,
+	})
 
 	fmt.Println("\nDocumentation Generation Tool - Finished")
 }
@@ -291,7 +248,7 @@ func GetConfiguration() (Config, error) {
 	configFilePath := filepath.Join(toolDir, "config.json")
 
 	if file.Exists(configFilePath) {
-		config, err := ioutil.ReadFile(configFilePath)
+		config, err := os.ReadFile(configFilePath)
 		if err != nil {
 			return c, err
 		}
@@ -322,21 +279,11 @@ func GetConfiguration() (Config, error) {
 		return c, err
 	}
 
-	if err := ioutil.WriteFile(configFilePath, data, 0770); err != nil {
+	if err := os.WriteFile(configFilePath, data, file.DefaultPermissionOctal); err != nil {
 		return c, err
 	}
 
 	return c, nil
-}
-
-// IsExcluded returns if the file path is included in the exclusion list
-func IsExcluded(path string, exclusion []string) bool {
-	for i := range exclusion {
-		if path == exclusion[i] {
-			return true
-		}
-	}
-	return false
 }
 
 // GetProjectDirectoryTree uses filepath walk functions to get each individual
@@ -355,13 +302,13 @@ func GetProjectDirectoryTree(c *Config) ([]string, error) {
 		directoryData = append(directoryData, filepath.Join(repoDir, ContributorFile))
 	}
 
-	walkfn := func(path string, info os.FileInfo, err error) error {
+	walkFn := func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
 			// Bypass what is contained in config.json directory exclusion
-			if IsExcluded(info.Name(), c.Exclusions.Directories) {
+			if slices.Contains(c.Exclusions.Directories, info.Name()) {
 				if verbose {
 					fmt.Println("Excluding Directory:", info.Name())
 				}
@@ -376,7 +323,7 @@ func GetProjectDirectoryTree(c *Config) ([]string, error) {
 		return nil
 	}
 
-	return directoryData, filepath.Walk(repoDir, walkfn)
+	return directoryData, filepath.Walk(repoDir, walkFn)
 }
 
 // GetTemplateFiles parses and returns all template files in the documentation
@@ -384,7 +331,7 @@ func GetProjectDirectoryTree(c *Config) ([]string, error) {
 func GetTemplateFiles() (*template.Template, error) {
 	tmpl := template.New("")
 
-	walkfn := func(path string, info os.FileInfo, err error) error {
+	walkFn := func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -393,27 +340,59 @@ func GetTemplateFiles() (*template.Template, error) {
 				return nil
 			}
 
-			var parseError error
-			tmpl, parseError = tmpl.ParseGlob(filepath.Join(path, "*.tmpl"))
-			if parseError != nil {
-				if strings.Contains(parseError.Error(), "pattern matches no files") {
+			var tmplExt *template.Template
+			tmplExt, err = tmpl.ParseGlob(filepath.Join(path, "*.tmpl"))
+			if err != nil {
+				fmt.Println(err)
+				if strings.Contains(err.Error(), "pattern matches no files") {
 					return nil
 				}
-				return parseError
+				return err
 			}
+			tmpl = tmplExt
 			return filepath.SkipDir
 		}
 		return nil
 	}
 
-	return tmpl, filepath.Walk(toolDir, walkfn)
+	return tmpl, filepath.Walk(toolDir, walkFn)
 }
 
-// GetContributorList fetches a list of contributors from the github api
-// endpoint
-func GetContributorList(repo string) ([]Contributor, error) {
-	var resp []Contributor
-	return resp, common.SendHTTPGetRequest(repo+GithubAPIEndpoint, true, false, &resp)
+// GetContributorList fetches a list of contributors from the Github API endpoint
+func GetContributorList(ctx context.Context, repo string, verbose bool) ([]Contributor, error) {
+	var contributors []Contributor
+	vals := url.Values{}
+	vals.Set("per_page", strconv.Itoa(defaultGithubAPIPerPageLimit))
+
+	headers := make(map[string]string)
+	if githubToken != "" {
+		headers["Authorization"] = "Bearer " + githubToken
+		fmt.Println("Using GitHub token for authentication")
+	}
+
+	for page := 1; ; page++ {
+		vals.Set("page", strconv.Itoa(page))
+
+		contents, err := common.SendHTTPRequest(ctx, http.MethodGet, common.EncodeURLValues(repo+GithubAPIEndpoint, vals), headers, nil, verbose)
+		if err != nil {
+			return nil, err
+		}
+
+		var g ghError
+		if err := json.Unmarshal(contents, &g); err == nil && g.Message != "" {
+			return nil, fmt.Errorf("GitHub error message: %q Status: %s", g.Message, g.Status)
+		}
+
+		var resp []Contributor
+		if err := json.Unmarshal(contents, &resp); err != nil {
+			return nil, err
+		}
+
+		contributors = append(contributors, resp...)
+		if len(resp) < defaultGithubAPIPerPageLimit {
+			return contributors, nil
+		}
+	}
 }
 
 // GetDocumentationAttributes returns specific attributes for a file template
@@ -437,7 +416,7 @@ func GetPackageName(name string, capital bool) string {
 		i = len(newStrings) - 1
 	}
 	if capital {
-		return strings.Title(newStrings[i])
+		return cases.Title(language.English).String(strings.ReplaceAll(newStrings[i], "_", " "))
 	}
 	return newStrings[i]
 }
@@ -458,14 +437,14 @@ func GetGoDocURL(name string) string {
 
 // UpdateDocumentation generates or updates readme/documentation files across
 // the codebase
-func UpdateDocumentation(details DocumentationDetails) error {
+func UpdateDocumentation(details DocumentationDetails) {
 	for i := range details.Directories {
-		cutset := details.Directories[i][len(repoDir):]
-		if cutset != "" && cutset[0] == os.PathSeparator {
-			cutset = cutset[1:]
+		cutSet := details.Directories[i][len(repoDir):]
+		if cutSet != "" && cutSet[0] == os.PathSeparator {
+			cutSet = cutSet[1:]
 		}
 
-		data := strings.Split(cutset, string(os.PathSeparator))
+		data := strings.Split(cutSet, string(os.PathSeparator))
 
 		var temp []string
 		for x := range data {
@@ -485,46 +464,145 @@ func UpdateDocumentation(details DocumentationDetails) error {
 			name = strings.Join(temp, " ")
 		}
 
-		if IsExcluded(name, details.Config.Exclusions.Files) {
+		if slices.Contains(details.Config.Exclusions.Files, name) {
 			if verbose {
 				fmt.Println("Excluding file:", name)
 			}
 			continue
 		}
-
+		if strings.Contains(name, engineFolder) {
+			d, err := os.ReadDir(details.Directories[i])
+			if err != nil {
+				fmt.Println("Excluding file:", err)
+			}
+			for x := range d {
+				nameSplit := strings.Split(d[x].Name(), ".go")
+				engineTemplateName := engineFolder + " " + nameSplit[0]
+				if details.Tmpl.Lookup(engineTemplateName) == nil {
+					fmt.Printf("Template not found for path %s create new template with {{define \"%s\" -}} TEMPLATE HERE {{end}}\n",
+						details.Directories[i],
+						name)
+					continue
+				}
+				err = runTemplate(details, filepath.Join(details.Directories[i], nameSplit[0]+".md"), engineTemplateName)
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+			continue
+		}
 		if details.Tmpl.Lookup(name) == nil {
 			fmt.Printf("Template not found for path %s create new template with {{define \"%s\" -}} TEMPLATE HERE {{end}}\n",
 				details.Directories[i],
 				name)
 			continue
 		}
-
 		var mainPath string
-		if name == LicenseFile || name == ContributorFile {
+		switch name {
+		case LicenseFile, ContributorFile:
 			mainPath = details.Directories[i]
-		} else {
+		default:
 			mainPath = filepath.Join(details.Directories[i], "README.md")
 		}
 
-		err := os.Remove(mainPath)
-		if err != nil && !(strings.Contains(err.Error(), "no such file or directory") ||
-			strings.Contains(err.Error(), "The system cannot find the file specified.")) {
-			return err
+		if err := runTemplate(details, mainPath, name); err != nil {
+			log.Println(err)
+			continue
 		}
-
-		file, err := os.Create(mainPath)
-		if err != nil {
-			return err
-		}
-
-		attr := GetDocumentationAttributes(name, details.Contributors)
-
-		err = details.Tmpl.ExecuteTemplate(file, name, attr)
-		if err != nil {
-			file.Close()
-			return err
-		}
-		file.Close()
 	}
-	return nil
+}
+
+func runTemplate(details DocumentationDetails, mainPath, name string) error {
+	var output bytes.Buffer
+	attr := GetDocumentationAttributes(name, details.Contributors)
+	root := repoDir
+	if root == "" {
+		root = filepath.Dir(mainPath)
+	}
+	var err error
+	attr.RepoRoot, err = relativeRepoRoot(mainPath, root)
+	if err != nil {
+		return err
+	}
+	if err := details.Tmpl.ExecuteTemplate(&output, name, attr); err != nil {
+		return err
+	}
+
+	contents := normaliseMarkdown(output.String())
+	if err := os.Remove(mainPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(mainPath, []byte(contents), 0o644)
+}
+
+func relativeRepoRoot(mainPath, root string) (string, error) {
+	relativeRoot, err := filepath.Rel(filepath.Dir(mainPath), root)
+	if err != nil {
+		return "", fmt.Errorf("cannot determine repository root for %s: %w", mainPath, err)
+	}
+	return filepath.ToSlash(relativeRoot), nil
+}
+
+var markdownParser = goldmark.New().Parser()
+
+func normaliseMarkdown(contents string) string {
+	contents = strings.ReplaceAll(contents, "\r\n", "\n")
+	code := markdownCodeLines([]byte(contents))
+	lines := strings.Split(contents, "\n")
+	output := lines[:0]
+	previousBlank := false
+	for i, line := range lines {
+		if code[i] {
+			output = append(output, line)
+			previousBlank = false
+			continue
+		}
+		line = strings.TrimRight(expandTabs(line), " ")
+		blank := line == ""
+		if blank && previousBlank {
+			continue
+		}
+		output = append(output, line)
+		previousBlank = blank
+	}
+	return strings.TrimRight(strings.Join(output, "\n"), "\n") + "\n"
+}
+
+// markdownCodeLines returns the indexes of lines that hold fenced or indented code block content.
+func markdownCodeLines(source []byte) map[int]bool {
+	code := make(map[int]bool)
+	doc := markdownParser.Parse(text.NewReader(source))
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch n.(type) {
+		case *ast.FencedCodeBlock, *ast.CodeBlock:
+			segments := n.Lines()
+			for i := range segments.Len() {
+				code[bytes.Count(source[:segments.At(i).Start], []byte("\n"))] = true
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return code
+}
+
+func expandTabs(line string) string {
+	if !strings.Contains(line, "\t") {
+		return line
+	}
+	var b strings.Builder
+	column := 0
+	for _, r := range line {
+		if r == '\t' {
+			n := 4 - column%4
+			b.WriteString(strings.Repeat(" ", n))
+			column += n
+			continue
+		}
+		b.WriteRune(r)
+		column++
+	}
+	return b.String()
 }

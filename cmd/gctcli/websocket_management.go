@@ -1,26 +1,20 @@
 package main
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/thrasher-corp/gocryptotrader/gctrpc"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v2"
 )
 
-var websocketManagerCommand = cli.Command{
+var websocketManagerCommand = &cli.Command{
 	Name:      "websocket",
 	Usage:     "execute websocket management command",
-	ArgsUsage: "<command> <args>",
-	Subcommands: []cli.Command{
+	ArgsUsage: commandArgsUsage,
+	Subcommands: []*cli.Command{
 		{
 			Name:  "getinfo",
 			Usage: "returns all exchange websocket information",
 			Flags: []cli.Flag{
-				cli.StringFlag{
-					Name:  "exchange",
-					Usage: "the exchange to act on",
-				},
+				requiredExchangeFlag,
 			},
 			Action: getwebsocketInfo,
 		},
@@ -28,24 +22,19 @@ var websocketManagerCommand = cli.Command{
 			Name:  "disable",
 			Usage: "disables websocket connection for an exchange",
 			Flags: []cli.Flag{
-				cli.StringFlag{
-					Name:  "exchange",
-					Usage: "the exchange to act on",
-				},
+				requiredExchangeFlag,
 			},
 			Action: enableDisableWebsocket,
 		},
 		{
-			Name:  "enable",
+			Name:  enableFlagName,
 			Usage: "enables websocket connection for an exchange",
 			Flags: []cli.Flag{
-				cli.StringFlag{
-					Name:  "exchange",
-					Usage: "the exchange to act on",
-				},
-				cli.BoolTFlag{
-					Name:   "enable",
+				requiredExchangeFlag,
+				&cli.BoolFlag{
+					Name:   enableFlagName,
 					Hidden: true,
+					Value:  true,
 				},
 			},
 			Action: enableDisableWebsocket,
@@ -54,10 +43,7 @@ var websocketManagerCommand = cli.Command{
 			Name:  "getsubs",
 			Usage: "returns current subscriptions for an exchange",
 			Flags: []cli.Flag{
-				cli.StringFlag{
-					Name:  "exchange",
-					Usage: "the exchange to act on",
-				},
+				requiredExchangeFlag,
 			},
 			Action: getSubscriptions,
 		},
@@ -65,13 +51,10 @@ var websocketManagerCommand = cli.Command{
 			Name:  "setproxy",
 			Usage: "sets exchange websocket proxy, flushes and reroutes connection",
 			Flags: []cli.Flag{
-				cli.StringFlag{
-					Name:  "exchange",
-					Usage: "the exchange to act on",
-				},
-				cli.StringFlag{
+				requiredExchangeFlag,
+				&cli.StringFlag{
 					Name:  "proxy",
-					Usage: "proxy address to change to, if proxy string is not set, this will stop the utilization of the prior set proxy.",
+					Usage: "proxy address to change to, if proxy string is not set, this will stop the utilisation of the prior set proxy.",
 				},
 			},
 			Action: setProxy,
@@ -80,11 +63,8 @@ var websocketManagerCommand = cli.Command{
 			Name:  "seturl",
 			Usage: "sets exchange websocket endpoint URL and resets the websocket connection",
 			Flags: []cli.Flag{
-				cli.StringFlag{
-					Name:  "exchange",
-					Usage: "the exchange to act on",
-				},
-				cli.StringFlag{
+				requiredExchangeFlag,
+				&cli.StringFlag{
 					Name:  "url",
 					Usage: "url string to change to, an empty string will set it back to the packaged defined default",
 				},
@@ -95,30 +75,19 @@ var websocketManagerCommand = cli.Command{
 }
 
 func getwebsocketInfo(c *cli.Context) error {
-	if c.NArg() == 0 && c.NumFlags() == 0 {
+	if c.NumFlags() == 0 {
 		return cli.ShowSubcommandHelp(c)
 	}
 
-	var exchange string
-	if c.IsSet("exchange") {
-		exchange = c.String("exchange")
-	} else {
-		exchange = c.Args().First()
-	}
-
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
-	}
-
-	conn, err := setupClient()
+	conn, cancel, err := setupClient(c)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer closeConn(conn, cancel)
 
-	client := gctrpc.NewGoCryptoTraderClient(conn)
-	result, err := client.WebsocketGetInfo(context.Background(),
-		&gctrpc.WebsocketGetInfoRequest{Exchange: exchange})
+	client := gctrpc.NewGoCryptoTraderServiceClient(conn)
+	result, err := client.WebsocketGetInfo(c.Context,
+		&gctrpc.WebsocketGetInfoRequest{Exchange: c.String(exchangeFlagName)})
 	if err != nil {
 		return err
 	}
@@ -127,31 +96,19 @@ func getwebsocketInfo(c *cli.Context) error {
 }
 
 func enableDisableWebsocket(c *cli.Context) error {
-	enable := c.BoolT("enable")
-	if c.NArg() == 0 && c.NumFlags() == 0 {
+	if c.NumFlags() == 0 {
 		return cli.ShowSubcommandHelp(c)
 	}
 
-	var exchange string
-	if c.IsSet("exchange") {
-		exchange = c.String("exchange")
-	} else {
-		exchange = c.Args().First()
-	}
-
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
-	}
-
-	conn, err := setupClient()
+	conn, cancel, err := setupClient(c)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer closeConn(conn, cancel)
 
-	client := gctrpc.NewGoCryptoTraderClient(conn)
-	result, err := client.WebsocketSetEnabled(context.Background(),
-		&gctrpc.WebsocketSetEnabledRequest{Exchange: exchange, Enable: enable})
+	client := gctrpc.NewGoCryptoTraderServiceClient(conn)
+	result, err := client.WebsocketSetEnabled(c.Context,
+		&gctrpc.WebsocketSetEnabledRequest{Exchange: c.String(exchangeFlagName), Enable: c.Bool(enableFlagName)})
 	if err != nil {
 		return err
 	}
@@ -160,30 +117,19 @@ func enableDisableWebsocket(c *cli.Context) error {
 }
 
 func getSubscriptions(c *cli.Context) error {
-	if c.NArg() == 0 && c.NumFlags() == 0 {
+	if c.NumFlags() == 0 {
 		return cli.ShowSubcommandHelp(c)
 	}
 
-	var exchange string
-	if c.IsSet("exchange") {
-		exchange = c.String("exchange")
-	} else {
-		exchange = c.Args().First()
-	}
-
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
-	}
-
-	conn, err := setupClient()
+	conn, cancel, err := setupClient(c)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer closeConn(conn, cancel)
 
-	client := gctrpc.NewGoCryptoTraderClient(conn)
-	result, err := client.WebsocketGetSubscriptions(context.Background(),
-		&gctrpc.WebsocketGetSubscriptionsRequest{Exchange: exchange})
+	client := gctrpc.NewGoCryptoTraderServiceClient(conn)
+	result, err := client.WebsocketGetSubscriptions(c.Context,
+		&gctrpc.WebsocketGetSubscriptionsRequest{Exchange: c.String(exchangeFlagName)})
 	if err != nil {
 		return err
 	}
@@ -192,37 +138,19 @@ func getSubscriptions(c *cli.Context) error {
 }
 
 func setProxy(c *cli.Context) error {
-	if c.NArg() == 0 && c.NumFlags() == 0 {
+	if c.NumFlags() == 0 {
 		return cli.ShowSubcommandHelp(c)
 	}
 
-	var exchange string
-	if c.IsSet("exchange") {
-		exchange = c.String("exchange")
-	} else {
-		exchange = c.Args().First()
-	}
-
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
-	}
-
-	var proxy string
-	if c.IsSet("proxy") {
-		proxy = c.String("proxy")
-	} else {
-		proxy = c.Args().Get(1)
-	}
-
-	conn, err := setupClient()
+	conn, cancel, err := setupClient(c)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer closeConn(conn, cancel)
 
-	client := gctrpc.NewGoCryptoTraderClient(conn)
-	result, err := client.WebsocketSetProxy(context.Background(),
-		&gctrpc.WebsocketSetProxyRequest{Exchange: exchange, Proxy: proxy})
+	client := gctrpc.NewGoCryptoTraderServiceClient(conn)
+	result, err := client.WebsocketSetProxy(c.Context,
+		&gctrpc.WebsocketSetProxyRequest{Exchange: c.String(exchangeFlagName), Proxy: c.String("proxy")})
 	if err != nil {
 		return err
 	}
@@ -231,37 +159,19 @@ func setProxy(c *cli.Context) error {
 }
 
 func setURL(c *cli.Context) error {
-	if c.NArg() == 0 && c.NumFlags() == 0 {
+	if c.NumFlags() == 0 {
 		return cli.ShowSubcommandHelp(c)
 	}
 
-	var exchange string
-	if c.IsSet("exchange") {
-		exchange = c.String("exchange")
-	} else {
-		exchange = c.Args().First()
-	}
-
-	if !validExchange(exchange) {
-		return fmt.Errorf("[%s] is not a valid exchange", exchange)
-	}
-
-	var url string
-	if c.IsSet("url") {
-		url = c.String("url")
-	} else {
-		url = c.Args().Get(1)
-	}
-
-	conn, err := setupClient()
+	conn, cancel, err := setupClient(c)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer closeConn(conn, cancel)
 
-	client := gctrpc.NewGoCryptoTraderClient(conn)
-	result, err := client.WebsocketSetURL(context.Background(),
-		&gctrpc.WebsocketSetURLRequest{Exchange: exchange, Url: url})
+	client := gctrpc.NewGoCryptoTraderServiceClient(conn)
+	result, err := client.WebsocketSetURL(c.Context,
+		&gctrpc.WebsocketSetURLRequest{Exchange: c.String(exchangeFlagName), Url: c.String("url")})
 	if err != nil {
 		return err
 	}

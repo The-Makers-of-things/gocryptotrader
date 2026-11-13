@@ -3,33 +3,35 @@ package slippage
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/bitstamp"
 	gctorder "github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/types/decimal"
 )
 
 func TestRandomSlippage(t *testing.T) {
 	t.Parallel()
-	resp := EstimateSlippagePercentage(80, 100)
-	if resp < 0.8 || resp > 1 {
-		t.Error("expected result > 0.8 and < 100")
-	}
+	resp := EstimateSlippagePercentage(decimal.NewFromInt(80), decimal.NewFromInt(100))
+	assert.True(t, resp.GreaterThanOrEqual(decimal.MustFromFloat(0.8)), "result should be greater than or equal to 0.8")
+	assert.True(t, resp.LessThan(decimal.NewFromInt(1)), "result should be less than 1")
 }
 
 func TestCalculateSlippageByOrderbook(t *testing.T) {
 	t.Parallel()
-	b := bitstamp.Bitstamp{}
+	b := bitstamp.Exchange{}
 	b.SetDefaults()
-	cp := currency.NewPair(currency.BTC, currency.USD)
-	ob, err := b.FetchOrderbook(cp, asset.Spot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	amountOfFunds := 1000.0
-	feeRate := 0.03
-	price, amount := CalculateSlippageByOrderbook(ob, gctorder.Buy, amountOfFunds, feeRate)
-	if price*amount+(price*amount*feeRate) > amountOfFunds {
-		t.Error("order size must be less than funds")
-	}
+
+	cp := currency.NewBTCUSD()
+	ob, err := b.UpdateOrderbook(t.Context(), cp, asset.Spot)
+	require.NoError(t, err, "UpdateOrderbook must not error")
+
+	amountOfFunds := decimal.NewFromInt(1000)
+	feeRate := decimal.MustFromFloat(0.03)
+	price, amount, err := CalculateSlippageByOrderbook(ob, gctorder.Buy, amountOfFunds, feeRate)
+	require.NoError(t, err, "CalculateSlippageByOrderbook must not error")
+	orderSize := price.Mul(amount).Add(price.Mul(amount).Mul(feeRate))
+	assert.True(t, orderSize.LessThan(amountOfFunds), "order size should be less than funds")
 }

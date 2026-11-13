@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,52 +10,84 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pquerna/otp/totp"
 	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/common/file"
+	"github.com/thrasher-corp/gocryptotrader/config"
 	"github.com/thrasher-corp/gocryptotrader/currency"
 	"github.com/thrasher-corp/gocryptotrader/dispatch"
 	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/account"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
-	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/binance"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/binanceus"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/bitfinex"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/bitflyer"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/bithumb"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/bitstamp"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/btcmarkets"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/btse"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/bybit"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/coinbase"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/coinut"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/deposit"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/deribit"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/gateio"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/gemini"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/hitbtc"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/huobi"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/kraken"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/kucoin"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/lbank"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/mexc"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/okx"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/poloniex"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/stats"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/ticker"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/yobit"
 	"github.com/thrasher-corp/gocryptotrader/log"
-	"github.com/thrasher-corp/gocryptotrader/portfolio"
 )
 
 var (
-	errCertExpired     = errors.New("gRPC TLS certificate has expired")
-	errCertDataIsNil   = errors.New("gRPC TLS certificate PEM data is nil")
-	errCertTypeInvalid = errors.New("gRPC TLS certificate type is invalid")
+	errCertExpired            = errors.New("gRPC TLS certificate has expired")
+	errCertDataIsNil          = errors.New("gRPC TLS certificate PEM data is nil")
+	errCertTypeInvalid        = errors.New("gRPC TLS certificate type is invalid")
+	errSubsystemNotFound      = errors.New("subsystem not found")
+	errGRPCManagementFault    = errors.New("cannot manage GRPC subsystem via GRPC. Please manually change your config")
+	errRuntimeShutdownRequest = errors.New("cannot enable subsystem while engine shutdown is in progress")
+	errNilBot                 = errors.New("received nil engine bot")
+)
+
+const (
+	defaultPPROFListenAddress = "localhost:8085"
 )
 
 // GetSubsystemsStatus returns the status of various subsystems
 func (bot *Engine) GetSubsystemsStatus() map[string]bool {
-	systems := make(map[string]bool)
-	systems["communications"] = bot.CommsManager.Started()
-	systems["internet_monitor"] = bot.ConnectionManager.Started()
-	systems["orders"] = bot.OrderManager.Started()
-	systems["portfolio"] = bot.PortfolioManager.Started()
-	systems["ntp_timekeeper"] = bot.NTPManager.Started()
-	systems["database"] = bot.DatabaseManager.Started()
-	systems["exchange_syncer"] = bot.Settings.EnableExchangeSyncManager
-	systems["grpc"] = bot.Settings.EnableGRPC
-	systems["grpc_proxy"] = bot.Settings.EnableGRPCProxy
-	systems["gctscript"] = bot.GctScriptManager.Started()
-	systems["deprecated_rpc"] = bot.Settings.EnableDeprecatedRPC
-	systems["websocket_rpc"] = bot.Settings.EnableWebsocketRPC
-	systems["dispatch"] = dispatch.IsRunning()
-	return systems
+	return map[string]bool{
+		CommunicationsManagerName:     bot.CommunicationsManager.IsRunning(),
+		ConnectionManagerName:         bot.connectionManager.IsRunning(),
+		OrderManagerName:              bot.OrderManager.IsRunning(),
+		PortfolioManagerName:          bot.portfolioManager.IsRunning(),
+		NTPManagerName:                bot.ntpManager.IsRunning(),
+		DatabaseConnectionManagerName: bot.DatabaseManager.IsRunning(),
+		SyncManagerName:               bot.Settings.EnableExchangeSyncManager,
+		grpcName:                      bot.Settings.EnableGRPC,
+		grpcProxyName:                 bot.Settings.EnableGRPCProxy,
+		dispatch.Name:                 dispatch.IsRunning(),
+		dataHistoryManagerName:        bot.dataHistoryManager.IsRunning(),
+		CurrencyStateManagementName:   bot.currencyStateManager.IsRunning(),
+	}
 }
 
 // RPCEndpoint stores an RPC endpoint status and addr
@@ -64,78 +97,182 @@ type RPCEndpoint struct {
 }
 
 // GetRPCEndpoints returns a list of RPC endpoints and their listen addrs
-func GetRPCEndpoints() map[string]RPCEndpoint {
-	endpoints := make(map[string]RPCEndpoint)
-	endpoints["grpc"] = RPCEndpoint{
-		Started:    Bot.Settings.EnableGRPC,
-		ListenAddr: "grpc://" + Bot.Config.RemoteControl.GRPC.ListenAddress,
+func (bot *Engine) GetRPCEndpoints() (map[string]RPCEndpoint, error) {
+	if bot.Config == nil {
+		return nil, errNilConfig
 	}
-	endpoints["grpc_proxy"] = RPCEndpoint{
-		Started:    Bot.Settings.EnableGRPCProxy,
-		ListenAddr: "http://" + Bot.Config.RemoteControl.GRPC.GRPCProxyListenAddress,
-	}
-	endpoints["deprecated_rpc"] = RPCEndpoint{
-		Started:    Bot.Settings.EnableDeprecatedRPC,
-		ListenAddr: "http://" + Bot.Config.RemoteControl.DeprecatedRPC.ListenAddress,
-	}
-	endpoints["websocket_rpc"] = RPCEndpoint{
-		Started:    Bot.Settings.EnableWebsocketRPC,
-		ListenAddr: "ws://" + Bot.Config.RemoteControl.WebsocketRPC.ListenAddress,
-	}
-	return endpoints
+	return map[string]RPCEndpoint{
+		grpcName: {
+			Started:    bot.Settings.EnableGRPC,
+			ListenAddr: "grpc://" + bot.Config.RemoteControl.GRPC.ListenAddress,
+		},
+		grpcProxyName: {
+			Started:    bot.Settings.EnableGRPCProxy,
+			ListenAddr: "https://" + bot.Config.RemoteControl.GRPC.GRPCProxyListenAddress,
+		},
+	}, nil
 }
 
 // SetSubsystem enables or disables an engine subsystem
-func (bot *Engine) SetSubsystem(subsys string, enable bool) error {
-	switch strings.ToLower(subsys) {
-	case "communications":
+func (bot *Engine) SetSubsystem(subSystemName string, enable bool) error {
+	if bot == nil {
+		return errNilBot
+	}
+
+	if bot.Config == nil {
+		return errNilConfig
+	}
+
+	if enable && bot.isRuntimeShutdownRequested() {
+		return errRuntimeShutdownRequest
+	}
+
+	runtimeCtx := context.Background()
+	if enable {
+		runtimeCtx = bot.EnsureRuntimeContext()
+	}
+
+	var err error
+	switch strings.ToLower(subSystemName) {
+	case CommunicationsManagerName:
 		if enable {
-			return bot.CommsManager.Start()
+			if bot.CommunicationsManager == nil {
+				communicationsConfig := bot.Config.GetCommunicationsConfig()
+				bot.CommunicationsManager, err = SetupCommunicationManager(&communicationsConfig)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.CommunicationsManager.Start()
 		}
-		return bot.CommsManager.Stop()
-	case "internet_monitor":
+		return bot.CommunicationsManager.Stop()
+	case ConnectionManagerName:
 		if enable {
-			return bot.ConnectionManager.Start(&bot.Config.ConnectionMonitor)
+			if bot.connectionManager == nil {
+				bot.connectionManager, err = setupConnectionManager(&bot.Config.ConnectionMonitor)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.connectionManager.Start()
 		}
-		return bot.CommsManager.Stop()
-	case "orders":
+		return bot.connectionManager.Stop()
+	case OrderManagerName:
 		if enable {
-			return bot.OrderManager.Start(bot)
+			if bot.OrderManager == nil {
+				bot.OrderManager, err = SetupOrderManager(bot.ExchangeManager, bot.CommunicationsManager, &bot.ServicesWG, &bot.Config.OrderManager)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.OrderManager.Start(runtimeCtx)
 		}
 		return bot.OrderManager.Stop()
-	case "portfolio":
+	case PortfolioManagerName:
 		if enable {
-			return bot.PortfolioManager.Start()
+			if bot.portfolioManager == nil {
+				bot.portfolioManager, err = setupPortfolioManager(bot.ExchangeManager, bot.Settings.PortfolioManagerDelay, bot.Config.Portfolio)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.portfolioManager.Start(runtimeCtx, &bot.ServicesWG)
 		}
-		return bot.OrderManager.Stop()
-	case "ntp_timekeeper":
+		return bot.portfolioManager.Stop()
+	case NTPManagerName:
 		if enable {
-			return bot.NTPManager.Start()
+			if bot.ntpManager == nil {
+				bot.ntpManager, err = setupNTPManager(
+					&bot.Config.NTPClient,
+					*bot.Config.Logging.Enabled,
+				)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.ntpManager.Start()
 		}
-		return bot.NTPManager.Stop()
-	case "database":
+		return bot.ntpManager.Stop()
+	case DatabaseConnectionManagerName:
 		if enable {
-			return bot.DatabaseManager.Start(bot)
+			if bot.DatabaseManager == nil {
+				bot.DatabaseManager, err = SetupDatabaseConnectionManager(&bot.Config.Database)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.DatabaseManager.Start(&bot.ServicesWG)
 		}
 		return bot.DatabaseManager.Stop()
-	case "exchange_syncer":
+	case SyncManagerName:
 		if enable {
-			bot.ExchangeCurrencyPairManager.Start()
+			if bot.currencyPairSyncer == nil {
+				cfg := bot.Config.SyncManagerConfig
+				cfg.SynchronizeTicker = bot.Settings.EnableTickerSyncing
+				cfg.SynchronizeOrderbook = bot.Settings.EnableOrderbookSyncing
+				cfg.SynchronizeContinuously = bot.Settings.SyncContinuously
+				cfg.SynchronizeTrades = bot.Settings.EnableTradeSyncing
+				cfg.Verbose = bot.Settings.Verbose || cfg.Verbose
+
+				if cfg.TimeoutREST != bot.Settings.SyncTimeoutREST &&
+					bot.Settings.SyncTimeoutREST != config.DefaultSyncerTimeoutREST {
+					cfg.TimeoutREST = bot.Settings.SyncTimeoutREST
+				}
+				if cfg.TimeoutWebsocket != bot.Settings.SyncTimeoutWebsocket &&
+					bot.Settings.SyncTimeoutWebsocket != config.DefaultSyncerTimeoutWebsocket {
+					cfg.TimeoutWebsocket = bot.Settings.SyncTimeoutWebsocket
+				}
+				if cfg.NumWorkers != bot.Settings.SyncWorkersCount &&
+					bot.Settings.SyncWorkersCount != config.DefaultSyncerWorkers {
+					cfg.NumWorkers = bot.Settings.SyncWorkersCount
+				}
+				bot.currencyPairSyncer, err = SetupSyncManager(
+					&cfg,
+					bot.ExchangeManager,
+					&bot.Config.RemoteControl,
+					bot.Settings.EnableWebsocketRoutine,
+				)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.currencyPairSyncer.Start(runtimeCtx)
 		}
-		bot.ExchangeCurrencyPairManager.Stop()
-	case "dispatch":
+		return bot.currencyPairSyncer.Stop()
+	case dispatch.Name:
 		if enable {
 			return dispatch.Start(bot.Settings.DispatchMaxWorkerAmount, bot.Settings.DispatchJobsLimit)
 		}
 		return dispatch.Stop()
-	case "gctscript":
+	case grpcName, grpcProxyName:
+		return errGRPCManagementFault
+	case dataHistoryManagerName:
 		if enable {
-			return bot.GctScriptManager.Start(&bot.ServicesWG)
+			if bot.dataHistoryManager == nil {
+				bot.dataHistoryManager, err = SetupDataHistoryManager(bot.ExchangeManager, bot.DatabaseManager, &bot.Config.DataHistoryManager)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.dataHistoryManager.Start(runtimeCtx)
 		}
-		return bot.GctScriptManager.Stop()
+		return bot.dataHistoryManager.Stop()
+	case strings.ToLower(CurrencyStateManagementName):
+		if enable {
+			if bot.currencyStateManager == nil {
+				bot.currencyStateManager, err = SetupCurrencyStateManager(
+					bot.Config.CurrencyStateManager.Delay,
+					bot.ExchangeManager,
+				)
+				if err != nil {
+					return err
+				}
+			}
+			return bot.currencyStateManager.Start(runtimeCtx)
+		}
+		return bot.currencyStateManager.Stop()
 	}
-
-	return errors.New("subsystem not found")
+	return fmt.Errorf("%s: %w", subSystemName, errSubsystemNotFound)
 }
 
 // GetExchangeOTPs returns OTP codes for all exchanges which have a otpsecret
@@ -162,9 +299,9 @@ func (bot *Engine) GetExchangeOTPs() (map[string]string, error) {
 	return otpCodes, nil
 }
 
-// GetExchangeoOTPByName returns a OTP code for the desired exchange
+// GetExchangeOTPByName returns a OTP code for the desired exchange
 // if it exists
-func (bot *Engine) GetExchangeoOTPByName(exchName string) (string, error) {
+func (bot *Engine) GetExchangeOTPByName(exchName string) (string, error) {
 	for x := range bot.Config.Exchanges {
 		if !strings.EqualFold(bot.Config.Exchanges[x].Name, exchName) {
 			continue
@@ -179,11 +316,11 @@ func (bot *Engine) GetExchangeoOTPByName(exchName string) (string, error) {
 
 // GetAuthAPISupportedExchanges returns a list of auth api enabled exchanges
 func (bot *Engine) GetAuthAPISupportedExchanges() []string {
-	var exchangeNames []string
 	exchanges := bot.GetExchanges()
+	exchangeNames := make([]string, 0, len(exchanges))
 	for x := range exchanges {
-		if !exchanges[x].GetAuthenticatedAPISupport(exchange.RestAuthentication) &&
-			!exchanges[x].GetAuthenticatedAPISupport(exchange.WebsocketAuthentication) {
+		if !exchanges[x].IsRESTAuthenticationSupported() &&
+			!exchanges[x].IsWebsocketAuthenticationSupported() {
 			continue
 		}
 		exchangeNames = append(exchangeNames, exchanges[x].GetName())
@@ -193,18 +330,7 @@ func (bot *Engine) GetAuthAPISupportedExchanges() []string {
 
 // IsOnline returns whether or not the engine has Internet connectivity
 func (bot *Engine) IsOnline() bool {
-	return bot.ConnectionManager.IsOnline()
-}
-
-// GetAvailableExchanges returns a list of enabled exchanges
-func (bot *Engine) GetAvailableExchanges() []string {
-	var enExchanges []string
-	for x := range bot.Config.Exchanges {
-		if bot.Config.Exchanges[x].Enabled {
-			enExchanges = append(enExchanges, bot.Config.Exchanges[x].Name)
-		}
-	}
-	return enExchanges
+	return bot.connectionManager.IsOnline()
 }
 
 // GetAllAvailablePairs returns a list of all available pairs on either enabled
@@ -241,9 +367,9 @@ func (bot *Engine) GetSpecificAvailablePairs(enabledExchangesOnly, fiatPairs, in
 	for x := range supportedPairs {
 		if fiatPairs {
 			if supportedPairs[x].IsCryptoFiatPair() &&
-				!supportedPairs[x].ContainsCurrency(currency.USDT) ||
+				!supportedPairs[x].Contains(currency.USDT) ||
 				(includeUSDT &&
-					supportedPairs[x].ContainsCurrency(currency.USDT) &&
+					supportedPairs[x].Contains(currency.USDT) &&
 					supportedPairs[x].IsCryptoPair()) {
 				if pairList.Contains(supportedPairs[x], false) {
 					continue
@@ -269,7 +395,7 @@ func IsRelatablePairs(p1, p2 currency.Pair, includeUSDT bool) bool {
 		return true
 	}
 
-	var relatablePairs = GetRelatableCurrencies(p1, true, includeUSDT)
+	relatablePairs := GetRelatableCurrencies(p1, true, includeUSDT)
 	if p1.IsCryptoFiatPair() {
 		for x := range relatablePairs {
 			relatablePairs = append(relatablePairs,
@@ -293,18 +419,12 @@ func (bot *Engine) MapCurrenciesByExchange(p currency.Pairs, enabledExchangesOnl
 				continue
 			}
 
-			result, ok := currencyExchange[exchName]
-			if !ok {
-				var pairs []currency.Pair
-				pairs = append(pairs, p[x])
-				currencyExchange[exchName] = pairs
-			} else {
-				if result.Contains(p[x], false) {
-					continue
-				}
-				result = append(result, p[x])
-				currencyExchange[exchName] = result
+			result := currencyExchange[exchName]
+			if result.Contains(p[x], false) {
+				continue
 			}
+			result = append(result, p[x])
+			currencyExchange[exchName] = result
 		}
 	}
 	return currencyExchange
@@ -313,7 +433,7 @@ func (bot *Engine) MapCurrenciesByExchange(p currency.Pairs, enabledExchangesOnl
 // GetExchangeNamesByCurrency returns a list of exchanges supporting
 // a currency pair based on whether the exchange is enabled or not
 func (bot *Engine) GetExchangeNamesByCurrency(p currency.Pair, enabled bool, assetType asset.Item) []string {
-	var exchanges []string
+	exchanges := make([]string, 0, len(bot.Config.Exchanges))
 	for x := range bot.Config.Exchanges {
 		if enabled != bot.Config.Exchanges[x].Enabled {
 			continue
@@ -333,18 +453,14 @@ func (bot *Engine) GetExchangeNamesByCurrency(p currency.Pair, enabled bool, ass
 func GetRelatableCryptocurrencies(p currency.Pair) currency.Pairs {
 	var pairs currency.Pairs
 	cryptocurrencies := currency.GetCryptocurrencies()
-
 	for x := range cryptocurrencies {
 		newPair := currency.NewPair(p.Base, cryptocurrencies[x])
 		if newPair.IsInvalid() {
 			continue
 		}
-
-		if newPair.Base.Upper() == p.Base.Upper() &&
-			newPair.Quote.Upper() == p.Quote.Upper() {
+		if newPair.Equal(p) {
 			continue
 		}
-
 		if pairs.Contains(newPair, false) {
 			continue
 		}
@@ -361,12 +477,11 @@ func GetRelatableFiatCurrencies(p currency.Pair) currency.Pairs {
 
 	for x := range fiatCurrencies {
 		newPair := currency.NewPair(p.Base, fiatCurrencies[x])
-		if newPair.Base.Upper() == newPair.Quote.Upper() {
+		if newPair.Base.Equal(newPair.Quote) {
 			continue
 		}
 
-		if newPair.Base.Upper() == p.Base.Upper() &&
-			newPair.Quote.Upper() == p.Quote.Upper() {
+		if newPair.Equal(p) {
 			continue
 		}
 
@@ -397,17 +512,17 @@ func GetRelatableCurrencies(p currency.Pair, incOrig, incUSDT bool) currency.Pai
 		}
 
 		first := currency.GetTranslation(p.Base)
-		if first != p.Base {
+		if !first.Equal(p.Base) {
 			addPair(currency.NewPair(first, p.Quote))
 
 			second := currency.GetTranslation(p.Quote)
-			if second != p.Quote {
+			if !second.Equal(p.Quote) {
 				addPair(currency.NewPair(first, second))
 			}
 		}
 
 		second := currency.GetTranslation(p.Quote)
-		if second != p.Quote {
+		if !second.Equal(p.Quote) {
 			addPair(currency.NewPair(p.Base, second))
 		}
 	}
@@ -422,62 +537,12 @@ func GetRelatableCurrencies(p currency.Pair, incOrig, incUSDT bool) currency.Pai
 	return pairs
 }
 
-// GetSpecificOrderbook returns a specific orderbook given the currency,
-// exchangeName and assetType
-func (bot *Engine) GetSpecificOrderbook(p currency.Pair, exchangeName string, assetType asset.Item) (*orderbook.Base, error) {
-	exch := bot.GetExchangeByName(exchangeName)
-	if exch == nil {
-		return nil, ErrExchangeNotFound
-	}
-	return exch.FetchOrderbook(p, assetType)
-}
-
-// GetSpecificTicker returns a specific ticker given the currency,
-// exchangeName and assetType
-func (bot *Engine) GetSpecificTicker(p currency.Pair, exchangeName string, assetType asset.Item) (*ticker.Price, error) {
-	exch := bot.GetExchangeByName(exchangeName)
-	if exch == nil {
-		return nil, ErrExchangeNotFound
-	}
-	return exch.FetchTicker(p, assetType)
-}
-
-// GetCollatedExchangeAccountInfoByCoin collates individual exchange account
-// information and turns into into a map string of
-// exchange.AccountCurrencyInfo
-func GetCollatedExchangeAccountInfoByCoin(accounts []account.Holdings) map[currency.Code]account.Balance {
-	result := make(map[currency.Code]account.Balance)
-	for x := range accounts {
-		for y := range accounts[x].Accounts {
-			for z := range accounts[x].Accounts[y].Currencies {
-				currencyName := accounts[x].Accounts[y].Currencies[z].CurrencyName
-				avail := accounts[x].Accounts[y].Currencies[z].TotalValue
-				onHold := accounts[x].Accounts[y].Currencies[z].Hold
-				info, ok := result[currencyName]
-				if !ok {
-					accountInfo := account.Balance{
-						CurrencyName: currencyName,
-						Hold:         onHold,
-						TotalValue:   avail,
-					}
-					result[currencyName] = accountInfo
-				} else {
-					info.Hold += onHold
-					info.TotalValue += avail
-					result[currencyName] = info
-				}
-			}
-		}
-	}
-	return result
-}
-
 // GetExchangeHighestPriceByCurrencyPair returns the exchange with the highest
 // price for a given currency pair and asset type
 func GetExchangeHighestPriceByCurrencyPair(p currency.Pair, a asset.Item) (string, error) {
 	result := stats.SortExchangesByPrice(p, a, true)
 	if len(result) == 0 {
-		return "", fmt.Errorf("no stats for supplied currency pair and asset type")
+		return "", errors.New("no stats for supplied currency pair and asset type")
 	}
 
 	return result[0].Exchange, nil
@@ -488,94 +553,10 @@ func GetExchangeHighestPriceByCurrencyPair(p currency.Pair, a asset.Item) (strin
 func GetExchangeLowestPriceByCurrencyPair(p currency.Pair, assetType asset.Item) (string, error) {
 	result := stats.SortExchangesByPrice(p, assetType, false)
 	if len(result) == 0 {
-		return "", fmt.Errorf("no stats for supplied currency pair and asset type")
+		return "", errors.New("no stats for supplied currency pair and asset type")
 	}
 
 	return result[0].Exchange, nil
-}
-
-// SeedExchangeAccountInfo seeds account info
-func SeedExchangeAccountInfo(accounts []account.Holdings) {
-	if len(accounts) == 0 {
-		return
-	}
-
-	port := portfolio.GetPortfolio()
-
-	for x := range accounts {
-		exchangeName := accounts[x].Exchange
-		var currencies []account.Balance
-		for y := range accounts[x].Accounts {
-			for z := range accounts[x].Accounts[y].Currencies {
-				var update bool
-				for i := range currencies {
-					if accounts[x].Accounts[y].Currencies[z].CurrencyName == currencies[i].CurrencyName {
-						currencies[i].Hold += accounts[x].Accounts[y].Currencies[z].Hold
-						currencies[i].TotalValue += accounts[x].Accounts[y].Currencies[z].TotalValue
-						update = true
-					}
-				}
-
-				if update {
-					continue
-				}
-
-				currencies = append(currencies, account.Balance{
-					CurrencyName: accounts[x].Accounts[y].Currencies[z].CurrencyName,
-					TotalValue:   accounts[x].Accounts[y].Currencies[z].TotalValue,
-					Hold:         accounts[x].Accounts[y].Currencies[z].Hold,
-				})
-			}
-		}
-
-		for x := range currencies {
-			currencyName := currencies[x].CurrencyName
-			total := currencies[x].TotalValue
-
-			if !port.ExchangeAddressExists(exchangeName, currencyName) {
-				if total <= 0 {
-					continue
-				}
-
-				log.Debugf(log.PortfolioMgr, "Portfolio: Adding new exchange address: %s, %s, %f, %s\n",
-					exchangeName,
-					currencyName,
-					total,
-					portfolio.PortfolioAddressExchange)
-
-				port.Addresses = append(
-					port.Addresses,
-					portfolio.Address{Address: exchangeName,
-						CoinType:    currencyName,
-						Balance:     total,
-						Description: portfolio.PortfolioAddressExchange})
-			} else {
-				if total <= 0 {
-					log.Debugf(log.PortfolioMgr, "Portfolio: Removing %s %s entry.\n",
-						exchangeName,
-						currencyName)
-					port.RemoveExchangeAddress(exchangeName, currencyName)
-				} else {
-					balance, ok := port.GetAddressBalance(exchangeName,
-						portfolio.PortfolioAddressExchange,
-						currencyName)
-					if !ok {
-						continue
-					}
-
-					if balance != total {
-						log.Debugf(log.PortfolioMgr, "Portfolio: Updating %s %s entry with balance %f.\n",
-							exchangeName,
-							currencyName,
-							total)
-						port.UpdateExchangeAddressBalance(exchangeName,
-							currencyName,
-							total)
-					}
-				}
-			}
-		}
-	}
 }
 
 // GetCryptocurrenciesByExchange returns a list of cryptocurrencies the exchange supports
@@ -590,111 +571,179 @@ func (bot *Engine) GetCryptocurrenciesByExchange(exchangeName string, enabledExc
 		}
 
 		var err error
-		var pairs []currency.Pair
+		var pairs currency.Pairs
 		if enabledPairs {
 			pairs, err = bot.Config.GetEnabledPairs(exchangeName, assetType)
-			if err != nil {
-				return nil, err
-			}
 		} else {
 			pairs, err = bot.Config.GetAvailablePairs(exchangeName, assetType)
-			if err != nil {
-				return nil, err
-			}
 		}
-
-		for y := range pairs {
-			if pairs[y].Base.IsCryptocurrency() &&
-				!common.StringDataCompareInsensitive(cryptocurrencies, pairs[y].Base.String()) {
-				cryptocurrencies = append(cryptocurrencies, pairs[y].Base.String())
-			}
-
-			if pairs[y].Quote.IsCryptocurrency() &&
-				!common.StringDataCompareInsensitive(cryptocurrencies, pairs[y].Quote.String()) {
-				cryptocurrencies = append(cryptocurrencies, pairs[y].Quote.String())
-			}
+		if err != nil {
+			return nil, err
 		}
+		cryptocurrencies = pairs.GetCrypto().Strings()
+		break
 	}
 	return cryptocurrencies, nil
 }
 
 // GetCryptocurrencyDepositAddressesByExchange returns the cryptocurrency deposit addresses for a particular exchange
-func (bot *Engine) GetCryptocurrencyDepositAddressesByExchange(exchName string) (map[string]string, error) {
+func (bot *Engine) GetCryptocurrencyDepositAddressesByExchange(exchName string) (map[string][]deposit.Address, error) {
 	if bot.DepositAddressManager != nil {
-		return bot.DepositAddressManager.GetDepositAddressesByExchange(exchName)
+		if bot.DepositAddressManager.IsSynced() {
+			return bot.DepositAddressManager.GetDepositAddressesByExchange(exchName)
+		}
+		return nil, errors.New("deposit address manager has not yet synced all exchange deposit addresses")
 	}
 
-	result := bot.GetExchangeCryptocurrencyDepositAddresses()
+	result := bot.GetAllExchangeCryptocurrencyDepositAddresses()
 	r, ok := result[exchName]
 	if !ok {
-		return nil, ErrExchangeNotFound
+		return nil, fmt.Errorf("%s %w", exchName, ErrExchangeNotFound)
 	}
 	return r, nil
 }
 
 // GetExchangeCryptocurrencyDepositAddress returns the cryptocurrency deposit address for a particular
 // exchange
-func (bot *Engine) GetExchangeCryptocurrencyDepositAddress(exchName, accountID string, item currency.Code) (string, error) {
-	if bot.DepositAddressManager != nil {
-		return bot.DepositAddressManager.GetDepositAddressByExchange(exchName, item)
+func (bot *Engine) GetExchangeCryptocurrencyDepositAddress(ctx context.Context, exchName, accountID, chain string, item currency.Code, bypassCache bool) (*deposit.Address, error) {
+	if bot.DepositAddressManager != nil &&
+		bot.DepositAddressManager.IsSynced() &&
+		!bypassCache {
+		resp, err := bot.DepositAddressManager.GetDepositAddressByExchangeAndCurrency(exchName, chain, item)
+		return &resp, err
 	}
-
-	exch := bot.GetExchangeByName(exchName)
-	if exch == nil {
-		return "", ErrExchangeNotFound
+	exch, err := bot.GetExchangeByName(exchName)
+	if err != nil {
+		return nil, err
 	}
-	return exch.GetDepositAddress(item, accountID)
+	return exch.GetDepositAddress(ctx, item, accountID, chain)
 }
 
-// GetExchangeCryptocurrencyDepositAddresses obtains an exchanges deposit cryptocurrency list
-func (bot *Engine) GetExchangeCryptocurrencyDepositAddresses() map[string]map[string]string {
-	result := make(map[string]map[string]string)
+// GetAllExchangeCryptocurrencyDepositAddresses obtains an exchanges deposit cryptocurrency list
+func (bot *Engine) GetAllExchangeCryptocurrencyDepositAddresses() map[string]ExchangeDepositAddresses {
+	runtimeCtx := bot.getRuntimeContext()
+	result := make(map[string]ExchangeDepositAddresses)
 	exchanges := bot.GetExchanges()
+	var depositSyncer sync.WaitGroup
+	depositSyncer.Add(len(exchanges))
+	var m sync.Mutex
 	for x := range exchanges {
-		exchName := exchanges[x].GetName()
-		if !exchanges[x].GetAuthenticatedAPISupport(exchange.RestAuthentication) {
-			if bot.Settings.Verbose {
-				log.Debugf(log.ExchangeSys, "GetExchangeCryptocurrencyDepositAddresses: Skippping %s due to disabled authenticated API support.\n", exchName)
+		go func(exch exchange.IBotExchange) {
+			defer depositSyncer.Done()
+			exchName := exch.GetName()
+			if !exch.IsRESTAuthenticationSupported() {
+				if bot.Settings.Verbose {
+					log.Debugf(log.ExchangeSys, "GetAllExchangeCryptocurrencyDepositAddresses: Skippping %s due to disabled authenticated API support.\n", exchName)
+				}
+				return
 			}
-			continue
-		}
 
-		cryptoCurrencies, err := bot.GetCryptocurrenciesByExchange(exchName, true, true, asset.Spot)
-		if err != nil {
-			log.Debugf(log.ExchangeSys, "%s failed to get cryptocurrency deposit addresses. Err: %s\n", exchName, err)
-			continue
-		}
-
-		cryptoAddr := make(map[string]string)
-		for y := range cryptoCurrencies {
-			cryptocurrency := cryptoCurrencies[y]
-			depositAddr, err := exchanges[x].GetDepositAddress(currency.NewCode(cryptocurrency), "")
+			cryptoCurrencies, err := bot.GetCryptocurrenciesByExchange(exchName, true, true, asset.Spot)
 			if err != nil {
-				log.Errorf(log.Global, "%s failed to get cryptocurrency deposit addresses. Err: %s\n", exchName, err)
-				continue
+				log.Errorf(log.ExchangeSys, "%s failed to get cryptocurrency deposit addresses. Err: %s\n", exchName, err)
+				return
 			}
-			cryptoAddr[cryptocurrency] = depositAddr
-		}
-		result[exchName] = cryptoAddr
+			supportsMultiChain := exch.GetBase().Features.Supports.RESTCapabilities.MultiChainDeposits
+			requiresChainSet := exch.GetBase().Features.Supports.RESTCapabilities.MultiChainDepositRequiresChainSet
+			cryptoAddr := make(map[string][]deposit.Address)
+			for y := range cryptoCurrencies {
+				cryptocurrency := cryptoCurrencies[y]
+				isSingular := false
+				var depositAddrs []deposit.Address
+				if supportsMultiChain {
+					availChains, err := exch.GetAvailableTransferChains(runtimeCtx, currency.NewCode(cryptocurrency))
+					if err != nil {
+						log.Errorf(log.Global, "%s failed to get cryptocurrency available transfer chains. Err: %s\n", exchName, err)
+						continue
+					}
+					if len(availChains) > 0 {
+						// store the default non-chain specified address for a specified crypto
+						chainContainsItself := common.StringSliceCompareInsensitive(availChains, cryptocurrency)
+						if !chainContainsItself && !requiresChainSet {
+							depositAddr, err := exch.GetDepositAddress(runtimeCtx, currency.NewCode(cryptocurrency), "", "")
+							if err != nil {
+								log.Errorf(log.Global, "%s failed to get cryptocurrency deposit address for %s. Err: %s\n",
+									exchName,
+									cryptocurrency,
+									err)
+								continue
+							}
+							depositAddr.Chain = cryptocurrency
+							depositAddrs = append(depositAddrs, *depositAddr)
+						}
+						for z := range availChains {
+							if availChains[z] == "" {
+								log.Warnf(log.Global, "%s %s available transfer chain is populated with an empty string\n",
+									exchName,
+									cryptocurrency)
+								continue
+							}
+
+							depositAddr, err := exch.GetDepositAddress(runtimeCtx, currency.NewCode(cryptocurrency), "", availChains[z])
+							if err != nil {
+								log.Errorf(log.Global, "%s failed to get cryptocurrency deposit address for %s [chain %s]. Err: %s\n",
+									exchName,
+									cryptocurrency,
+									availChains[z],
+									err)
+								continue
+							}
+							depositAddr.Chain = availChains[z]
+							depositAddrs = append(depositAddrs, *depositAddr)
+						}
+					} else {
+						// cryptocurrency doesn't support multichain transfers
+						isSingular = true
+					}
+				}
+
+				if !supportsMultiChain || isSingular {
+					depositAddr, err := exch.GetDepositAddress(runtimeCtx, currency.NewCode(cryptocurrency), "", "")
+					if err != nil {
+						log.Errorf(log.Global, "%s failed to get cryptocurrency deposit address for %s. Err: %s\n",
+							exchName,
+							cryptocurrency,
+							err)
+						continue
+					}
+					depositAddrs = append(depositAddrs, *depositAddr)
+				}
+				cryptoAddr[cryptocurrency] = depositAddrs
+			}
+			m.Lock()
+			result[exchName] = cryptoAddr
+			m.Unlock()
+		}(exchanges[x])
+	}
+	depositSyncer.Wait()
+	if len(result) > 0 {
+		log.Infoln(log.Global, "Deposit addresses synced")
 	}
 	return result
 }
 
-// FormatCurrency is a method that formats and returns a currency pair
-// based on the user currency display preferences
-func (bot *Engine) FormatCurrency(p currency.Pair) currency.Pair {
-	return p.Format(bot.Config.Currency.CurrencyPairFormat.Delimiter,
-		bot.Config.Currency.CurrencyPairFormat.Uppercase)
-}
-
 // GetExchangeNames returns a list of enabled or disabled exchanges
 func (bot *Engine) GetExchangeNames(enabledOnly bool) []string {
-	exchangeNames := bot.GetAvailableExchanges()
-	if enabledOnly {
-		return exchangeNames
+	exchanges := bot.GetExchanges()
+	var response []string
+	for i := range exchanges {
+		if !enabledOnly || (enabledOnly && exchanges[i].IsEnabled()) {
+			response = append(response, exchanges[i].GetName())
+		}
 	}
-	exchangeNames = append(exchangeNames, bot.Config.GetDisabledExchanges()...)
-	return exchangeNames
+	return response
+}
+
+// AllEnabledExchangeCurrencies holds the enabled exchange currencies
+type AllEnabledExchangeCurrencies struct {
+	Data []EnabledExchangeCurrencies `json:"data"`
+}
+
+// EnabledExchangeCurrencies is a sub type for singular exchanges and respective
+// currencies
+type EnabledExchangeCurrencies struct {
+	ExchangeName   string          `json:"exchangeName"`
+	ExchangeValues []*ticker.Price `json:"exchangeValues"`
 }
 
 // GetAllActiveTickers returns all enabled exchange tickers
@@ -702,7 +751,7 @@ func (bot *Engine) GetAllActiveTickers() []EnabledExchangeCurrencies {
 	var tickerData []EnabledExchangeCurrencies
 	exchanges := bot.GetExchanges()
 	for x := range exchanges {
-		assets := exchanges[x].GetAssetTypes()
+		assets := exchanges[x].GetAssetTypes(true)
 		exchName := exchanges[x].GetName()
 		var exchangeTicker EnabledExchangeCurrencies
 		exchangeTicker.ExchangeName = exchName
@@ -710,64 +759,21 @@ func (bot *Engine) GetAllActiveTickers() []EnabledExchangeCurrencies {
 		for y := range assets {
 			currencies, err := exchanges[x].GetEnabledPairs(assets[y])
 			if err != nil {
-				log.Errorf(log.ExchangeSys,
-					"Exchange %s could not retrieve enabled currencies. Err: %s\n",
-					exchName,
-					err)
+				log.Errorf(log.ExchangeSys, "Exchange %s could not retrieve enabled currencies. Err: %s\n", exchName, err)
 				continue
 			}
 			for z := range currencies {
-				tp, err := exchanges[x].FetchTicker(currencies[z], assets[y])
+				tp, err := exchanges[x].GetCachedTicker(currencies[z], assets[y])
 				if err != nil {
-					log.Errorf(log.ExchangeSys, "Exchange %s failed to retrieve %s ticker. Err: %s\n", exchName,
-						currencies[z].String(),
-						err)
+					log.Errorf(log.ExchangeSys, "Exchange %s failed to retrieve %s ticker. Err: %s\n", exchName, currencies[z].String(), err)
 					continue
 				}
-				exchangeTicker.ExchangeValues = append(exchangeTicker.ExchangeValues, *tp)
+				exchangeTicker.ExchangeValues = append(exchangeTicker.ExchangeValues, tp)
 			}
 			tickerData = append(tickerData, exchangeTicker)
 		}
 	}
 	return tickerData
-}
-
-// GetAllEnabledExchangeAccountInfo returns all the current enabled exchanges
-func (bot *Engine) GetAllEnabledExchangeAccountInfo() AllEnabledExchangeAccounts {
-	var response AllEnabledExchangeAccounts
-	exchanges := bot.GetExchanges()
-	for x := range exchanges {
-		if exchanges[x] == nil || !exchanges[x].IsEnabled() {
-			continue
-		}
-		if !exchanges[x].GetAuthenticatedAPISupport(exchange.RestAuthentication) {
-			if bot.Settings.Verbose {
-				log.Debugf(log.ExchangeSys,
-					"GetAllEnabledExchangeAccountInfo: Skipping %s due to disabled authenticated API support.\n",
-					exchanges[x].GetName())
-			}
-			continue
-		}
-		assetTypes := exchanges[x].GetAssetTypes()
-		var exchangeHoldings account.Holdings
-		for y := range assetTypes {
-			accountHoldings, err := exchanges[x].FetchAccountInfo(assetTypes[y])
-			if err != nil {
-				log.Errorf(log.ExchangeSys,
-					"Error encountered retrieving exchange account info for %s. Error %s\n",
-					exchanges[x].GetName(),
-					err)
-				continue
-			}
-			for z := range accountHoldings.Accounts {
-				accountHoldings.Accounts[z].AssetType = assetTypes[y]
-			}
-			exchangeHoldings.Exchange = exchanges[x].GetName()
-			exchangeHoldings.Accounts = append(exchangeHoldings.Accounts, accountHoldings.Accounts...)
-		}
-		response.Data = append(response.Data, exchangeHoldings)
-	}
-	return response
 }
 
 func verifyCert(pemData []byte) error {
@@ -792,7 +798,8 @@ func verifyCert(pemData []byte) error {
 	return nil
 }
 
-func checkCerts(certDir string) error {
+// CheckCerts checks and verifies RPC server certificates
+func CheckCerts(certDir string) error {
 	certFile := filepath.Join(certDir, "cert.pem")
 	keyFile := filepath.Join(certDir, "key.pem")
 
@@ -801,7 +808,7 @@ func checkCerts(certDir string) error {
 		return genCert(certDir)
 	}
 
-	pemData, err := ioutil.ReadFile(certFile)
+	pemData, err := os.ReadFile(certFile)
 	if err != nil {
 		return fmt.Errorf("unable to open TLS cert file: %s", err)
 	}
@@ -866,7 +873,7 @@ func genCert(targetDir string) error {
 
 	certData := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	if certData == nil {
-		return fmt.Errorf("cert data is nil")
+		return errors.New("cert data is nil")
 	}
 
 	b, err := x509.MarshalECPrivateKey(privKey)
@@ -876,7 +883,7 @@ func genCert(targetDir string) error {
 
 	keyData := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: b})
 	if keyData == nil {
-		return fmt.Errorf("key pem data is nil")
+		return errors.New("key pem data is nil")
 	}
 
 	err = file.Write(filepath.Join(targetDir, "key.pem"), keyData)
@@ -890,5 +897,129 @@ func genCert(targetDir string) error {
 	}
 
 	log.Infof(log.Global, "gRPC TLS key.pem and cert.pem files written to %s\n", targetDir)
+	return nil
+}
+
+// NewSupportedExchangeByName helps create a new exchange to be loaded that is
+// supported by GCT. This function will return an error if the exchange is not
+// supported.
+func NewSupportedExchangeByName(name string) (exchange.IBotExchange, error) {
+	switch strings.ToLower(name) {
+	case "binanceus":
+		return new(binanceus.Exchange), nil
+	case "binance":
+		return new(binance.Exchange), nil
+	case "bitfinex":
+		return new(bitfinex.Exchange), nil
+	case "bitflyer":
+		return new(bitflyer.Exchange), nil
+	case "bithumb":
+		return new(bithumb.Exchange), nil
+	case "bitstamp":
+		return new(bitstamp.Exchange), nil
+	case "btc markets":
+		return new(btcmarkets.Exchange), nil
+	case "btse":
+		return new(btse.Exchange), nil
+	case "bybit":
+		return new(bybit.Exchange), nil
+	case "coinut":
+		return new(coinut.Exchange), nil
+	case "deribit":
+		return new(deribit.Exchange), nil
+	case "coinbase":
+		return new(coinbase.Exchange), nil
+	case "gateio":
+		return new(gateio.Exchange), nil
+	case "gemini":
+		return new(gemini.Exchange), nil
+	case "hitbtc":
+		return new(hitbtc.Exchange), nil
+	case "huobi":
+		return new(huobi.Exchange), nil
+	case "kraken":
+		return new(kraken.Exchange), nil
+	case "kucoin":
+		return new(kucoin.Exchange), nil
+	case "lbank":
+		return new(lbank.Exchange), nil
+	case "mexc":
+		return new(mexc.Exchange), nil
+	case "okx":
+		return new(okx.Exchange), nil
+	case "poloniex":
+		return new(poloniex.Exchange), nil
+	case "yobit":
+		return new(yobit.Exchange), nil
+	default:
+		return nil, fmt.Errorf("%q, %w", name, ErrExchangeNotFound)
+	}
+}
+
+// NewExchangeByNameWithDefaults returns a defaulted exchange by its name if it
+// exists. This will allocate a new exchange and setup the default config for it.
+// This will automatically fetch available pairs.
+func NewExchangeByNameWithDefaults(ctx context.Context, name string) (exchange.IBotExchange, error) {
+	exch, err := NewSupportedExchangeByName(name)
+	if err != nil {
+		return nil, err
+	}
+	defaultConfig, err := exchange.GetDefaultConfig(ctx, exch)
+	if err != nil {
+		return nil, err
+	}
+	err = exch.Setup(defaultConfig)
+	if err != nil {
+		return nil, err
+	}
+	return exch, nil
+}
+
+func resolvePPROFListenAddress(listenAddr string) string {
+	if listenAddr == "" {
+		return defaultPPROFListenAddress
+	}
+	return listenAddr
+}
+
+// StartPPROF starts a pprof profiler if enabled
+func StartPPROF(ctx context.Context, cfg *config.Profiler) error {
+	if !cfg.Enabled {
+		return nil
+	}
+
+	runtime.SetMutexProfileFraction(cfg.MutexProfileFraction)
+	runtime.SetBlockProfileRate(cfg.BlockProfileRate)
+
+	listenAddr := resolvePPROFListenAddress(cfg.ListenAddress)
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("pprof listen error: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	srv := &http.Server{
+		Addr:         listenAddr,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		Handler:      mux,
+	}
+
+	log.Infof(log.Global, "PPROF profiler listening on http://%s/debug/pprof/", listenAddr)
+
+	go func() {
+		if err := srv.Serve(ln); err != nil {
+			log.Errorf(log.Global, "PPROF serve error: %s", err)
+		}
+	}()
+
 	return nil
 }

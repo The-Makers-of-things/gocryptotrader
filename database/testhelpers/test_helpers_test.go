@@ -2,19 +2,20 @@ package testhelpers
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/thrasher-corp/gocryptotrader/database"
-	"github.com/thrasher-corp/gocryptotrader/database/drivers"
 )
 
+//nolint:forbidigo // TestMain reports setup and teardown failures before or after a *testing.T exists
 func TestMain(m *testing.M) {
 	var err error
 	PostgresTestDatabase = GetConnectionDetails()
-	TempDir, err = ioutil.TempDir("", "gct-temp")
+	TempDir, err = os.MkdirTemp("", "gct-temp")
 	if err != nil {
 		fmt.Printf("failed to create temp file: %v", err)
 		os.Exit(1)
@@ -32,17 +33,17 @@ func TestMain(m *testing.M) {
 }
 
 func TestDatabaseConnect(t *testing.T) {
-	testCases := []struct {
-		name   string
-		config *database.Config
-		closer func(dbConn *database.Instance) error
-		output interface{}
+	for _, tc := range []struct {
+		name     string
+		config   *database.Config
+		closer   func(dbConn *database.Instance) error
+		expError error
 	}{
 		{
 			"SQLite",
 			&database.Config{
-				Driver:            database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{Database: "./testdb.db"},
+				Driver:   database.DBSQLite3,
+				Database: "./testdb.db",
 			},
 			CloseDatabase,
 			nil,
@@ -51,9 +52,7 @@ func TestDatabaseConnect(t *testing.T) {
 			"SQliteNoDatabase",
 			&database.Config{
 				Driver: database.DBSQLite3,
-				ConnectionDetails: drivers.ConnectionDetails{
-					Host: "localhost",
-				},
+				Host:   "localhost",
 			},
 			nil,
 			database.ErrNoDatabaseProvided,
@@ -61,35 +60,18 @@ func TestDatabaseConnect(t *testing.T) {
 		{
 			name:   "Postgres",
 			config: PostgresTestDatabase,
-			output: nil,
 		},
-	}
-
-	for x := range testCases {
-		test := testCases[x]
-		t.Run(test.name, func(t *testing.T) {
-			if !CheckValidConfig(&test.config.ConnectionDetails) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !CheckValidConfig(&tc.config.ConnectionDetails) {
 				t.Skip("database not configured skipping test")
 			}
 
-			dbConn, err := ConnectToDatabase(test.config)
-			if err != nil {
-				switch v := test.output.(type) {
-				case error:
-					if v.Error() != err.Error() {
-						t.Fatal(err)
-					}
-					return
-				default:
-					break
-				}
-			}
+			dbConn, err := ConnectToDatabase(tc.config)
+			require.ErrorIs(t, err, tc.expError)
 
-			if test.closer != nil {
-				err = test.closer(dbConn)
-				if err != nil {
-					t.Log(err)
-				}
+			if tc.closer != nil {
+				assert.NoError(t, tc.closer(dbConn))
 			}
 		})
 	}

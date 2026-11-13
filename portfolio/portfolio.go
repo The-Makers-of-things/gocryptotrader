@@ -1,14 +1,20 @@
 package portfolio
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/thrasher-corp/gocryptotrader/common"
 	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/encoding/json"
 	"github.com/thrasher-corp/gocryptotrader/log"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -18,306 +24,356 @@ const (
 	ethplorerAPIURL      = "https://api.ethplorer.io"
 	ethplorerAddressInfo = "getAddressInfo"
 
-	// PortfolioAddressExchange is a label for an exchange address
-	PortfolioAddressExchange = "Exchange"
-	// PortfolioAddressPersonal is a label for a personal/offline address
-	PortfolioAddressPersonal = "Personal"
+	// ExchangeAddress is a label for an exchange address
+	ExchangeAddress = "Exchange"
+	// PersonalAddress is a label for a personal/offline address
+	PersonalAddress = "Personal"
+
+	defaultAPIKey   = "Key"
+	defaultInterval = 10 * time.Second
 )
 
-// Portfolio is variable store holding an array of portfolioAddress
-var Portfolio Base
+var (
+	errProviderNotFound        = errors.New("provider not found")
+	errProviderNotEnabled      = errors.New("provider not enabled")
+	errProviderAPIKeyNotSet    = errors.New("provider API key not set")
+	errPortfolioItemNotFound   = errors.New("portfolio item not found")
+	errNoPortfolioItemsToWatch = errors.New("no portfolio items to watch")
+)
 
-// Verbose allows for debug output when sending an http request
-var Verbose bool
-
-// GetEthereumBalance single or multiple address information as
-// EtherchainBalanceResponse
-func GetEthereumBalance(address string) (EthplorerResponse, error) {
-	valid, _ := common.IsValidCryptoAddress(address, "eth")
-	if !valid {
-		return EthplorerResponse{}, errors.New("not an Ethereum address")
+// GetEthereumAddressBalance fetches Ethereum address balance for a given address
+func (b *Base) GetEthereumAddressBalance(ctx context.Context, address string) (float64, error) {
+	if err := common.IsValidCryptoAddress(address, "eth"); err != nil {
+		return 0, err
 	}
 
-	urlPath := fmt.Sprintf(
-		"%s/%s/%s?apiKey=freekey", ethplorerAPIURL, ethplorerAddressInfo, address,
-	)
-
-	result := EthplorerResponse{}
-	return result, common.SendHTTPGetRequest(urlPath, true, Verbose, &result)
-}
-
-// GetCryptoIDAddress queries CryptoID for an address balance for a
-// specified cryptocurrency
-func GetCryptoIDAddress(address string, coinType currency.Code) (float64, error) {
-	ok, err := common.IsValidCryptoAddress(address, coinType.String())
-	if !ok || err != nil {
-		return 0, errors.New("invalid address")
+	apiKey := "freekey"
+	if p, ok := b.Providers.GetProvider("ethplorer"); ok && p.APIKey != "" {
+		apiKey = p.APIKey
 	}
 
-	var result interface{}
-	url := fmt.Sprintf("%s/%s/api.dws?q=getbalance&a=%s",
-		cryptoIDAPIURL,
-		coinType.Lower(),
-		address)
+	urlPath := ethplorerAPIURL + "/" + ethplorerAddressInfo + "/" + address + "?apiKey=" + apiKey
 
-	err = common.SendHTTPGetRequest(url, true, Verbose, &result)
+	contents, err := common.SendHTTPRequest(ctx, http.MethodGet, urlPath, nil, nil, b.Verbose)
 	if err != nil {
 		return 0, err
 	}
-	return result.(float64), nil
+
+	var result EthplorerResponse
+	if err := json.Unmarshal(contents, &result); err != nil {
+		return 0, err
+	}
+
+	return result.ETH.Balance, nil
 }
 
-// GetRippleBalance returns the value for a ripple address
-func GetRippleBalance(address string) (float64, error) {
+// GetCryptoIDAddressBalance fetches the address balance for a specified cryptocurrency
+func (b *Base) GetCryptoIDAddressBalance(ctx context.Context, address string, coinType currency.Code) (float64, error) {
+	if err := common.IsValidCryptoAddress(address, coinType.String()); err != nil {
+		return 0, err
+	}
+
+	p, ok := b.Providers.GetProvider("cryptoid")
+	if !ok {
+		return 0, fmt.Errorf("cryptoid: %w", errProviderNotFound)
+	}
+
+	if p.APIKey == "" || p.APIKey == defaultAPIKey {
+		return 0, fmt.Errorf("cryptoid: %w", errProviderAPIKeyNotSet)
+	}
+
+	b.cryptoIDLimiterOnce.Do(func() {
+		b.cryptoIDLimiter = rate.NewLimiter(rate.Every(10*time.Second), 1)
+	})
+
+	if err := b.cryptoIDLimiter.Wait(ctx); err != nil {
+		return 0, fmt.Errorf("rate limiter wait error: %w", err)
+	}
+
+	urlPath := cryptoIDAPIURL + "/" + coinType.Lower().String() + "/api.dws?q=getbalance&a=" + address + "&key=" + p.APIKey
+
+	contents, err := common.SendHTTPRequest(ctx, http.MethodGet, urlPath, nil, nil, b.Verbose)
+	if err != nil {
+		return 0, err
+	}
+
+	var result float64
+	return result, json.Unmarshal(contents, &result)
+}
+
+// GetRippleAddressBalance returns the value for a ripple address
+func (b *Base) GetRippleAddressBalance(ctx context.Context, address string) (float64, error) {
+	contents, err := common.SendHTTPRequest(ctx, http.MethodGet, xrpScanAPIURL+address, nil, nil, b.Verbose)
+	if err != nil {
+		return 0, err
+	}
+
 	var result XRPScanAccount
-	err := common.SendHTTPGetRequest(xrpScanAPIURL+address, true, Verbose, &result)
-	if err != nil {
+	if err := json.Unmarshal(contents, &result); err != nil {
 		return 0, err
-	}
-
-	if (result == XRPScanAccount{}) {
-		return 0, errors.New("no balance info returned")
 	}
 
 	return result.XRPBalance, nil
 }
 
-// GetAddressBalance acceses the portfolio base and returns the balance by passed
+// GetAddressBalance accesses the portfolio base and returns the balance by passed
 // in address, coin type and description
-func (p *Base) GetAddressBalance(address, description string, coinType currency.Code) (float64, bool) {
-	for x := range p.Addresses {
-		if p.Addresses[x].Address == address &&
-			p.Addresses[x].Description == description &&
-			p.Addresses[x].CoinType == coinType {
-			return p.Addresses[x].Balance, true
-		}
+func (b *Base) GetAddressBalance(address, description string, coinType currency.Code) (float64, bool) {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	idx := slices.IndexFunc(b.Addresses, func(a Address) bool {
+		return a.Address == address && a.Description == description && a.CoinType.Equal(coinType)
+	})
+	if idx == -1 {
+		return 0, false
 	}
-	return 0, false
+	return b.Addresses[idx].Balance, true
 }
 
 // ExchangeExists checks to see if an exchange exists in the portfolio base
-func (p *Base) ExchangeExists(exchangeName string) bool {
-	for x := range p.Addresses {
-		if p.Addresses[x].Address == exchangeName {
-			return true
-		}
-	}
-	return false
+func (b *Base) ExchangeExists(exchangeName string) bool {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	return slices.ContainsFunc(b.Addresses, func(a Address) bool {
+		return a.Address == exchangeName && a.Description == ExchangeAddress
+	})
 }
 
-// AddressExists checks to see if there is an address associated with the
-// portfolio base
-func (p *Base) AddressExists(address string) bool {
-	for x := range p.Addresses {
-		if p.Addresses[x].Address == address {
-			return true
-		}
-	}
-	return false
+// AddressExists checks to see if there is an address associated with the portfolio base
+func (b *Base) AddressExists(address string) bool {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	return slices.ContainsFunc(b.Addresses, func(a Address) bool {
+		return a.Address == address
+	})
 }
 
-// ExchangeAddressExists checks to see if there is an exchange address
+// ExchangeAddressCoinExists checks to see if there is an exchange address
 // associated with the portfolio base
-func (p *Base) ExchangeAddressExists(exchangeName string, coinType currency.Code) bool {
-	for x := range p.Addresses {
-		if p.Addresses[x].Address == exchangeName && p.Addresses[x].CoinType == coinType {
-			return true
-		}
-	}
-	return false
+func (b *Base) ExchangeAddressCoinExists(exchangeName string, coinType currency.Code) bool {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	return slices.ContainsFunc(b.Addresses, func(a Address) bool {
+		return a.Address == exchangeName && a.CoinType.Equal(coinType) && a.Description == ExchangeAddress
+	})
 }
 
 // AddExchangeAddress adds an exchange address to the portfolio base
-func (p *Base) AddExchangeAddress(exchangeName string, coinType currency.Code, balance float64) {
-	if p.ExchangeAddressExists(exchangeName, coinType) {
-		p.UpdateExchangeAddressBalance(exchangeName, coinType, balance)
-	} else {
-		p.Addresses = append(
-			p.Addresses, Address{Address: exchangeName, CoinType: coinType,
-				Balance: balance, Description: PortfolioAddressExchange},
-		)
+func (b *Base) AddExchangeAddress(exchangeName string, coinType currency.Code, balance float64) {
+	if b.ExchangeAddressCoinExists(exchangeName, coinType) {
+		b.UpdateExchangeAddressBalance(exchangeName, coinType, balance)
+		return
 	}
+
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+
+	b.Addresses = append(b.Addresses, Address{
+		Address:     exchangeName,
+		CoinType:    coinType,
+		Balance:     balance,
+		Description: ExchangeAddress,
+	})
 }
 
-// UpdateAddressBalance updates the portfolio base balance
-func (p *Base) UpdateAddressBalance(address string, amount float64) {
-	for x := range p.Addresses {
-		if p.Addresses[x].Address == address {
-			p.Addresses[x].Balance = amount
+// UpdateAddressBalance updates the portfolio base balance.
+func (b *Base) UpdateAddressBalance(address string, amount float64) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+
+	for x := range b.Addresses {
+		if b.Addresses[x].Address == address {
+			b.Addresses[x].Balance = amount
 		}
 	}
 }
 
 // RemoveExchangeAddress removes an exchange address from the portfolio.
-func (p *Base) RemoveExchangeAddress(exchangeName string, coinType currency.Code) {
-	for x := range p.Addresses {
-		if p.Addresses[x].Address == exchangeName && p.Addresses[x].CoinType == coinType {
-			p.Addresses = append(p.Addresses[:x], p.Addresses[x+1:]...)
-			return
+func (b *Base) RemoveExchangeAddress(exchangeName string, coinType currency.Code) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+
+	b.Addresses = slices.Clip(slices.DeleteFunc(b.Addresses, func(a Address) bool {
+		return a.Address == exchangeName && a.CoinType.Equal(coinType)
+	}))
+}
+
+// UpdateExchangeAddressBalance updates the portfolio balance when checked against correct exchangeName and coinType.
+func (b *Base) UpdateExchangeAddressBalance(exchangeName string, coinType currency.Code, balance float64) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+
+	for x := range b.Addresses {
+		if b.Addresses[x].Address == exchangeName && b.Addresses[x].CoinType.Equal(coinType) {
+			b.Addresses[x].Balance = balance
 		}
 	}
 }
 
-// UpdateExchangeAddressBalance updates the portfolio balance when checked
-// against correct exchangeName and coinType.
-func (p *Base) UpdateExchangeAddressBalance(exchangeName string, coinType currency.Code, balance float64) {
-	for x := range p.Addresses {
-		if p.Addresses[x].Address == exchangeName && p.Addresses[x].CoinType == coinType {
-			p.Addresses[x].Balance = balance
-		}
-	}
-}
-
-// AddAddress adds an address to the portfolio base
-func (p *Base) AddAddress(address, description string, coinType currency.Code, balance float64) error {
+// AddAddress adds an address to the portfolio base or updates its balance if it already exists.
+func (b *Base) AddAddress(address, description string, coinType currency.Code, balance float64) error {
 	if address == "" {
-		return errors.New("address is empty")
+		return common.ErrAddressIsEmptyOrInvalid
 	}
 
-	if coinType.String() == "" {
-		return errors.New("coin type is empty")
+	if coinType.IsEmpty() {
+		return currency.ErrCurrencyCodeEmpty
 	}
 
-	if description == PortfolioAddressExchange {
-		p.AddExchangeAddress(address, coinType, balance)
+	if description == ExchangeAddress {
+		b.AddExchangeAddress(address, coinType, balance)
+		return nil
 	}
-	if !p.AddressExists(address) {
-		p.Addresses = append(
-			p.Addresses, Address{Address: address, CoinType: coinType,
-				Balance: balance, Description: description},
-		)
-	} else {
-		if balance <= 0 {
-			p.RemoveAddress(address, description, coinType)
-		} else {
-			p.UpdateAddressBalance(address, balance)
-		}
+
+	if !b.AddressExists(address) {
+		b.mtx.Lock()
+		defer b.mtx.Unlock()
+
+		b.Addresses = append(b.Addresses, Address{
+			Address:     address,
+			CoinType:    coinType,
+			Balance:     balance,
+			Description: description,
+		})
+		return nil
 	}
+
+	b.UpdateAddressBalance(address, balance)
 	return nil
 }
 
 // RemoveAddress removes an address when checked against the correct address and
 // coinType
-func (p *Base) RemoveAddress(address, description string, coinType currency.Code) error {
+func (b *Base) RemoveAddress(address, description string, coinType currency.Code) error {
 	if address == "" {
-		return errors.New("address is empty")
+		return common.ErrAddressIsEmptyOrInvalid
 	}
 
-	if coinType.String() == "" {
-		return errors.New("coin type is empty")
+	if coinType.IsEmpty() {
+		return currency.ErrCurrencyCodeEmpty
 	}
 
-	for x := range p.Addresses {
-		if p.Addresses[x].Address == address &&
-			p.Addresses[x].CoinType == coinType &&
-			p.Addresses[x].Description == description {
-			p.Addresses = append(p.Addresses[:x], p.Addresses[x+1:]...)
-			return nil
-		}
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+
+	idx := slices.IndexFunc(b.Addresses, func(a Address) bool {
+		return a.Address == address && a.CoinType.Equal(coinType) && a.Description == description
+	})
+	if idx == -1 {
+		return errPortfolioItemNotFound
 	}
-
-	return errors.New("portfolio item does not exist")
-}
-
-// UpdatePortfolio adds to the portfolio addresses by coin type
-func (p *Base) UpdatePortfolio(addresses []string, coinType currency.Code) error {
-	if strings.Contains(strings.Join(addresses, ","), PortfolioAddressExchange) ||
-		strings.Contains(strings.Join(addresses, ","), PortfolioAddressPersonal) {
-		return nil
-	}
-
-	switch coinType {
-	case currency.ETH:
-		for x := range addresses {
-			result, err := GetEthereumBalance(addresses[x])
-			if err != nil {
-				return err
-			}
-
-			if result.Error.Message != "" {
-				return errors.New(result.Error.Message)
-			}
-
-			err = p.AddAddress(addresses[x],
-				PortfolioAddressPersonal,
-				coinType,
-				result.ETH.Balance)
-			if err != nil {
-				return err
-			}
-		}
-	case currency.XRP:
-		for x := range addresses {
-			result, err := GetRippleBalance(addresses[x])
-			if err != nil {
-				return err
-			}
-			err = p.AddAddress(addresses[x],
-				PortfolioAddressPersonal,
-				coinType,
-				result)
-			if err != nil {
-				return err
-			}
-		}
-	default:
-		for x := range addresses {
-			result, err := GetCryptoIDAddress(addresses[x], coinType)
-			if err != nil {
-				return err
-			}
-			err = p.AddAddress(addresses[x],
-				PortfolioAddressPersonal,
-				coinType,
-				result)
-			if err != nil {
-				return err
-			}
-		}
-	}
+	b.Addresses = slices.Clip(slices.Delete(b.Addresses, idx, idx+1))
 	return nil
 }
 
+// UpdatePortfolio adds to the portfolio addresses by coin type
+func (b *Base) UpdatePortfolio(ctx context.Context, addresses []string, coinType currency.Code) error {
+	if slices.ContainsFunc(addresses, func(a string) bool {
+		return a == PersonalAddress || a == ExchangeAddress
+	}) {
+		return nil
+	}
+
+	var providerName string
+	var getBalance func(ctx context.Context, address string) (float64, error)
+
+	switch coinType {
+	case currency.ETH:
+		providerName = "Ethplorer"
+		getBalance = b.GetEthereumAddressBalance
+	case currency.XRP:
+		providerName = "XRPScan"
+		getBalance = b.GetRippleAddressBalance
+	case currency.BTC, currency.LTC:
+		providerName = "CryptoID"
+		getBalance = func(ctx context.Context, address string) (float64, error) {
+			return b.GetCryptoIDAddressBalance(ctx, address, coinType)
+		}
+	default:
+		return fmt.Errorf("%w: %s", currency.ErrCurrencyNotSupported, coinType)
+	}
+
+	p, ok := b.Providers.GetProvider(providerName)
+	if !ok {
+		return fmt.Errorf("%w: %s", errProviderNotFound, providerName)
+	}
+
+	if !p.Enabled {
+		return fmt.Errorf("%w: %s", errProviderNotEnabled, providerName)
+	}
+
+	if p.Name == "CryptoID" && (p.APIKey == "" || p.APIKey == defaultAPIKey) {
+		return fmt.Errorf("%w: %s", errProviderAPIKeyNotSet, providerName)
+	}
+
+	var errs error
+	for x := range addresses {
+		balance, err := getBalance(ctx, addresses[x])
+		if err != nil {
+			errs = common.AppendError(errs, fmt.Errorf("error getting balance for %s: %w", addresses[x], err))
+			continue
+		}
+
+		if err := b.AddAddress(addresses[x], PersonalAddress, coinType, balance); err != nil {
+			errs = common.AppendError(errs, fmt.Errorf("error adding address %s: %w", addresses[x], err))
+		}
+	}
+	return errs
+}
+
 // GetPortfolioByExchange returns currency portfolio amount by exchange
-func (p *Base) GetPortfolioByExchange(exchangeName string) map[currency.Code]float64 {
+func (b *Base) GetPortfolioByExchange(exchangeName string) map[currency.Code]float64 {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
 	result := make(map[currency.Code]float64)
-	for x := range p.Addresses {
-		if strings.Contains(p.Addresses[x].Address, exchangeName) {
-			result[p.Addresses[x].CoinType] = p.Addresses[x].Balance
+	for x := range b.Addresses {
+		if strings.Contains(b.Addresses[x].Address, exchangeName) {
+			result[b.Addresses[x].CoinType] = b.Addresses[x].Balance
 		}
 	}
 	return result
 }
 
 // GetExchangePortfolio returns current portfolio base information
-func (p *Base) GetExchangePortfolio() map[currency.Code]float64 {
+func (b *Base) GetExchangePortfolio() map[currency.Code]float64 {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
 	result := make(map[currency.Code]float64)
-	for _, x := range p.Addresses {
-		if x.Description != PortfolioAddressExchange {
+	for i := range b.Addresses {
+		if b.Addresses[i].Description != ExchangeAddress {
 			continue
 		}
-		balance, ok := result[x.CoinType]
+		balance, ok := result[b.Addresses[i].CoinType]
 		if !ok {
-			result[x.CoinType] = x.Balance
+			result[b.Addresses[i].CoinType] = b.Addresses[i].Balance
 		} else {
-			result[x.CoinType] = x.Balance + balance
+			result[b.Addresses[i].CoinType] = b.Addresses[i].Balance + balance
 		}
 	}
 	return result
 }
 
 // GetPersonalPortfolio returns current portfolio base information
-func (p *Base) GetPersonalPortfolio() map[currency.Code]float64 {
+func (b *Base) GetPersonalPortfolio() map[currency.Code]float64 {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
 	result := make(map[currency.Code]float64)
-	for _, x := range p.Addresses {
-		if x.Description == PortfolioAddressExchange {
+	for i := range b.Addresses {
+		if strings.EqualFold(b.Addresses[i].Description, ExchangeAddress) {
 			continue
 		}
-		balance, ok := result[x.CoinType]
+		balance, ok := result[b.Addresses[i].CoinType]
 		if !ok {
-			result[x.CoinType] = x.Balance
+			result[b.Addresses[i].CoinType] = b.Addresses[i].Balance
 		} else {
-			result[x.CoinType] = x.Balance + balance
+			result[b.Addresses[i].CoinType] = b.Addresses[i].Balance + balance
 		}
 	}
 	return result
@@ -342,14 +398,10 @@ func getPercentageSpecific(input float64, target currency.Code, totals map[curre
 
 // GetPortfolioSummary returns the complete portfolio summary, showing
 // coin totals, offline and online summaries with their relative percentages.
-func (p *Base) GetPortfolioSummary() Summary {
-	personalHoldings := p.GetPersonalPortfolio()
-	exchangeHoldings := p.GetExchangePortfolio()
-	totalCoins := make(map[currency.Code]float64)
-
-	for x, y := range personalHoldings {
-		totalCoins[x] = y
-	}
+func (b *Base) GetPortfolioSummary() Summary {
+	personalHoldings := b.GetPersonalPortfolio()
+	exchangeHoldings := b.GetExchangePortfolio()
+	totalCoins := maps.Clone(personalHoldings)
 
 	for x, y := range exchangeHoldings {
 		balance, ok := totalCoins[x]
@@ -385,10 +437,10 @@ func (p *Base) GetPortfolioSummary() Summary {
 	}
 
 	var portfolioExchanges []string
-	for _, x := range p.Addresses {
-		if x.Description == PortfolioAddressExchange {
-			if !common.StringDataCompare(portfolioExchanges, x.Address) {
-				portfolioExchanges = append(portfolioExchanges, x.Address)
+	for i := range b.Addresses {
+		if strings.EqualFold(b.Addresses[i].Description, ExchangeAddress) {
+			if !slices.Contains(portfolioExchanges, b.Addresses[i].Address) {
+				portfolioExchanges = append(portfolioExchanges, b.Addresses[i].Address)
 			}
 		}
 	}
@@ -396,7 +448,7 @@ func (p *Base) GetPortfolioSummary() Summary {
 	exchangeSummary := make(map[string]map[currency.Code]OnlineCoinSummary)
 	for x := range portfolioExchanges {
 		exchgName := portfolioExchanges[x]
-		result := p.GetPortfolioByExchange(exchgName)
+		result := b.GetPortfolioByExchange(exchgName)
 
 		coinSummary := make(map[currency.Code]OnlineCoinSummary)
 		for y, z := range result {
@@ -411,21 +463,21 @@ func (p *Base) GetPortfolioSummary() Summary {
 	portfolioOutput.OnlineSummary = exchangeSummary
 
 	offlineSummary := make(map[currency.Code][]OfflineCoinSummary)
-	for _, x := range p.Addresses {
-		if x.Description != PortfolioAddressExchange {
+	for i := range b.Addresses {
+		if !strings.EqualFold(b.Addresses[i].Description, ExchangeAddress) {
 			coinSummary := OfflineCoinSummary{
-				Address: x.Address,
-				Balance: x.Balance,
-				Percentage: getPercentageSpecific(x.Balance, x.CoinType,
+				Address: b.Addresses[i].Address,
+				Balance: b.Addresses[i].Balance,
+				Percentage: getPercentageSpecific(b.Addresses[i].Balance, b.Addresses[i].CoinType,
 					totalCoins),
 			}
-			result, ok := offlineSummary[x.CoinType]
+			result, ok := offlineSummary[b.Addresses[i].CoinType]
 			if !ok {
-				offlineSummary[x.CoinType] = append(offlineSummary[x.CoinType],
+				offlineSummary[b.Addresses[i].CoinType] = append(offlineSummary[b.Addresses[i].CoinType],
 					coinSummary)
 			} else {
 				result = append(result, coinSummary)
-				offlineSummary[x.CoinType] = result
+				offlineSummary[b.Addresses[i].CoinType] = result
 			}
 		}
 	}
@@ -433,87 +485,99 @@ func (p *Base) GetPortfolioSummary() Summary {
 	return portfolioOutput
 }
 
-// GetPortfolioGroupedCoin returns portfolio base information grouped by coin
-func (p *Base) GetPortfolioGroupedCoin() map[currency.Code][]string {
+// GetPortfolioAddressesGroupedByCoin returns portfolio addresses grouped by coin
+func (b *Base) GetPortfolioAddressesGroupedByCoin() map[currency.Code][]string {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
 	result := make(map[currency.Code][]string)
-	for _, x := range p.Addresses {
-		if strings.Contains(x.Description, PortfolioAddressExchange) {
+	for i := range b.Addresses {
+		if strings.EqualFold(b.Addresses[i].Description, ExchangeAddress) {
 			continue
 		}
-		result[x.CoinType] = append(result[x.CoinType], x.Address)
+		result[b.Addresses[i].CoinType] = append(result[b.Addresses[i].CoinType], b.Addresses[i].Address)
 	}
 	return result
 }
 
-// Seed appends a portfolio base object with another base portfolio
-// addresses
-func (p *Base) Seed(port Base) {
-	p.Addresses = port.Addresses
-}
-
 // StartPortfolioWatcher observes the portfolio object
-func StartPortfolioWatcher() {
-	addrCount := len(Portfolio.Addresses)
-	log.Debugf(log.PortfolioMgr,
-		"PortfolioWatcher started: Have %d entries in portfolio.\n", addrCount,
-	)
-	for {
-		data := Portfolio.GetPortfolioGroupedCoin()
-		for key, value := range data {
-			err := Portfolio.UpdatePortfolio(value, key)
-			if err != nil {
-				log.Errorf(log.PortfolioMgr,
-					"PortfolioWatcher error %s for currency %s, val %v\n",
-					err,
-					key,
-					value)
+func (b *Base) StartPortfolioWatcher(ctx context.Context, interval time.Duration) error {
+	if len(b.Addresses) == 0 {
+		return errNoPortfolioItemsToWatch
+	}
+
+	if interval <= 0 {
+		interval = defaultInterval
+	}
+
+	log.Infof(log.PortfolioMgr, "PortfolioWatcher started: Have %d entries in portfolio.\n", len(b.Addresses))
+
+	updatePortfolio := func() {
+		for key, value := range b.GetPortfolioAddressesGroupedByCoin() {
+			if err := b.UpdatePortfolio(ctx, value, key); err != nil {
+				log.Errorf(log.PortfolioMgr, "PortfolioWatcher: UpdatePortfolio error: %s for currency %s", err, key)
 				continue
 			}
-
-			log.Debugf(log.PortfolioMgr,
-				"PortfolioWatcher: Successfully updated address balance for %s address(es) %s\n",
-				key,
-				value)
+			log.Debugf(log.PortfolioMgr, "PortfolioWatcher: Successfully updated address balance for %s", key)
 		}
-		time.Sleep(time.Minute * 10)
 	}
-}
 
-// GetPortfolio returns a pointer to the portfolio base
-func GetPortfolio() *Base {
-	return &Portfolio
+	updatePortfolio()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Debugf(log.PortfolioMgr, "PortfolioWatcher stopped: context cancelled")
+			return ctx.Err()
+		case <-ticker.C:
+			updatePortfolio()
+		}
+	}
 }
 
 // IsExchangeSupported checks if exchange is supported by portfolio address
-func IsExchangeSupported(exchange, address string) (ret bool) {
-	for x := range Portfolio.Addresses {
-		if Portfolio.Addresses[x].Address != address {
-			continue
+func (b *Base) IsExchangeSupported(exchange, address string) bool {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	return slices.ContainsFunc(b.Addresses, func(a Address) bool {
+		if a.Address != address {
+			return false
 		}
-		exchangeList := strings.Split(Portfolio.Addresses[x].SupportedExchanges, ",")
-		return common.StringDataContainsInsensitive(exchangeList, exchange)
-	}
-	return
+		exchangeList := strings.Split(a.SupportedExchanges, ",")
+		return common.StringSliceContainsInsensitive(exchangeList, exchange)
+	})
 }
 
 // IsColdStorage checks if address is a cold storage wallet
-func IsColdStorage(address string) (ret bool) {
-	for x := range Portfolio.Addresses {
-		if Portfolio.Addresses[x].Address != address {
-			continue
-		}
-		return Portfolio.Addresses[x].ColdStorage
-	}
-	return
+func (b *Base) IsColdStorage(address string) bool {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	return slices.ContainsFunc(b.Addresses, func(a Address) bool {
+		return a.Address == address && a.ColdStorage
+	})
 }
 
 // IsWhiteListed checks if address is whitelisted for withdraw transfers
-func IsWhiteListed(address string) (ret bool) {
-	for x := range Portfolio.Addresses {
-		if Portfolio.Addresses[x].Address != address {
-			continue
+func (b *Base) IsWhiteListed(address string) bool {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	return slices.ContainsFunc(b.Addresses, func(a Address) bool {
+		return a.Address == address && a.WhiteListed
+	})
+}
+
+// GetProvider returns a provider by name
+func (p providers) GetProvider(name string) (provider, bool) {
+	for _, provider := range p {
+		if strings.EqualFold(provider.Name, name) {
+			return provider, true
 		}
-		return Portfolio.Addresses[x].WhiteListed
 	}
-	return
+	return provider{}, false
 }

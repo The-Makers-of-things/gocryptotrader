@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,22 +18,24 @@ import (
 	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
+var errAPIKeyNotSet = errors.New("API key must be set")
+
 // Setup sets appropriate values for CurrencyLayer
 func (e *ExchangeRates) Setup(config base.Settings) error {
 	if config.APIKey == "" {
-		return errors.New("API key must be set")
+		return errAPIKeyNotSet
 	}
 	e.Name = config.Name
 	e.Enabled = config.Enabled
-	e.RESTPollingDelay = config.RESTPollingDelay
 	e.Verbose = config.Verbose
 	e.PrimaryProvider = config.PrimaryProvider
 	e.APIKey = config.APIKey
 	e.APIKeyLvl = config.APIKeyLvl
-	e.Requester = request.New(e.Name,
+	var err error
+	e.Requester, err = request.New(e.Name,
 		common.NewHTTPClientWithTimeout(base.DefaultTimeOut),
-		request.WithLimiter(request.NewBasicRateLimit(rateLimitInterval, requestRate)))
-	return nil
+		request.WithLimiter(request.NewBasicRateLimit(rateLimitInterval, requestRate, 1)))
+	return err
 }
 
 func (e *ExchangeRates) cleanCurrencies(baseCurrency, symbols string) string {
@@ -43,9 +47,10 @@ func (e *ExchangeRates) cleanCurrencies(baseCurrency, symbols string) string {
 			e.supportedCurrencies = supportedCurrencies
 		}
 	}
-	var cleanedCurrencies []string
-	symbols = strings.Replace(symbols, "RUR", "RUB", -1)
-	var s = strings.Split(symbols, ",")
+
+	symbols = strings.ReplaceAll(symbols, "RUR", "RUB")
+	s := strings.Split(symbols, ",")
+	cleanedCurrencies := make([]string, 0, len(s))
 	for _, x := range s {
 		// first make sure that the baseCurrency is not in the symbols list
 		// if it is set
@@ -88,13 +93,13 @@ func (e *ExchangeRates) GetSymbols() (map[string]string, error) {
 // all supported currencies
 func (e *ExchangeRates) GetLatestRates(baseCurrency, symbols string) (*Rates, error) {
 	vals := url.Values{}
-	if len(baseCurrency) > 0 && e.APIKeyLvl <= apiKeyFree && !strings.EqualFold("EUR", baseCurrency) {
+	if baseCurrency != "" && e.APIKeyLvl <= apiKeyFree && !strings.EqualFold("EUR", baseCurrency) {
 		return nil, errCannotSetBaseCurrencyOnFreePlan
-	} else if len(baseCurrency) > 0 {
+	} else if baseCurrency != "" {
 		vals.Set("base", baseCurrency)
 	}
 
-	if len(symbols) > 0 {
+	if symbols != "" {
 		symbols = e.cleanCurrencies(baseCurrency, symbols)
 		vals.Set("symbols", symbols)
 	}
@@ -117,9 +122,9 @@ func (e *ExchangeRates) GetHistoricalRates(date time.Time, baseCurrency string, 
 	var resp HistoricalRates
 	v := url.Values{}
 
-	if len(baseCurrency) > 0 && e.APIKeyLvl <= apiKeyFree && !strings.EqualFold("EUR", baseCurrency) {
+	if baseCurrency != "" && e.APIKeyLvl <= apiKeyFree && !strings.EqualFold("EUR", baseCurrency) {
 		return nil, errCannotSetBaseCurrencyOnFreePlan
-	} else if len(baseCurrency) > 0 {
+	} else if baseCurrency != "" {
 		v.Set("base", baseCurrency)
 	}
 
@@ -166,11 +171,11 @@ func (e *ExchangeRates) GetTimeSeriesRates(startDate, endDate time.Time, baseCur
 	}
 
 	if startDate.IsZero() || endDate.IsZero() {
-		return nil, errors.New("startDate and endDate params must be set")
+		return nil, errStartEndDatesInvalid
 	}
 
 	if startDate.After(endDate) {
-		return nil, errors.New("startDate must be before endDate")
+		return nil, errStartAfterEnd
 	}
 
 	v := url.Values{}
@@ -197,11 +202,11 @@ func (e *ExchangeRates) GetFluctuations(startDate, endDate time.Time, baseCurren
 	}
 
 	if startDate.IsZero() || endDate.IsZero() {
-		return nil, errors.New("startDate and endDate must be set")
+		return nil, errStartEndDatesInvalid
 	}
 
 	if startDate.After(endDate) {
-		return nil, errors.New("startDate must be before endDate")
+		return nil, errStartAfterEnd
 	}
 
 	v := url.Values{}
@@ -242,16 +247,13 @@ func (e *ExchangeRates) GetSupportedCurrencies() ([]string, error) {
 		return nil, err
 	}
 
-	var supportedCurrencies []string
-	for x := range symbols {
-		supportedCurrencies = append(supportedCurrencies, x)
-	}
+	supportedCurrencies := slices.AppendSeq(make([]string, 0, len(symbols)), maps.Keys(symbols))
 	e.supportedCurrencies = supportedCurrencies
 	return supportedCurrencies, nil
 }
 
 // SendHTTPRequest sends a HTTPS request to the desired endpoint and returns the result
-func (e *ExchangeRates) SendHTTPRequest(endPoint string, values url.Values, result interface{}) error {
+func (e *ExchangeRates) SendHTTPRequest(endPoint string, values url.Values, result any) error {
 	if e.APIKey == "" {
 		return errors.New("api key must be set")
 	}
@@ -261,12 +263,15 @@ func (e *ExchangeRates) SendHTTPRequest(endPoint string, values url.Values, resu
 		protocolScheme = "http://"
 	}
 	path := common.EncodeURLValues(protocolScheme+exchangeRatesAPI+"/v1/"+endPoint, values)
-	err := e.Requester.SendPayload(context.Background(), &request.Item{
+	item := &request.Item{
 		Method:  http.MethodGet,
 		Path:    path,
 		Result:  result,
 		Verbose: e.Verbose,
-	})
+	}
+	err := e.Requester.SendPayload(context.TODO(), request.Unset, func() (*request.Item, error) {
+		return item, nil
+	}, request.AuthenticatedRequest)
 	if err != nil {
 		return fmt.Errorf("exchangeRatesAPI: SendHTTPRequest error %s with path %s",
 			err,

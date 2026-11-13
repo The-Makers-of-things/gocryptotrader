@@ -1,17 +1,110 @@
 package common
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/thrasher-corp/gocryptotrader/common/file"
 )
+
+func TestSendHTTPRequest(t *testing.T) {
+	// t.Parallel() not used to maintain code coverage for assigning the default
+	// HTTPClient.
+	methodPost := "pOst"
+	methodGet := "GeT"
+	methodDelete := "dEleTe"
+	methodGarbage := "ding"
+
+	headers := make(map[string]string)
+	headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+	_, err := SendHTTPRequest(t.Context(),
+		methodGarbage, "https://www.google.com", headers,
+		strings.NewReader(""), true,
+	)
+	if err == nil {
+		t.Error("Expected error 'invalid HTTP method specified'")
+	}
+	_, err = SendHTTPRequest(t.Context(),
+		methodPost, "https://www.google.com", headers,
+		strings.NewReader(""), true,
+	)
+	if err != nil {
+		t.Error(err)
+	}
+	_, err = SendHTTPRequest(t.Context(),
+		methodGet, "https://www.google.com", headers,
+		strings.NewReader(""), true,
+	)
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = SetHTTPUserAgent("GCTbot/1337.69 (+http://www.lol.com/)")
+	require.NoError(t, err)
+
+	_, err = SendHTTPRequest(t.Context(),
+		methodDelete, "https://www.google.com", headers,
+		strings.NewReader(""), true,
+	)
+	if err != nil {
+		t.Error(err)
+	}
+	_, err = SendHTTPRequest(t.Context(),
+		methodGet, ":missingprotocolscheme", headers,
+		strings.NewReader(""), true,
+	)
+	if err == nil {
+		t.Error("Common HTTPRequest accepted missing protocol")
+	}
+	_, err = SendHTTPRequest(t.Context(),
+		methodGet, "test://unsupportedprotocolscheme", headers,
+		strings.NewReader(""), true,
+	)
+	if err == nil {
+		t.Error("Common HTTPRequest accepted invalid protocol")
+	}
+}
+
+func TestSetHTTPClientWithTimeout(t *testing.T) {
+	t.Parallel()
+	err := SetHTTPClientWithTimeout(-0)
+	require.ErrorIs(t, err, errCannotSetInvalidTimeout)
+
+	err = SetHTTPClientWithTimeout(time.Second * 15)
+	require.NoError(t, err)
+}
+
+func TestSetHTTPUserAgent(t *testing.T) {
+	t.Parallel()
+	err := SetHTTPUserAgent("")
+	require.ErrorIs(t, err, errUserAgentInvalid)
+
+	err = SetHTTPUserAgent("testy test")
+	require.NoError(t, err)
+}
+
+func TestSetHTTPClient(t *testing.T) {
+	t.Parallel()
+	err := SetHTTPClient(nil)
+	require.ErrorIs(t, err, errHTTPClientInvalid)
+
+	err = SetHTTPClient(new(http.Client))
+	require.NoError(t, err)
+}
 
 func TestIsEnabled(t *testing.T) {
 	t.Parallel()
@@ -30,136 +123,68 @@ func TestIsEnabled(t *testing.T) {
 
 func TestIsValidCryptoAddress(t *testing.T) {
 	t.Parallel()
-	b, err := IsValidCryptoAddress("1Mz7153HMuxXTuR2R1t78mGSdzaAtNbBWX", "bTC")
-	if err != nil && !b {
-		t.Errorf("Common IsValidCryptoAddress error: %s", err)
+
+	tests := []struct {
+		name, addr, code string
+		err              error
+	}{
+		{"Valid BTC legacy", "1Mz7153HMuxXTuR2R1t78mGSdzaAtNbBWX", "bTC", nil},
+		{"Valid BTC bech32", "bc1qw508d6qejxtdg4y5r3zarvaly0c5xw7kv8f3t4", "bTC", nil},
+		{"Invalid BTC (too long)", "an84characterslonghumanreadablepartthatcontainsthenumber1andtheexcludedcharactersbio1569pvx", "bTC", ErrAddressIsEmptyOrInvalid},
+		{"Valid BTC bech32 (longer)", "bc1qc7slrfxkknqcq2jevvvkdgvrt8080852dfjewde450xdlk4ugp7szw5tk9", "bTC", nil},
+		{"Invalid BTC (starts with 0)", "0Mz7153HMuxXTuR2R1t78mGSdzaAtNbBWX", "bTC", ErrAddressIsEmptyOrInvalid},
+		{"Invalid LTC (BTC address)", "1Mz7153HMuxXTuR2R1t78mGSdzaAtNbBWX", "lTc", ErrAddressIsEmptyOrInvalid},
+		{"Valid LTC", "3CDJNfdWX8m2NwuGUV3nhXHXEeLygMXoAj", "lTc", nil},
+		{"Invalid LTC (starts with N)", "NCDJNfdWX8m2NwuGUV3nhXHXEeLygMXoAj", "lTc", ErrAddressIsEmptyOrInvalid},
+		{"Valid ETH", "0xb794f5ea0ba39494ce839613fffba74279579268", "eth", nil},
+		{"Invalid ETH (starts with xx)", "xxb794f5ea0ba39494ce839613fffba74279579268", "eth", ErrAddressIsEmptyOrInvalid},
+		{"Unsupported crypto", "xxb794f5ea0ba39494ce839613fffba74279579268", "wif", ErrUnsupportedCryptocurrency},
+		{"Empty address", "", "btc", ErrAddressIsEmptyOrInvalid},
 	}
-	b, err = IsValidCryptoAddress("0Mz7153HMuxXTuR2R1t78mGSdzaAtNbBWX", "btc")
-	if err == nil && b {
-		t.Error("Common IsValidCryptoAddress error")
-	}
-	b, err = IsValidCryptoAddress("1Mz7153HMuxXTuR2R1t78mGSdzaAtNbBWX", "lTc")
-	if err == nil && b {
-		t.Error("Common IsValidCryptoAddress error")
-	}
-	b, err = IsValidCryptoAddress("3CDJNfdWX8m2NwuGUV3nhXHXEeLygMXoAj", "ltc")
-	if err != nil && !b {
-		t.Errorf("Common IsValidCryptoAddress error: %s", err)
-	}
-	b, err = IsValidCryptoAddress("NCDJNfdWX8m2NwuGUV3nhXHXEeLygMXoAj", "lTc")
-	if err == nil && b {
-		t.Error("Common IsValidCryptoAddress error")
-	}
-	b, err = IsValidCryptoAddress(
-		"0xb794f5ea0ba39494ce839613fffba74279579268",
-		"eth",
-	)
-	if err != nil && b {
-		t.Errorf("Common IsValidCryptoAddress error: %s", err)
-	}
-	b, err = IsValidCryptoAddress(
-		"xxb794f5ea0ba39494ce839613fffba74279579268",
-		"eTh",
-	)
-	if err == nil && b {
-		t.Error("Common IsValidCryptoAddress error")
-	}
-	b, err = IsValidCryptoAddress(
-		"xxb794f5ea0ba39494ce839613fffba74279579268",
-		"ding",
-	)
-	if err == nil && b {
-		t.Error("Common IsValidCryptoAddress error")
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.ErrorIs(t, IsValidCryptoAddress(tc.addr, tc.code), tc.err)
+		})
 	}
 }
 
-func TestStringSliceDifference(t *testing.T) {
+func TestSliceDifference(t *testing.T) {
 	t.Parallel()
-	originalInputOne := []string{"hello"}
-	originalInputTwo := []string{"hello", "moto"}
-	expectedOutput := []string{"hello moto"}
-	actualResult := StringSliceDifference(originalInputOne, originalInputTwo)
-	if reflect.DeepEqual(expectedOutput, actualResult) {
-		t.Errorf("Expected '%s'. Actual '%s'",
-			expectedOutput, actualResult)
+
+	assert.ElementsMatch(t, []string{"world", "go"}, SliceDifference([]string{"hello", "world"}, []string{"hello", "go"}))
+	assert.ElementsMatch(t, []int64{1, 2, 5, 6}, SliceDifference([]int64{1, 2, 3, 4}, []int64{3, 4, 5, 6}))
+	assert.ElementsMatch(t, []float64{1.1, 4.4}, SliceDifference([]float64{1.1, 2.2, 3.3}, []float64{2.2, 3.3, 4.4}))
+	type mixedType struct {
+		A string
+		B int
 	}
+	assert.ElementsMatch(t, []mixedType{{"A", 1}, {"D", 4}}, SliceDifference([]mixedType{{"A", 1}, {"B", 2}, {"C", 3}}, []mixedType{{"B", 2}, {"C", 3}, {"D", 4}}))
+	assert.ElementsMatch(t, []int{1, 2, 3}, SliceDifference([]int{}, []int{1, 2, 3}))
+	assert.ElementsMatch(t, []int{1, 2, 3}, SliceDifference([]int{1, 2, 3}, []int{}))
+	assert.Empty(t, SliceDifference([]int{}, []int{}))
 }
 
-func TestStringDataContains(t *testing.T) {
+func TestStringSliceContains(t *testing.T) {
 	t.Parallel()
 	originalHaystack := []string{"hello", "world", "USDT", "Contains", "string"}
-	originalNeedle := "USD"
-	anotherNeedle := "thing"
-	expectedOutput := true
-	expectedOutputTwo := false
-	actualResult := StringDataContains(originalHaystack, originalNeedle)
-	if actualResult != expectedOutput {
-		t.Errorf("Expected '%v'. Actual '%v'",
-			expectedOutput, actualResult)
-	}
-	actualResult = StringDataContains(originalHaystack, anotherNeedle)
-	if actualResult != expectedOutputTwo {
-		t.Errorf("Expected '%v'. Actual '%v'",
-			expectedOutput, actualResult)
-	}
+	assert.True(t, StringSliceContains(originalHaystack, "USD"), "Should contain 'USD'")
+	assert.False(t, StringSliceContains(originalHaystack, "thing"), "Should not contain 'thing'")
 }
 
-func TestStringDataCompare(t *testing.T) {
+func TestStringSliceCompareInsensitive(t *testing.T) {
 	t.Parallel()
 	originalHaystack := []string{"hello", "WoRld", "USDT", "Contains", "string"}
-	originalNeedle := "WoRld"
-	anotherNeedle := "USD"
-	expectedOutput := true
-	expectedOutputTwo := false
-	actualResult := StringDataCompare(originalHaystack, originalNeedle)
-	if actualResult != expectedOutput {
-		t.Errorf("Expected '%v'. Actual '%v'",
-			expectedOutput, actualResult)
-	}
-	actualResult = StringDataCompare(originalHaystack, anotherNeedle)
-	if actualResult != expectedOutputTwo {
-		t.Errorf("Expected '%v'. Actual '%v'",
-			expectedOutput, actualResult)
-	}
+	assert.False(t, StringSliceCompareInsensitive(originalHaystack, "USD"), "Should not contain 'USD'")
+	assert.True(t, StringSliceCompareInsensitive(originalHaystack, "WORLD"), "Should find 'WoRld'")
 }
 
-func TestStringDataCompareUpper(t *testing.T) {
-	t.Parallel()
-	originalHaystack := []string{"hello", "WoRld", "USDT", "Contains", "string"}
-	originalNeedle := "WoRld"
-	anotherNeedle := "WoRldD"
-	expectedOutput := true
-	expectedOutputTwo := false
-	actualResult := StringDataCompareInsensitive(originalHaystack, originalNeedle)
-	if actualResult != expectedOutput {
-		t.Errorf("Expected '%v'. Actual '%v'",
-			expectedOutput, actualResult)
-	}
-
-	actualResult = StringDataCompareInsensitive(originalHaystack, anotherNeedle)
-	if actualResult != expectedOutputTwo {
-		t.Errorf("Expected '%v'. Actual '%v'",
-			expectedOutput, actualResult)
-	}
-}
-
-func TestStringDataContainsUpper(t *testing.T) {
+func TestStringSliceContainsInsensitive(t *testing.T) {
 	t.Parallel()
 	originalHaystack := []string{"bLa", "BrO", "sUp"}
-	originalNeedle := "Bla"
-	anotherNeedle := "ning"
-	expectedOutput := true
-	expectedOutputTwo := false
-	actualResult := StringDataContainsInsensitive(originalHaystack, originalNeedle)
-	if actualResult != expectedOutput {
-		t.Errorf("Expected '%v'. Actual '%v'",
-			expectedOutput, actualResult)
-	}
-	actualResult = StringDataContainsInsensitive(originalHaystack, anotherNeedle)
-	if actualResult != expectedOutputTwo {
-		t.Errorf("Expected '%v'. Actual '%v'",
-			expectedOutput, actualResult)
-	}
+	assert.True(t, StringSliceContainsInsensitive(originalHaystack, "Bla"), "Should contain 'Bla'")
+	assert.False(t, StringSliceContainsInsensitive(originalHaystack, "ning"), "Should not contain 'ning'")
 }
 
 func TestYesOrNo(t *testing.T) {
@@ -172,96 +197,6 @@ func TestYesOrNo(t *testing.T) {
 	}
 	if YesOrNo("ding") {
 		t.Error("Common YesOrNo Error.")
-	}
-}
-
-func TestSendHTTPRequest(t *testing.T) {
-	methodPost := "pOst"
-	methodGet := "GeT"
-	methodDelete := "dEleTe"
-	methodGarbage := "ding"
-
-	headers := make(map[string]string)
-	headers["Content-Type"] = "application/x-www-form-urlencoded"
-
-	_, err := SendHTTPRequest(
-		methodGarbage, "https://www.google.com", headers,
-		strings.NewReader(""),
-	)
-	if err == nil {
-		t.Error("Expected error 'invalid HTTP method specified'")
-	}
-	_, err = SendHTTPRequest(
-		methodPost, "https://www.google.com", headers,
-		strings.NewReader(""),
-	)
-	if err != nil {
-		t.Error(err)
-	}
-	_, err = SendHTTPRequest(
-		methodGet, "https://www.google.com", headers,
-		strings.NewReader(""),
-	)
-	if err != nil {
-		t.Error(err)
-	}
-	_, err = SendHTTPRequest(
-		methodDelete, "https://www.google.com", headers,
-		strings.NewReader(""),
-	)
-	if err != nil {
-		t.Error(err)
-	}
-	_, err = SendHTTPRequest(
-		methodGet, ":missingprotocolscheme", headers,
-		strings.NewReader(""),
-	)
-	if err == nil {
-		t.Error("Common HTTPRequest accepted missing protocol")
-	}
-	_, err = SendHTTPRequest(
-		methodGet, "test://unsupportedprotocolscheme", headers,
-		strings.NewReader(""),
-	)
-	if err == nil {
-		t.Error("Common HTTPRequest accepted invalid protocol")
-	}
-}
-
-func TestSendHTTPGetRequest(t *testing.T) {
-	t.Parallel()
-	type test struct {
-		Address string `json:"address"`
-		ETH     struct {
-			Balance  float64 `json:"balance"`
-			TotalIn  float64 `json:"totalIn"`
-			TotalOut float64 `json:"totalOut"`
-		} `json:"ETH"`
-	}
-	ethURL := `https://api.ethplorer.io/getAddressInfo/0xff71cb760666ab06aa73f34995b42dd4b85ea07b?apiKey=freekey`
-	result := test{}
-
-	var badresult int
-
-	err := SendHTTPGetRequest(ethURL, true, true, &result)
-	if err != nil {
-		t.Errorf("common SendHTTPGetRequest error: %s", err)
-	}
-	err = SendHTTPGetRequest("DINGDONG", true, false, &result)
-	if err == nil {
-		t.Error("common SendHTTPGetRequest error")
-	}
-	err = SendHTTPGetRequest(ethURL, false, false, &result)
-	if err != nil {
-		t.Errorf("common SendHTTPGetRequest error: %s", err)
-	}
-	err = SendHTTPGetRequest("https://httpstat.us/202", false, false, &result)
-	if err == nil {
-		t.Error("= common SendHTTPGetRequest error: Ignored unexpected status code")
-	}
-	err = SendHTTPGetRequest(ethURL, true, false, &badresult)
-	if err == nil {
-		t.Error("common SendHTTPGetRequest error: Unmarshalled into bad type")
 	}
 }
 
@@ -279,40 +214,19 @@ func TestEncodeURLValues(t *testing.T) {
 	}
 }
 
-func TestExtractHost(t *testing.T) {
+func TestExtractHostOrDefault(t *testing.T) {
 	t.Parallel()
-	address := "localhost:1337"
-	addresstwo := ":1337"
-	expectedOutput := "localhost"
-	actualResult := ExtractHost(address)
-	if expectedOutput != actualResult {
-		t.Errorf(
-			"Expected '%s'. Actual '%s'.", expectedOutput, actualResult)
-	}
-	actualResultTwo := ExtractHost(addresstwo)
-	if expectedOutput != actualResultTwo {
-		t.Errorf(
-			"Expected '%s'. Actual '%s'.", expectedOutput, actualResult)
-	}
 
-	address = "192.168.1.100:1337"
-	expectedOutput = "192.168.1.100"
-	actualResult = ExtractHost(address)
-	if expectedOutput != actualResult {
-		t.Errorf(
-			"Expected '%s'. Actual '%s'.", expectedOutput, actualResult)
-	}
+	assert.Equal(t, "localhost", ExtractHostOrDefault("localhost:1337"))
+	assert.Equal(t, "localhost", ExtractHostOrDefault(":1337"))
+	assert.Equal(t, "192.168.1.100", ExtractHostOrDefault("192.168.1.100:1337"))
 }
 
-func TestExtractPort(t *testing.T) {
+func TestExtractPortOrDefault(t *testing.T) {
 	t.Parallel()
-	address := "localhost:1337"
-	expectedOutput := 1337
-	actualResult := ExtractPort(address)
-	if expectedOutput != actualResult {
-		t.Errorf(
-			"Expected '%d'. Actual '%d'.", expectedOutput, actualResult)
-	}
+
+	assert.Equal(t, 1337, ExtractPortOrDefault("localhost:1337"))
+	assert.Equal(t, 80, ExtractPortOrDefault("localhost"))
 }
 
 func TestGetURIPath(t *testing.T) {
@@ -324,18 +238,13 @@ func TestGetURIPath(t *testing.T) {
 		"http://www.google.com/accounts?!@#$%;^^":       "",
 	}
 	for testInput, expectedOutput := range testTable {
-		actualOutput := GetURIPath(testInput)
-		if actualOutput != expectedOutput {
-			t.Errorf("Expected '%s'. Actual '%s'.",
-				expectedOutput, actualOutput)
-		}
+		assert.Equal(t, expectedOutput, GetURIPath(testInput))
 	}
 }
 
 func TestGetExecutablePath(t *testing.T) {
 	t.Parallel()
-	_, err := GetExecutablePath()
-	if err != nil {
+	if _, err := GetExecutablePath(); err != nil {
 		t.Errorf("Common GetExecutablePath. Error: %s", err)
 	}
 }
@@ -434,6 +343,7 @@ func TestCreateDir(t *testing.T) {
 }
 
 func TestChangePermission(t *testing.T) {
+	t.Parallel()
 	testDir := filepath.Join(os.TempDir(), "TestFileASDFGHJ")
 	switch runtime.GOOS {
 	case "windows":
@@ -441,7 +351,7 @@ func TestChangePermission(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected an error on non-existent path")
 		}
-		err = os.Mkdir(testDir, 0777)
+		err = os.Mkdir(testDir, 0o777)
 		if err != nil {
 			t.Fatalf("Mkdir failed. Err: %v", err)
 		}
@@ -462,7 +372,7 @@ func TestChangePermission(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected an error on non-existent path")
 		}
-		err = os.Mkdir(testDir, 0777)
+		err = os.Mkdir(testDir, 0o777)
 		if err != nil {
 			t.Fatalf("Mkdir failed. Err: %v", err)
 		}
@@ -475,8 +385,8 @@ func TestChangePermission(t *testing.T) {
 		if err != nil {
 			t.Fatalf("os.Stat failed. Err: %v", err)
 		}
-		if a.Mode().Perm() != 0770 {
-			t.Fatalf("expected file permissions differ. expecting 0770 got %#o", a.Mode().Perm())
+		if a.Mode().Perm() != file.DefaultPermissionOctal {
+			t.Fatalf("expected file permissions differ. expecting file.DefaultPermissionOctal got %#o", a.Mode().Perm())
 		}
 		err = os.Remove(testDir)
 		if err != nil {
@@ -485,81 +395,399 @@ func TestChangePermission(t *testing.T) {
 	}
 }
 
-func initStringSlice(size int) (out []string) {
-	for x := 0; x < size; x++ {
-		out = append(out, "gct-"+strconv.Itoa(x))
+func TestChangePermissionSymlinks(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
 	}
-	return
+	tempDir := t.TempDir()
+	target := filepath.Join(tempDir, "target")
+	require.NoError(t, os.Mkdir(target, 0o750), "Mkdir must not error")
+	require.NoError(t, os.WriteFile(filepath.Join(target, "a.txt"), []byte("hello"), 0o600), "WriteFile must not error")
+	require.NoError(t, os.Symlink("a.txt", filepath.Join(target, "inner.txt")), "Symlink must not error")
+	require.NoError(t, ChangePermission(target), "ChangePermission must not error for a symlink resolving inside the tree")
+
+	outside := filepath.Join(tempDir, "outside.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("secret"), 0o600), "WriteFile must not error")
+	require.NoError(t, os.Symlink(outside, filepath.Join(target, "escape.txt")), "Symlink must not error")
+	assert.ErrorContains(t, ChangePermission(target), "escapes from parent", "ChangePermission should reject a symlink resolving outside the tree")
+
+	fi, err := os.Stat(outside)
+	require.NoError(t, err, "Stat must not error")
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm(), "the file outside the tree should keep its permissions")
 }
 
-func TestSplitStringSliceByLimit(t *testing.T) {
-	slice50 := initStringSlice(50)
-	out := SplitStringSliceByLimit(slice50, 20)
-	if len(out) != 3 {
-		t.Errorf("expected len() to be 3 instead received: %v", len(out))
-	}
-	if len(out[0]) != 20 {
-		t.Errorf("expected len() to be 20 instead received: %v", len(out[0]))
+func TestAddPaddingOnUpperCase(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		Supplied string
+		Expected string
+	}{
+		{
+			// empty
+		},
+		{
+			Supplied: "ExpectedHTTPRainbow",
+			Expected: "Expected HTTP Rainbow",
+		},
+		{
+			Supplied: "SmellyCatSmellsBad",
+			Expected: "Smelly Cat Smells Bad",
+		},
+		{
+			Supplied: "Gronk",
+			Expected: "Gronk",
+		},
 	}
 
-	out = SplitStringSliceByLimit(slice50, 50)
-	if len(out) != 1 {
-		t.Errorf("expected len() to be 3 instead received: %v", len(out))
-	}
-	if len(out[0]) != 50 {
-		t.Errorf("expected len() to be 20 instead received: %v", len(out[0]))
-	}
-}
-
-func TestInArray(t *testing.T) {
-	InArray(nil, nil)
-
-	array := [6]int{2, 3, 5, 7, 11, 13}
-	isIn, pos := InArray(5, array)
-	if !isIn {
-		t.Errorf("failed to find the value within the array")
-	}
-	if pos != 2 {
-		t.Errorf("failed return the correct position of the value in the array")
-	}
-	isIn, _ = InArray(1, array)
-	if isIn {
-		t.Errorf("found a non existent value in the array")
-	}
-
-	slice := make([]int, 0)
-	slice = append(append(slice, 5), 3)
-	isIn, pos = InArray(5, slice)
-	if !isIn {
-		t.Errorf("failed to find the value within the slice")
-	}
-	if pos != 0 {
-		t.Errorf("failed return the correct position of the value in the slice")
-	}
-	isIn, pos = InArray(3, slice)
-	if !isIn {
-		t.Errorf("failed to find the value within the slice")
-	}
-	if pos != 1 {
-		t.Errorf("failed return the correct position of the value in the slice")
-	}
-	isIn, _ = InArray(1, slice)
-	if isIn {
-		t.Errorf("found a non existent value in the slice")
+	for x := range testCases {
+		if received := AddPaddingOnUpperCase(testCases[x].Supplied); received != testCases[x].Expected {
+			t.Fatalf("received '%v' but expected '%v'", received, testCases[x].Expected)
+		}
 	}
 }
 
 func TestErrors(t *testing.T) {
-	var test Errors
-	if test.Error() != "" {
-		t.Fatal("string should be nil")
+	t.Parallel()
+
+	e1 := errors.New("inconsistent gravity")
+	e2 := errors.New("barely marginal interest in your story")
+	e3 := errors.New("error making dinner")
+	e4 := errors.New("inconsistent gravy")
+	e5 := errors.New("add vodka")
+
+	// Nil tests
+	assert.NoError(t, AppendError(nil, nil), "Append nil to nil should nil")
+	assert.Same(t, AppendError(e1, nil), e1, "Append nil to e1 should e1")
+	assert.Same(t, AppendError(nil, e2), e2, "Append e2 to nil should e2")
+
+	// Vanilla error tests
+	err := AppendError(AppendError(AppendError(nil, e1), e2), e1)
+	assert.ErrorContains(t, err, "inconsistent gravity, barely marginal interest in your story, inconsistent gravity", "Should format consistently")
+	assert.ErrorIs(t, err, e1, "Should have inconsistent gravity")
+	assert.ErrorIs(t, err, e2, "Should be bored by your witty tales")
+
+	err = ExcludeError(err, e2)
+	assert.ErrorIs(t, err, e1, "Should still be bored")
+	assert.NotErrorIs(t, err, e2, "Should not be an e2")
+	me, ok := err.(*multiError)
+	if assert.True(t, ok, "Should be a multiError") {
+		assert.Len(t, me.errs, 2, "Should only have 2 errors")
 	}
-	test = append(test, errors.New("test1"))
-	if test.Error() != "test1" {
-		t.Fatal("does not match error")
+	err = ExcludeError(err, e1)
+	assert.NoError(t, err, "Error should be empty")
+	err = ExcludeError(err, e1)
+	assert.NoError(t, err, "Excluding a nil error should be okay")
+
+	// Wrapped error tests
+	err = fmt.Errorf("%w: %w", e3, fmt.Errorf("%w: %w", e4, e5))
+	assert.ErrorIs(t, ExcludeError(err, e4), e3, "Excluding e4 should retain e3")
+	assert.ErrorIs(t, ExcludeError(err, e4), e5, "Excluding e4 should retain the vanilla co-wrapped e5")
+	assert.NotErrorIs(t, ExcludeError(err, e4), e4, "e4 should be excluded")
+	assert.ErrorIs(t, ExcludeError(err, e5), e3, "Excluding e5 should retain e3")
+	assert.ErrorIs(t, ExcludeError(err, e5), e4, "Excluding e5 should retain the vanilla co-wrapped e4")
+	assert.NotErrorIs(t, ExcludeError(err, e5), e5, "e5 should be excluded")
+
+	// Hybrid tests
+	err = AppendError(fmt.Errorf("%w: %w", e4, e5), e3)
+	assert.ErrorIs(t, ExcludeError(err, e4), e3, "Excluding e4 should retain e3")
+	assert.ErrorIs(t, ExcludeError(err, e4), e5, "Excluding e4 should retain the vanilla co-wrapped e5")
+	assert.NotErrorIs(t, ExcludeError(err, e4), e4, "e4 should be excluded")
+	assert.ErrorIs(t, ExcludeError(err, e5), e3, "Excluding e5 should retain e3")
+	assert.ErrorIs(t, ExcludeError(err, e5), e4, "Excluding e5 should retain the vanilla co-wrapped e4")
+	assert.NotErrorIs(t, ExcludeError(err, e5), e5, "e4 should be excluded")
+
+	// Formatting retention
+	err = AppendError(e1, fmt.Errorf("%w: Run out of %q: %w", e3, "sausages", e5))
+	assert.ErrorIs(t, err, e1, "Should be an e1")
+	assert.ErrorIs(t, err, e3, "Should be an e3")
+	assert.ErrorIs(t, err, e5, "Should be an e5")
+	assert.ErrorContains(t, err, "sausages", "Should know about secret sausages")
+}
+
+func TestParseStartEndDate(t *testing.T) {
+	t.Parallel()
+	pt := time.Date(1999, 1, 1, 0, 0, 0, 0, time.Local)
+	ft := time.Date(2222, 1, 1, 0, 0, 0, 0, time.Local)
+	et := time.Date(2020, 1, 1, 1, 0, 0, 0, time.Local)
+	nt := time.Time{}
+
+	err := StartEndTimeCheck(nt, nt)
+	assert.ErrorIs(t, err, ErrDateUnset)
+
+	err = StartEndTimeCheck(et, nt)
+	assert.ErrorIs(t, err, ErrDateUnset)
+
+	err = StartEndTimeCheck(et, zeroValueUnix)
+	assert.ErrorIs(t, err, ErrDateUnset)
+
+	err = StartEndTimeCheck(zeroValueUnix, et)
+	assert.ErrorIs(t, err, ErrDateUnset)
+
+	err = StartEndTimeCheck(et, et)
+	assert.ErrorIs(t, err, ErrStartEqualsEnd)
+
+	err = StartEndTimeCheck(et, pt)
+	assert.ErrorIs(t, err, ErrStartAfterEnd)
+
+	err = StartEndTimeCheck(ft, ft.Add(time.Hour))
+	assert.ErrorIs(t, err, ErrStartAfterTimeNow)
+
+	err = StartEndTimeCheck(pt, et)
+	assert.NoError(t, err)
+}
+
+func TestGetAssertError(t *testing.T) {
+	err := GetTypeAssertError("*[]string", float64(0))
+	if err.Error() != "type assert failure from float64 to *[]string" {
+		t.Fatal(err)
 	}
-	test = append(test, errors.New("test2"))
-	if test.Error() != "test1, test2" {
-		t.Fatal("does not match error")
+
+	err = GetTypeAssertError("<nil>", nil)
+	if err.Error() != "type assert failure from <nil> to <nil>" {
+		t.Fatal(err)
 	}
+
+	err = GetTypeAssertError("bruh", struct{}{})
+	require.ErrorIs(t, err, ErrTypeAssertFailure)
+
+	err = GetTypeAssertError("string", struct{}{})
+	if err.Error() != "type assert failure from struct {} to string" {
+		t.Errorf("unexpected error message: %v", err)
+	}
+
+	err = GetTypeAssertError("string", struct{}{}, "bidSize")
+	if err.Error() != "type assert failure from struct {} to string for: bidSize" {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestMatchesEmailPattern(t *testing.T) {
+	success := MatchesEmailPattern("someone semail")
+	if success {
+		t.Error("MatchesEmailPattern() unexpected test validation result")
+	}
+	success = MatchesEmailPattern("someone esemail@gmail")
+	if success {
+		t.Error("MatchesEmailPattern() unexpected test validation result")
+	}
+	success = MatchesEmailPattern("123@gmail")
+	if !success {
+		t.Error("MatchesEmailPattern() unexpected test validation result")
+	}
+	success = MatchesEmailPattern("someonesemail@email.com")
+	if !success {
+		t.Error("MatchesEmailPattern() unexpected test validation result")
+	}
+}
+
+func TestGenerateRandomString(t *testing.T) {
+	t.Parallel()
+	sample, err := GenerateRandomString(5, NumberCharacters)
+	if err != nil {
+		t.Errorf("GenerateRandomString()  %v", err)
+	}
+	value, err := strconv.Atoi(sample)
+	if len(sample) != 5 || err != nil || value < 0 {
+		t.Error("GenerateRandomString() unexpected test validation result")
+	}
+	sample, err = GenerateRandomString(5)
+	if err != nil {
+		t.Errorf("GenerateRandomString()  %v", err)
+	}
+	values, err := strconv.ParseInt(sample, 10, 64)
+	if len(sample) != 5 || err != nil || values < 0 {
+		t.Error("GenerateRandomString() unexpected test validation result")
+	}
+	_, err = GenerateRandomString(1, "")
+	if err == nil {
+		t.Errorf("GenerateRandomString() expecting %s, but found %v", "invalid characters, character must not be empty", err)
+	}
+	sample, err = GenerateRandomString(0, "")
+	if err != nil && !strings.Contains(err.Error(), "invalid length") {
+		t.Errorf("GenerateRandomString()  %v", err)
+	}
+	if sample != "" {
+		t.Error("GenerateRandomString() unexpected test validation result")
+	}
+}
+
+func TestErrorCollector(t *testing.T) {
+	var e ErrorCollector
+	require.Panics(t, func() { e.Go(nil) }, "Go with nil function must panic")
+	for i := range 4 {
+		e.Go(func() error {
+			if i%2 == 0 {
+				return errors.New("collected error")
+			}
+			return nil
+		})
+	}
+	v := e.Collect()
+	errs, ok := v.(*multiError)
+	require.True(t, ok, "Must return a multiError")
+	assert.Len(t, errs.Unwrap(), 2, "Should have 2 errors")
+	assert.NoError(t, e.Collect(), "should return nil when a previous collection emptied the errors")
+}
+
+// TestBatch ensures the Batch function does not regress into common behavioural faults if implementation changes
+func TestBatch(t *testing.T) {
+	s := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	b := Batch(s, 3)
+	require.Len(t, b, 4)
+	assert.Len(t, b[0], 3)
+	assert.Len(t, b[3], 1)
+
+	b[0][0] = 42
+	assert.Equal(t, 1, s[0], "Changing the batches should not change the source")
+
+	require.NotPanics(t, func() { Batch(s, -1) }, "Must not panic on negative batch size")
+	done := make(chan any, 1)
+	go func() { done <- Batch(s, 0) }()
+	require.Eventually(t, func() bool { return len(done) > 0 }, time.Second, time.Millisecond, "Batch 0 must not hang")
+
+	for _, i := range []int{-1, 0, 50} {
+		b = Batch(s, i)
+		require.Lenf(t, b, 1, "A batch size of %v must produce a single batch", i)
+		assert.Lenf(t, b[0], len(s), "A batch size of %v should produce a single batch", i)
+	}
+}
+
+type A int
+
+func (a A) String() string {
+	return strconv.Itoa(int(a))
+}
+
+func TestSortStrings(t *testing.T) {
+	assert.Equal(t, []A{1, 2, 5, 6}, SortStrings([]A{6, 2, 5, 1}))
+}
+
+func TestCounter(t *testing.T) {
+	t.Parallel()
+	c := Counter{}
+	c.n.Store(-5)
+	require.Equal(t, int64(1), c.IncrementAndGet(), "Adding to a negative Counter must reset to zero and then increment")
+	require.Equal(t, int64(2), c.IncrementAndGet())
+}
+
+func BenchmarkCounter(b *testing.B) {
+	c := Counter{}
+	for b.Loop() {
+		c.IncrementAndGet()
+	}
+}
+
+func TestNilGuard(t *testing.T) {
+	t.Parallel()
+	err := NilGuard((*int)(nil))
+	assert.ErrorIs(t, err, ErrNilPointer)
+	assert.ErrorContains(t, err, "*int")
+
+	s := "normal input"
+	err = NilGuard(&s, 2, &[]int{4, 5, 6}, []int{1, 2, 3}, new(A))
+	assert.NoError(t, err)
+
+	err = NilGuard(&s, nil, (*int)(nil))
+	assert.ErrorIs(t, err, ErrNilPointer)
+	assert.ErrorContains(t, err, "*int")
+	var mErr *multiError
+	require.ErrorAs(t, err, &mErr, "err must be a multiError")
+	assert.Len(t, mErr.Unwrap(), 2, "Should get 2 errors back")
+
+	assert.ErrorIs(t, NilGuard(nil), ErrNilPointer, "Unusual input of an untyped nil should still error correctly")
+
+	err = NilGuard()
+	require.NoError(t, err, "NilGuard with no arguments must not error")
+}
+
+func TestSetIfZero(t *testing.T) {
+	t.Parallel()
+	s := "hello"
+	changed := SetIfZero(&s, "world")
+	assert.False(t, changed, "SetIfZero should not change a non-zero value")
+	assert.Equal(t, "hello", s, "SetIfZero should not change a non-zero value")
+	s = ""
+	changed = SetIfZero(&s, "world")
+	assert.True(t, changed, "SetIfZero should change a zero value")
+	assert.Equal(t, "world", s, "SetIfZero should change a zero value")
+}
+
+func TestSeenCheckAndRecord(t *testing.T) {
+	t.Parallel()
+	seen := make(Seen[string])
+	for _, tc := range []struct {
+		item     string
+		expected bool
+		length   int
+	}{
+		{item: "first", length: 1},
+		{item: "first", expected: true, length: 1},
+		{item: "second", length: 2},
+		{item: "", length: 3},
+		{item: "", expected: true, length: 3},
+		{item: "first", expected: true, length: 3},
+	} {
+		assert.Equalf(t, tc.expected, seen.CheckAndRecord(tc.item), "CheckAndRecord should report whether %q was already seen", tc.item)
+		assert.Truef(t, seen[tc.item], "CheckAndRecord should mark %q as seen", tc.item)
+		assert.Len(t, seen, tc.length, "CheckAndRecord should add only new items")
+	}
+}
+
+func TestSeenCheckAndRecordExistingEntries(t *testing.T) {
+	t.Parallel()
+	seen := Seen[int]{1: true, 2: false}
+	assert.True(t, seen.CheckAndRecord(1), "CheckAndRecord should recognise an entry already marked seen")
+	assert.False(t, seen.CheckAndRecord(2), "CheckAndRecord should treat an entry marked false as unseen")
+	assert.True(t, seen.CheckAndRecord(2), "CheckAndRecord should mark an existing false entry as seen")
+	assert.Equal(t, Seen[int]{1: true, 2: true}, seen, "CheckAndRecord should preserve unrelated entries")
+}
+
+func TestSeenCheckAndRecordStructKeys(t *testing.T) {
+	t.Parallel()
+	type key struct {
+		name string
+		id   int
+	}
+	seen := make(Seen[key])
+	assert.False(t, seen.CheckAndRecord(key{name: "first", id: 1}), "CheckAndRecord should record a new struct key")
+	assert.True(t, seen.CheckAndRecord(key{name: "first", id: 1}), "CheckAndRecord should recognise an equal struct value")
+	assert.False(t, seen.CheckAndRecord(key{name: "first", id: 2}), "CheckAndRecord should distinguish different struct fields")
+	assert.False(t, seen.CheckAndRecord(key{}), "CheckAndRecord should record a zero-value struct key")
+	assert.True(t, seen.CheckAndRecord(key{}), "CheckAndRecord should recognise a repeated zero-value struct key")
+	assert.Len(t, seen, 3, "CheckAndRecord should retain each distinct struct key")
+}
+
+func TestContextFunctions(t *testing.T) {
+	t.Parallel()
+
+	type key string
+	const k1 key = "key1"
+	const k2 key = "key2"
+	const k3 key = "key3"
+
+	RegisterContextKey(k1)
+	RegisterContextKey(k2)
+
+	ctx := context.WithValue(context.Background(), k1, "value1")
+	ctx = context.WithValue(ctx, k2, "value2")
+	ctx = context.WithValue(ctx, k3, "value3") // Not registered
+
+	frozen := FreezeContext(ctx)
+
+	assert.Equal(t, "value1", frozen[k1], "should have captured k1")
+	assert.Equal(t, "value2", frozen[k2], "should have captured k2")
+	assert.Zero(t, frozen[k3], "k3 should not be captured")
+
+	thawed := ThawContext(frozen)
+	assert.Equal(t, "value1", thawed.Value(k1), "should have k1 after thaw")
+	assert.Equal(t, "value2", thawed.Value(k2), "should have k2 after thaw")
+	assert.Nil(t, thawed.Value(k3), "Thawed context should not have k3")
+
+	ctx2 := context.WithValue(context.Background(), k3, "value3_new")
+	merged := MergeContext(ctx2, frozen)
+	assert.Equal(t, "value1", merged.Value(k1), "should have k1 from frozen")
+	assert.Equal(t, "value2", merged.Value(k2), "should have k2 from frozen")
+	assert.Equal(t, "value3_new", merged.Value(k3), "should have k3 from parent")
 }

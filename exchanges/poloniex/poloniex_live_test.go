@@ -1,41 +1,60 @@
-//+build mock_test_off
+//go:build mock_test_off
 
 // This will build if build tag mock_test_off is parsed and will do live testing
 // using all tests in (exchange)_test.go
 package poloniex
 
 import (
+	"context"
 	"log"
 	"os"
 	"testing"
 
-	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/exchange/stream"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
 	"github.com/thrasher-corp/gocryptotrader/exchanges/sharedtestvalues"
+	testexch "github.com/thrasher-corp/gocryptotrader/internal/testing/exchange"
 )
 
 var mockTests = false
 
 func TestMain(m *testing.M) {
-	cfg := config.GetConfig()
-	err := cfg.LoadConfig("../../testdata/configtest.json", true)
-	if err != nil {
-		log.Fatal("Poloniex load config error", err)
+	e = new(Exchange)
+	if err := testexch.Setup(e); err != nil {
+		log.Fatal(err)
 	}
-	poloniexConfig, err := cfg.GetExchangeConfig("Poloniex")
-	if err != nil {
-		log.Fatal("Poloniex Setup() init error", err)
+
+	e.setAPICredential(apiCredentials)
+	if err := e.populateTradablePairs(); err != nil {
+		log.Fatal(err)
 	}
-	poloniexConfig.API.AuthenticatedSupport = true
-	poloniexConfig.API.Credentials.Key = apiKey
-	poloniexConfig.API.Credentials.Secret = apiSecret
-	p.SetDefaults()
-	p.Websocket = sharedtestvalues.NewTestWebsocket()
-	err = p.Setup(poloniexConfig)
-	if err != nil {
-		log.Fatal("Poloniex setup error", err)
-	}
-	log.Printf(sharedtestvalues.LiveTesting, p.Name)
-	p.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
-	p.Websocket.TrafficAlert = sharedtestvalues.GetWebsocketStructChannelOverride()
+	log.Printf(sharedtestvalues.LiveTesting, e.Name)
+	e.Websocket.DataHandler = stream.NewRelay(sharedtestvalues.WebsocketRelayBufferCapacity)
+	e.Websocket.TrafficAlert = sharedtestvalues.GetWebsocketStructChannelOverride()
 	os.Exit(m.Run())
+}
+
+func (e *Exchange) populateTradablePairs() error {
+	if err := e.UpdateTradablePairs(context.Background()); err != nil {
+		return err
+	}
+	tradablePairs, err := e.GetEnabledPairs(asset.Spot)
+	if err != nil {
+		return err
+	} else if len(tradablePairs) == 0 {
+		return currency.ErrCurrencyPairsEmpty
+	}
+	spotTradablePair, err = e.FormatExchangeCurrency(tradablePairs[0], asset.Spot)
+	if err != nil {
+		return err
+	}
+	tradablePairs, err = e.GetEnabledPairs(asset.Futures)
+	if err != nil {
+		return err
+	} else if len(tradablePairs) == 0 {
+		return currency.ErrCurrencyPairsEmpty
+	}
+	futuresTradablePair, err = e.FormatExchangeCurrency(tradablePairs[0], asset.Futures)
+	return err
 }

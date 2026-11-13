@@ -1,0 +1,46 @@
+name: proto-checks
+'on':
+  push:
+    branches-ignore:
+      - 'gh-readonly-queue/**'
+      - 'dependabot/**'
+  pull_request:
+  merge_group:
+permissions:
+  contents: read
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+jobs:
+  proto-lint:
+    name: proto-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: bufbuild/buf-setup-action@v1.50.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check generated code is up to date
+        run: make proto_check
+
+      - uses: bufbuild/buf-lint-action@v1
+        with:
+          input: gctrpc
+          
+      - name: buf format
+        run: buf format --diff --exit-code
+
+      - uses: bufbuild/buf-lint-action@v1
+        with:
+          input: ./backtester/btrpc
+
+      - name: buf format backtester
+        run: buf format --diff --exit-code

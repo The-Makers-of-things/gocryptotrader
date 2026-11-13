@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v go >/dev/null 2>&1 || { echo "Go is not installed" >&2; exit 1; }
+
+log() { echo "[post-create] $*"; }
+
+install_go_tool() {
+  local pkg="$1"
+  log "Installing: $pkg"
+  go install "$pkg"
+}
+
+# Protobuf + gRPC codegen
+log "Installing: go.mod tools"
+go -C "$(dirname "$0")/.." install tool
+install_go_tool github.com/bufbuild/buf/cmd/buf@latest
+
+# Linting
+install_go_tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint@"$(cat "$(dirname "$0")/../.golangci-lint-version")"
+
+# Formatting
+install_go_tool mvdan.cc/gofumpt@latest
+
+log "Installed tools:"
+
+for t in protoc-gen-go protoc-gen-go-grpc buf protoc-gen-grpc-gateway protoc-gen-openapiv2 golangci-lint gofumpt; do
+  command -v "$t" || true
+done
+
+log "Setup is complete :)"

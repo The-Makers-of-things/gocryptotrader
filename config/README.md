@@ -1,50 +1,48 @@
 # GoCryptoTrader package Config
 
-<img src="https://github.com/thrasher-corp/gocryptotrader/blob/master/web/src/assets/page-logo.png?raw=true" width="350px" height="350px" hspace="70">
-
+<img src="../common/gctlogo.png" alt="GoCryptoTrader logo" width="350px" height="350px" hspace="70">
 
 [![Build Status](https://github.com/thrasher-corp/gocryptotrader/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/thrasher-corp/gocryptotrader/actions/workflows/tests.yml)
 [![Software License](https://img.shields.io/badge/License-MIT-orange.svg?style=flat-square)](https://github.com/thrasher-corp/gocryptotrader/blob/master/LICENSE)
 [![GoDoc](https://godoc.org/github.com/thrasher-corp/gocryptotrader?status.svg)](https://godoc.org/github.com/thrasher-corp/gocryptotrader/config)
-[![Coverage Status](http://codecov.io/github/thrasher-corp/gocryptotrader/coverage.svg?branch=master)](http://codecov.io/github/thrasher-corp/gocryptotrader?branch=master)
-[![Go Report Card](https://goreportcard.com/badge/github.com/thrasher-corp/gocryptotrader)](https://goreportcard.com/report/github.com/thrasher-corp/gocryptotrader)
-
+[![Coverage Status](https://codecov.io/gh/thrasher-corp/gocryptotrader/graph/badge.svg?token=41784B23TS)](https://codecov.io/gh/thrasher-corp/gocryptotrader)
 
 This config package is part of the GoCryptoTrader codebase.
 
 ## This is still in active development
 
-You can track ideas, planned features and what's in progress on this Trello board: [https://trello.com/b/ZAhMhpOy/gocryptotrader](https://trello.com/b/ZAhMhpOy/gocryptotrader).
+You can track ideas, planned features and what's in progress on our [GoCryptoTrader Kanban board](https://github.com/orgs/thrasher-corp/projects/3).
 
-Join our slack to discuss all things related to GoCryptoTrader! [GoCryptoTrader Slack](https://join.slack.com/t/gocryptotrader/shared_invite/enQtNTQ5NDAxMjA2Mjc5LTc5ZDE1ZTNiOGM3ZGMyMmY1NTAxYWZhODE0MWM5N2JlZDk1NDU0YTViYzk4NTk3OTRiMDQzNGQ1YTc4YmRlMTk)
+Join our slack to discuss all things related to GoCryptoTrader! [GoCryptoTrader Slack](https://join.slack.com/t/gocryptotrader/shared_invite/zt-38z8abs3l-gH8AAOk8XND6DP5NfCiG_g)
 
 ## Current Features for config
 
- + Handling of config encryption and verification of "configuration".json data.
++ Handling of config encryption and verification of "configuration".json data.
 
- + Contains configurations for:
++ Contains configurations for:
 
-	- Exchanges for utilisation of a broad or minimal amount of enabled
-	exchanges [Example](#enable-exchange-via-config-example) for
-	enabling an exchange.
+  + Enable/Disable Exchanges. [See Example](#enable-exchange-via-config-example)
 
-	- Bank accounts for withdrawal and depositing FIAT between exchange and
-	your personal accounts [Example](#enable-bank-accounts-via-config-example).
+  + Bank accounts for withdrawal and depositing FIAT between exchange and
+ your personal accounts. [See Example](#enable-bank-accounts-via-config-example)
 
-	- Portfolio to monitor online and offline accounts [Example](#enable-portfolio-via-config-example).
+  + Portfolio to monitor online and offline accounts. [See Example](#enable-portfolio-via-config-example)
 
-	- Currency configurations to set your foreign exchange provider accounts,
-	your preferred display currency, suitable FIAT currency and suitable
-	cryptocurrency [Example](#enable-currency-via-config-example).
+  + Currency configurations to set your foreign exchange provider accounts,
+ your preferred display currency, suitable FIAT currency and suitable
+ cryptocurrency. [See Example](#enable-currency-via-config-example)
 
-	- Communication for utilisation of supported communication mediums e.g.
-	email events direct to your personal account [Example](#enable-communications-via-config-example).
+  + Communication for utilisation of supported communication mediums e.g.
+ email events direct to your personal account. [See Example](#enable-communications-via-config-example)
 
-# Config Examples
+  + Websocket subscription channels. [See Example](#configure-exchange-websocket-subscriptions)
 
-#### Basic examples for enabling features on the GoCryptoTrader platform
+## Config Examples
+
+### Basic examples for enabling features on the GoCryptoTrader platform
 
 + Linux example for quickly creating and testing configuration file
+
 ```sh
 cd ~/go/src/github.com/thrasher-corp/gocryptotrader
 cp config_example.json config.json
@@ -63,7 +61,7 @@ go build
 ./gocryptotrader -config custom.json
 ```
 
-## Enable Exchange Via Config Example
+### Enable Exchange Via Config Example
 
 + To enable or disable an exchange via config proceed through the
 "configuration".json file to exchanges and to the supported exchange e.g see
@@ -113,7 +111,7 @@ have multiple deposit accounts for different FIAT deposit currencies.
  },
 ```
 
-## Enable Bank Accounts Via Config Example
+### Enable Bank Accounts Via Config Example
 
 + To enable bank accounts simply proceed through "configuration".json file to
 "BankAccounts" and input your account information example below.
@@ -133,7 +131,7 @@ have multiple deposit accounts for different FIAT deposit currencies.
 ]
 ```
 
-## Enable Portfolio Via Config Example
+### Enable Portfolio Via Config Example
 
 + To enable the GoCryptoTrader platform to monitor your addresses please
 specify, "configuration".json file example below.
@@ -156,7 +154,7 @@ specify, "configuration".json file example below.
  ]
 ```
 
-## Enable Currency Via Config Example
+### Enable Currency Via Config Example
 
 + To Enable foreign exchange providers set "Enabled" to true and add in your
 account API keys example below.
@@ -189,7 +187,7 @@ below.
 "FiatDisplayCurrency": "USD"
 ```
 
-## Enable Communications Via Config Example
+### Enable Communications Via Config Example
 
 + To set the desired platform communication medium proceed to "Communications"
 in the "configuration".json file and set your account details to the preferred
@@ -212,8 +210,39 @@ comm method and add in your contact list if available.
 },
 ```
 
+### Configure exchange websocket subscriptions
 
-## Configure Network Time Server 
++ Websocket subscriptions provide a stream of data from an exchange.
+Whilst subscriptions are specific to each exchange, some common examples are: candles, orderbook, ticker and allTrades.
+You can configure any supported channels in your exchange, but most likely you just want to disable some of the defaults, or change the default intervals.
+You cannot configure an empty list of subscriptions, instead set all of the subscriptions to enabled: false.
+
+See the section `exchange.features.enabled.subscriptions` for configuring subscriptions:
+
+```js
+"subscriptions": [
+ {
+  "enabled": true,
+  "channel": "ticker"
+ },
+ {
+  "enabled": false,
+  "channel": "allTrades"
+ },
+ {
+  "enabled": true,
+  "channel": "candles",
+  "interval": "1m"
+ },
+ {
+  "enabled": true,
+  "channel": "orderbook",
+  "interval": "100ms"
+ }
+]
+```
+
+### Configure Network Time Server
 
 + To configure and enable a NTP server you need to set the "enabled" field to one of 3 values -1 is disabled 0 is enabled and alert at start up 1 is enabled and warn at start up
 servers are configured by the pool array and attempted first to last allowedDifference and allowedNegativeDifference are how far ahead and behind is acceptable for the time to be out in nanoseconds
@@ -229,23 +258,10 @@ servers are configured by the pool array and attempted first to last allowedDiff
  },
  ```
 
-### Please click GoDocs chevron above to view current GoDoc information for this package
-
-## Contribution
-
-Please feel free to submit any pull requests or suggest any desired features to be added.
-
-When submitting a PR, please abide by our coding guidelines:
-
-+ Code must adhere to the official Go [formatting](https://golang.org/doc/effective_go.html#formatting) guidelines (i.e. uses [gofmt](https://golang.org/cmd/gofmt/)).
-+ Code must be documented adhering to the official Go [commentary](https://golang.org/doc/effective_go.html#commentary) guidelines.
-+ Code must adhere to our [coding style](https://github.com/thrasher-corp/gocryptotrader/blob/master/doc/coding_style.md).
-+ Pull requests need to be based on and opened against the `master` branch.
-
 ## Donations
 
-<img src="https://github.com/thrasher-corp/gocryptotrader/blob/master/web/src/assets/donate.png?raw=true" hspace="70">
+<img src="../docs/assets/donate.png" alt="Donate to GoCryptoTrader" hspace="70">
 
 If this framework helped you in any way, or you would like to support the developers working on it, please donate Bitcoin to:
 
-***bc1qk0jareu4jytc0cfrhr5wgshsq8282awpavfahc***
+`bc1qk0jareu4jytc0cfrhr5wgshsq8282awpavfahc`
